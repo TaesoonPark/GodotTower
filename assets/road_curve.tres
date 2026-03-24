@@ -1,0 +1,4 @@
+[gd_resource type="Curve2D" load_steps=2 format=3]
+
+[resource]
+point_data = PackedVector2Array(0, 0, 100, 0, 100, 200, 300, 200, 300, 400)
