@@ -2,12 +2,16 @@
 
 importer="texture"
 type="CompressedTexture2D"
-uid="uid://e64kqpwiwd0d"
-valid=false
+uid="uid://675ykut2suoa"
+path="res://.godot/imported/tower.png-10a2aef8028988b756264007bfc6c076.ctex"
+metadata={
+"vram_texture": false
+}
 
 [deps]
 
 source_file="res://assets/tower.png"
+dest_files=["res://.godot/imported/tower.png-10a2aef8028988b756264007bfc6c076.ctex"]
 
 [params]
 

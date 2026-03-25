@@ -1,8 +1,7 @@
 [gd_scene load_steps=2 format=3 uid="uid://tower"]
 
 [ext_resource type="Script" path="res://scripts/Tower.gd" id="1_tower_script"]
-[ext_resource type="Texture2D" path="res://assets/tower.png" id="2_tower_tex"]
-[ext_resource type="CircleShape2D" path="res://assets/tower_shape.tres" id="3_tower_shape"]
+[ext_resource type="CircleShape2D" path="res://assets/tower_shape.tres" id="2_tower_shape"]
 
 [node name="Tower" type="Area2D"]
 script = ExtResource("1_tower_script")
@@ -10,8 +9,7 @@ collision_layer = 2
 collision_mask = 1
 
 [node name="Sprite" type="Sprite2D" parent="."]
-texture = ExtResource("2_tower_tex")
 offset = Vector2(0, -16)
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
-shape = ExtResource("3_tower_shape")
+shape = ExtResource("2_tower_shape")
