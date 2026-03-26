@@ -10,6 +10,7 @@ class_name HUDController
 @onready var resources_label: Label = $TopResourceBar
 @onready var time_flow_label: Label = $TimeFlowLabel
 @onready var raid_status_label: Label = $RaidStatusLabel
+@onready var raid_test_button: Button = $RaidTestButton
 @onready var needs_label: Label = $SelectedStatusPanel/VBox/NeedsLabel
 @onready var priority_label: Label = $SelectedStatusPanel/VBox/PriorityLabel
 @onready var current_job_label: Label = $SelectedStatusPanel/VBox/CurrentJobLabel
@@ -105,6 +106,7 @@ signal bed_auto_assign_requested()
 signal context_action_requested(action_id: StringName)
 signal selected_object_action_requested(action_id: StringName)
 signal outfit_mode_changed(mode: StringName)
+signal raid_test_warning_requested()
 
 var _active_action: StringName = &"Interact"
 var _selected_building_id: StringName = &""
@@ -144,6 +146,7 @@ func _ready() -> void:
 	drag_stockpile_button.pressed.connect(func(): drag_stockpile_mode_requested.emit())
 	mode_cycle_button.pressed.connect(_on_order_toggle_pressed)
 	clear_state_button.pressed.connect(_on_outfit_mode_pressed)
+	raid_test_button.pressed.connect(func(): raid_test_warning_requested.emit())
 	context_action_button.pressed.connect(_on_context_action_button_pressed)
 	bed_assign_option.item_selected.connect(_on_bed_assign_selected)
 	bed_assign_auto_button.pressed.connect(func(): bed_auto_assign_requested.emit())
@@ -157,6 +160,8 @@ func _ready() -> void:
 	mode_cycle_button.tooltip_text = "Toggle Order panel"
 	set_outfit_mode(&"Work")
 	clear_state_button.tooltip_text = "작업/전투 복장 선호도를 전환합니다."
+	raid_test_button.text = "습격 테스트"
+	raid_test_button.tooltip_text = "습격 경고(카운트다운)부터 시작"
 	queue_craft_button.text = "실행"
 	clear_queue_button.text = "초기화"
 	queue_front_button.visible = false

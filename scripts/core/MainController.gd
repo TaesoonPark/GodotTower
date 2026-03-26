@@ -80,7 +80,6 @@ var _outfit_mode: StringName = &"Work"
 var _equipped_weapon_kind: Dictionary = {}
 var _raid_state: StringName = &"Idle"
 var _raid_warning_timer: float = 0.0
-var _raid_cooldown_timer: float = 90.0
 var _raid_wave_size: int = 0
 
 func _ready() -> void:
@@ -120,6 +119,7 @@ func _ready() -> void:
 	hud.context_action_requested.connect(_on_context_action_requested)
 	hud.selected_object_action_requested.connect(_on_selected_object_action_requested)
 	hud.outfit_mode_changed.connect(_on_outfit_mode_changed)
+	hud.raid_test_warning_requested.connect(_on_raid_test_warning_requested)
 	hud.bed_assignee_changed.connect(_on_bed_assignee_changed)
 	hud.bed_auto_assign_requested.connect(_on_bed_auto_assign_requested)
 	hud.set_building_catalog(building_defs)
@@ -1020,9 +1020,7 @@ func _update_raid_state(delta: float) -> void:
 		return
 	match _raid_state:
 		&"Idle", &"Resolved":
-			_raid_cooldown_timer -= delta
-			if _raid_cooldown_timer <= 0.0:
-				_start_raid_warning()
+			pass
 		&"Warning":
 			_raid_warning_timer = maxf(0.0, _raid_warning_timer - delta)
 			if _raid_warning_timer <= 0.0:
@@ -1046,7 +1044,13 @@ func _start_raid_wave() -> void:
 
 func _resolve_raid(_colony_survived: bool) -> void:
 	_raid_state = &"Resolved"
-	_raid_cooldown_timer = 120.0
+
+func _on_raid_test_warning_requested() -> void:
+	if _raid_state == &"Warning" or _raid_state == &"Active":
+		return
+	if not _get_alive_raiders().is_empty():
+		return
+	_start_raid_warning()
 
 func _spawn_raiders(count: int) -> void:
 	if count <= 0:
