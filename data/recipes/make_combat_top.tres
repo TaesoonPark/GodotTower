@@ -9,8 +9,8 @@ display_name = "Make Combat Top"
 workstation_id = &"SimpleBenchStation"
 work_required = 5.0
 ingredients = {
-&"Steel": 6,
-&"Wood": 2
+&"Steel": 1,
+&"Wood": 1
 }
 products = {
 &"CombatTop": 1

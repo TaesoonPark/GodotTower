@@ -9,7 +9,7 @@ display_name = "Make Combat Hat"
 workstation_id = &"SimpleBenchStation"
 work_required = 5.0
 ingredients = {
-&"Steel": 3,
+&"Steel": 1,
 &"Wood": 1
 }
 products = {

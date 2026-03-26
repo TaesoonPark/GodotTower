@@ -3,6 +3,7 @@ class_name BuildSystem
 
 const BUILDING_SITE_SCENE: PackedScene = preload("res://scenes/world/BuildingSite.tscn")
 const STOCKPILE_ZONE_SCENE: PackedScene = preload("res://scenes/world/StockpileZone.tscn")
+const FARM_ZONE_SCENE: PackedScene = preload("res://scenes/world/FarmZone.tscn")
 
 var _world_root: Node2D = null
 var _sites: Array = []
@@ -84,7 +85,7 @@ func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	placed.name = "Built_%s" % String(def.id)
 	placed.global_position = world_pos
 	placed.add_to_group("structures")
-	placed.set_meta("building_id", def.id)
+	_apply_structure_metas(placed, def)
 
 	var sprite := Sprite2D.new()
 	sprite.texture = _make_block_texture(int(def.footprint_size.x), int(def.footprint_size.y), def.direct_place_color)
@@ -95,6 +96,22 @@ func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	label.position = Vector2(-def.footprint_size.x * 0.48, -def.footprint_size.y * 0.9)
 	placed.add_child(label)
 	_world_root.add_child(placed)
+
+func _apply_structure_metas(node: Node2D, def: Resource) -> void:
+	node.set_meta("building_id", def.id)
+	node.set_meta("footprint_size", def.footprint_size)
+	node.set_meta("blocks_movement", bool(def.blocks_movement))
+	node.set_meta("cover_bonus", float(def.cover_bonus))
+	node.set_meta("trap_damage", int(def.trap_damage))
+	node.set_meta("trap_cooldown_sec", float(def.trap_cooldown_sec))
+	node.set_meta("trap_charges", int(def.trap_charges))
+	node.set_meta("trap_cooldown_left", 0.0)
+	if bool(def.blocks_movement):
+		node.add_to_group("blocking_structures")
+	if float(def.cover_bonus) > 0.0:
+		node.add_to_group("cover_structures")
+	if int(def.trap_damage) > 0:
+		node.add_to_group("trap_structures")
 
 func request_build_jobs(job_system: Node) -> void:
 	_sites = _sites.filter(func(s): return s != null and is_instance_valid(s))
@@ -113,6 +130,19 @@ func place_stockpile_zone(area_rect: Rect2) -> bool:
 	if safe_rect.size.x < 24.0 or safe_rect.size.y < 24.0:
 		return false
 	var zone := STOCKPILE_ZONE_SCENE.instantiate()
+	_world_root.add_child(zone)
+	if zone.has_method("setup_from_rect"):
+		zone.setup_from_rect(safe_rect)
+	_zones.append(zone)
+	return true
+
+func place_farm_zone(area_rect: Rect2) -> bool:
+	if _world_root == null:
+		return false
+	var safe_rect := area_rect.abs()
+	if safe_rect.size.x < 24.0 or safe_rect.size.y < 24.0:
+		return false
+	var zone := FARM_ZONE_SCENE.instantiate()
 	_world_root.add_child(zone)
 	if zone.has_method("setup_from_rect"):
 		zone.setup_from_rect(safe_rect)

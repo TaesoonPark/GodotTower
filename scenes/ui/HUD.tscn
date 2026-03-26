@@ -91,6 +91,10 @@ text = "채집/사냥 드래그"
 custom_minimum_size = Vector2(186, 34)
 text = "저장구역 드래그"
 
+[node name="DragFarmButton" type="Button" parent="LeftPanel/VBox/CommandGrid"]
+custom_minimum_size = Vector2(186, 34)
+text = "농경지 드래그"
+
 [node name="ClearStateButton" type="Button" parent="LeftPanel/VBox/CommandGrid"]
 custom_minimum_size = Vector2(186, 34)
 text = ""
@@ -319,6 +323,27 @@ vertical_scroll_mode = 1
 
 [node name="CraftQueueList" type="VBoxContainer" parent="LeftPanel/VBox/CraftQueueScroll"]
 theme_override_constants/separation = 4
+
+[node name="ResearchPanel" type="PanelContainer" parent="LeftPanel/VBox"]
+
+[node name="VBox" type="VBoxContainer" parent="LeftPanel/VBox/ResearchPanel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="ResearchTitle" type="Label" parent="LeftPanel/VBox/ResearchPanel/VBox"]
+text = "Research"
+theme_override_font_sizes/font_size = 14
+
+[node name="ResearchOption" type="OptionButton" parent="LeftPanel/VBox/ResearchPanel/VBox"]
+custom_minimum_size = Vector2(220, 0)
+
+[node name="ResearchStartButton" type="Button" parent="LeftPanel/VBox/ResearchPanel/VBox"]
+text = "연구 시작"
+custom_minimum_size = Vector2(120, 0)
+
+[node name="ResearchProgressLabel" type="Label" parent="LeftPanel/VBox/ResearchPanel/VBox"]
+text = "연구: 없음"
+theme_override_font_sizes/font_size = 12
 
 [node name="SeparatorD" type="HSeparator" parent="LeftPanel/VBox"]
 

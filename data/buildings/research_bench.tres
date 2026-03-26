@@ -4,13 +4,14 @@
 
 [resource]
 script = ExtResource("1_building_def")
-id = &"Floor"
-display_name = "Floor Tile"
-category = "Floor"
-required_work = 35.0
-footprint_size = Vector2(40, 40)
+id = &"ResearchBench"
+display_name = "Research Bench"
+category = "Research"
+required_work = 80.0
+footprint_size = Vector2(80, 40)
 build_cost = {
+&"Wood": 1,
 &"Stone": 1
 }
-direct_place_color = Color(0.4, 0.44, 0.48, 1)
-blueprint_color = Color(0.35, 0.42, 0.62, 0.72)
+direct_place_color = Color(0.35, 0.58, 0.82, 1)
+blueprint_color = Color(0.35, 0.58, 0.82, 0.72)

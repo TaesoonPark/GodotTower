@@ -10,7 +10,7 @@ workstation_id = &"SimpleBenchStation"
 work_required = 5.0
 ingredients = {
 &"Meal": 1,
-&"Wood": 6
+&"Wood": 1
 }
 products = {
 &"GatherTop": 1

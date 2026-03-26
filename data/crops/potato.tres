@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="CropDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/CropDef.gd" id="1_crop_def"]
+
+[resource]
+script = ExtResource("1_crop_def")
+id = &"Potato"
+display_name = "감자"
+growth_seconds = 180.0
+plant_work_seconds = 2.0
+harvest_work_seconds = 2.0
+yield_resource_type = &"FoodRaw"
+yield_amount = 4

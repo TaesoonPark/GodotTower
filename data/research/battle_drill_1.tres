@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="ResearchDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/ResearchDef.gd" id="1_research_def"]
+
+[resource]
+script = ExtResource("1_research_def")
+id = &"BattleDrillI"
+display_name = "Battle Drill I"
+required_points = 140.0
+unlock_buildings = Array[StringName]([])
+bonus_type = &"CombatAccuracy"
+bonus_value = 0.06

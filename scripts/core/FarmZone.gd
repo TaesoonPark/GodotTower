@@ -1,0 +1,274 @@
+extends Node2D
+class_name FarmZone
+
+@export var min_zone_size: float = 32.0
+@export var tile_size: float = 40.0
+
+var zone_size: Vector2 = Vector2(120, 80)
+var crop_type: StringName = &""
+var crop_catalog: Dictionary = {}
+var growth_time_multiplier: float = 1.0
+var _plots: Dictionary = {}
+
+@onready var fill_polygon: Polygon2D = $Fill
+@onready var outline: Line2D = $Outline
+@onready var label: Label = $Label
+
+func setup_from_rect(rect: Rect2) -> void:
+	var safe_rect := rect.abs()
+	zone_size = Vector2(
+		maxf(min_zone_size, safe_rect.size.x),
+		maxf(min_zone_size, safe_rect.size.y)
+	)
+	global_position = safe_rect.get_center()
+	_rebuild_plots()
+	if is_node_ready():
+		_refresh_shape()
+
+func _ready() -> void:
+	add_to_group("farm_zones")
+	if _plots.is_empty():
+		_rebuild_plots()
+	_refresh_shape()
+
+func contains_point(world_point: Vector2) -> bool:
+	var local: Vector2 = to_local(world_point)
+	return absf(local.x) <= zone_size.x * 0.5 and absf(local.y) <= zone_size.y * 0.5
+
+func set_crop_type(next_crop: StringName) -> void:
+	crop_type = next_crop
+	for tile in _plots.keys():
+		var plot: Dictionary = _plots[tile]
+		plot["job_queued"] = false
+		_plots[tile] = plot
+	_refresh_label()
+
+func get_crop_type() -> StringName:
+	return crop_type
+
+func set_crop_catalog(next_catalog: Dictionary) -> void:
+	crop_catalog = next_catalog.duplicate(true)
+	_refresh_label()
+
+func set_growth_time_multiplier(value: float) -> void:
+	growth_time_multiplier = maxf(0.1, value)
+
+func get_crop_options() -> Array:
+	var out: Array = []
+	var keys: Array = crop_catalog.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	for key_any in keys:
+		var key: StringName = StringName(key_any)
+		var crop_def: Resource = crop_catalog[key]
+		out.append({
+			"id": key,
+			"label": String(crop_def.display_name)
+		})
+	return out
+
+func get_crop_def() -> Resource:
+	if crop_type == &"":
+		return null
+	if crop_catalog.has(crop_type):
+		return crop_catalog[crop_type]
+	# Be tolerant to String/StringName key mismatch from serialized data.
+	for key_any in crop_catalog.keys():
+		if String(key_any) == String(crop_type):
+			return crop_catalog[key_any]
+	return null
+
+func get_crop_display_name() -> String:
+	var crop_def: Resource = get_crop_def()
+	if crop_def == null:
+		if crop_type != &"":
+			return String(crop_type)
+		return "미선택"
+	return String(crop_def.display_name)
+
+func tick_growth(delta: float) -> void:
+	for tile in _plots.keys():
+		var plot: Dictionary = _plots[tile]
+		var state: StringName = StringName(plot.get("state", &"Empty"))
+		if state != &"Growing":
+			continue
+		var elapsed: float = float(plot.get("elapsed", 0.0)) + delta
+		plot["elapsed"] = elapsed
+		var growth_crop: StringName = StringName(plot.get("crop", &""))
+		var growth_seconds: float = 180.0
+		if crop_catalog.has(growth_crop):
+			growth_seconds = float(crop_catalog[growth_crop].growth_seconds)
+		if elapsed >= growth_seconds * growth_time_multiplier:
+			plot["state"] = &"Mature"
+		_plots[tile] = plot
+	_refresh_label()
+
+func request_jobs(job_system: Node) -> void:
+	var job: Dictionary = claim_next_job()
+	if job.is_empty():
+		return
+	var tile: Vector2i = job.get("tile", Vector2i.ZERO)
+	var crop_id: StringName = StringName(job.get("crop_type", crop_type))
+	var duration: float = float(job.get("work_duration", 2.0))
+	var t: StringName = StringName(job.get("type", &""))
+	if t == &"HarvestCrop":
+		job_system.queue_farm_harvest_job(self, tile, crop_id, duration)
+	elif t == &"PlantCrop":
+		job_system.queue_farm_plant_job(self, tile, crop_id, duration)
+	else:
+		clear_plot_job(tile)
+
+func claim_next_job() -> Dictionary:
+	if crop_type == &"":
+		return {}
+	var crop_def: Resource = get_crop_def()
+	var plant_work: float = 2.0
+	var harvest_work: float = 2.0
+	if crop_def != null:
+		plant_work = float(crop_def.plant_work_seconds)
+		harvest_work = float(crop_def.harvest_work_seconds)
+	for tile in _plots.keys():
+		var plot: Dictionary = _plots[tile]
+		if bool(plot.get("job_queued", false)):
+			continue
+		if StringName(plot.get("state", &"Empty")) != &"Mature":
+			continue
+		plot["job_queued"] = true
+		_plots[tile] = plot
+		return {
+			"type": &"HarvestCrop",
+			"target": get_plot_world(tile),
+			"zone_id": get_instance_id(),
+			"tile": tile,
+			"crop_type": crop_type,
+			"work_duration": harvest_work
+		}
+	for tile in _plots.keys():
+		var plot: Dictionary = _plots[tile]
+		if bool(plot.get("job_queued", false)):
+			continue
+		var state: StringName = StringName(plot.get("state", &"Empty"))
+		if state != &"Empty":
+			continue
+		plot["job_queued"] = true
+		_plots[tile] = plot
+		return {
+			"type": &"PlantCrop",
+			"target": get_plot_world(tile),
+			"zone_id": get_instance_id(),
+			"tile": tile,
+			"crop_type": crop_type,
+			"work_duration": plant_work
+		}
+	return {}
+
+func clear_plot_job(tile: Vector2i) -> void:
+	if not _plots.has(tile):
+		return
+	var plot: Dictionary = _plots[tile]
+	plot["job_queued"] = false
+	_plots[tile] = plot
+
+func plant_crop(tile: Vector2i, planted_crop: StringName) -> bool:
+	if not _plots.has(tile):
+		return false
+	var plot: Dictionary = _plots[tile]
+	var state: StringName = StringName(plot.get("state", &"Empty"))
+	if state != &"Empty":
+		plot["job_queued"] = false
+		_plots[tile] = plot
+		return false
+	plot["state"] = &"Growing"
+	plot["elapsed"] = 0.0
+	plot["crop"] = planted_crop
+	plot["job_queued"] = false
+	_plots[tile] = plot
+	_refresh_label()
+	return true
+
+func harvest_crop(tile: Vector2i) -> Dictionary:
+	if not _plots.has(tile):
+		return {"resource_type": &"", "amount": 0}
+	var plot: Dictionary = _plots[tile]
+	var state: StringName = StringName(plot.get("state", &"Empty"))
+	if state != &"Mature":
+		plot["job_queued"] = false
+		_plots[tile] = plot
+		return {"resource_type": &"", "amount": 0}
+	var harvested_crop: StringName = StringName(plot.get("crop", crop_type))
+	plot["state"] = &"Empty"
+	plot["elapsed"] = 0.0
+	plot["crop"] = &""
+	plot["job_queued"] = false
+	_plots[tile] = plot
+	_refresh_label()
+	if crop_catalog.has(harvested_crop):
+		var crop_def: Resource = crop_catalog[harvested_crop]
+		return {
+			"resource_type": StringName(crop_def.yield_resource_type),
+			"amount": int(crop_def.yield_amount)
+		}
+	return {"resource_type": &"FoodRaw", "amount": 1}
+
+func get_plot_world(tile: Vector2i) -> Vector2:
+	return Vector2(float(tile.x) * tile_size, float(tile.y) * tile_size)
+
+func get_plot_tile_from_world(world_pos: Vector2) -> Vector2i:
+	return Vector2i(
+		int(round(world_pos.x / tile_size)),
+		int(round(world_pos.y / tile_size))
+	)
+
+func _refresh_shape() -> void:
+	var half := zone_size * 0.5
+	var p0 := Vector2(-half.x, -half.y)
+	var p1 := Vector2(half.x, -half.y)
+	var p2 := Vector2(half.x, half.y)
+	var p3 := Vector2(-half.x, half.y)
+	if fill_polygon != null:
+		fill_polygon.polygon = PackedVector2Array([p0, p1, p2, p3])
+	if outline != null:
+		outline.points = PackedVector2Array([p0, p1, p2, p3, p0])
+	_refresh_label()
+
+func _refresh_label() -> void:
+	if label == null:
+		return
+	var empty_count: int = 0
+	var grow_count: int = 0
+	var mature_count: int = 0
+	for tile in _plots.keys():
+		var state: StringName = StringName(_plots[tile].get("state", &"Empty"))
+		if state == &"Mature":
+			mature_count += 1
+		elif state == &"Growing":
+			grow_count += 1
+		else:
+			empty_count += 1
+	label.text = "Farm (%s)\nE:%d G:%d M:%d" % [get_crop_display_name(), empty_count, grow_count, mature_count]
+	label.position = Vector2(-zone_size.x * 0.5 + 8.0, -zone_size.y * 0.5 - 36.0)
+
+func _rebuild_plots() -> void:
+	_plots.clear()
+	var half: Vector2 = zone_size * 0.5
+	var min_x: float = global_position.x - half.x
+	var max_x: float = global_position.x + half.x
+	var min_y: float = global_position.y - half.y
+	var max_y: float = global_position.y + half.y
+	var sx: int = int(round(min_x / tile_size))
+	var ex: int = int(round(max_x / tile_size))
+	var sy: int = int(round(min_y / tile_size))
+	var ey: int = int(round(max_y / tile_size))
+	for y in range(sy, ey + 1):
+		for x in range(sx, ex + 1):
+			var tile := Vector2i(x, y)
+			var world: Vector2 = get_plot_world(tile)
+			if world.x < min_x - 0.1 or world.x > max_x + 0.1:
+				continue
+			if world.y < min_y - 0.1 or world.y > max_y + 0.1:
+				continue
+			_plots[tile] = {
+				"state": &"Empty",
+				"crop": &"",
+				"elapsed": 0.0,
+				"job_queued": false
+			}

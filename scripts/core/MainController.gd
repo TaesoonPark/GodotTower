@@ -8,8 +8,11 @@ const WORKSTATION_DEPOT_SCRIPT: Script = preload("res://scripts/core/Workstation
 const BUILDING_DEF_DIR := "res://data/buildings"
 const RECIPE_DEF_DIR := "res://data/recipes"
 const WORKSTATION_DEF_DIR := "res://data/workstations"
+const CROP_DEF_DIR := "res://data/crops"
+const RESEARCH_DEF_DIR := "res://data/research"
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
 const WORLD_SIZE: Vector2 = Vector2(7680.0, 4320.0)
+const TILE_SIZE: float = 40.0
 const EDGE_SCROLL_MARGIN: float = 18.0
 const EDGE_SCROLL_SPEED: float = 980.0
 const MIN_ZOOM: float = 0.65
@@ -54,8 +57,18 @@ var target_stock: Dictionary = {
 }
 var recipe_lookup: Dictionary = {}
 var workstation_lookup: Dictionary = {}
+var crop_lookup: Dictionary = {}
+var research_lookup: Dictionary = {}
+var _building_defs_all: Array = []
+var _research_completed: Dictionary = {}
+var _active_research_id: StringName = &""
+var _active_research_points: float = 0.0
+var _research_running: bool = false
+var _farm_growth_multiplier: float = 1.0
+var _combat_accuracy_bonus_from_research: float = 0.0
 var selected_workstation_id: StringName = &""
 var selected_stockpile_zone: Node = null
+var selected_farm_zone: Node = null
 var _middle_drag_camera: bool = false
 var _game_paused: bool = false
 var _speed_scale: float = 1.0
@@ -81,6 +94,7 @@ var _equipped_weapon_kind: Dictionary = {}
 var _raid_state: StringName = &"Idle"
 var _raid_warning_timer: float = 0.0
 var _raid_wave_size: int = 0
+var _combat_tile_claims: Dictionary = {}
 
 func _ready() -> void:
 	randomize()
@@ -89,6 +103,9 @@ func _ready() -> void:
 	var building_defs: Array = _load_building_defs()
 	var workstation_defs: Array = _load_workstation_defs()
 	var recipe_defs: Array = _load_recipe_defs()
+	var crop_defs: Array = _load_crop_defs()
+	var research_defs: Array = _load_research_defs()
+	_building_defs_all = building_defs.duplicate()
 	for ws in workstation_defs:
 		if ws != null:
 			workstation_lookup[ws.id] = ws
@@ -97,8 +114,14 @@ func _ready() -> void:
 	for recipe in recipe_defs:
 		if recipe != null:
 			recipe_lookup[recipe.id] = recipe
+	for crop_def in crop_defs:
+		if crop_def != null:
+			crop_lookup[crop_def.id] = crop_def
+	for research_def in research_defs:
+		if research_def != null:
+			research_lookup[research_def.id] = research_def
 	_spawn_initial_colonists()
-	build_system.configure(world_root, building_defs)
+	_refresh_building_catalog()
 	input_controller.left_click.connect(_on_left_click)
 	input_controller.drag_selection.connect(_on_drag_selection)
 	hud.priority_changed.connect(_on_priority_changed)
@@ -115,6 +138,7 @@ func _ready() -> void:
 	hud.designation_toggle_requested.connect(_on_designation_toggle_requested)
 	hud.drag_gather_mode_requested.connect(func(): _on_action_changed(&"DragGather"))
 	hud.drag_stockpile_mode_requested.connect(func(): _on_action_changed(&"StockpileZone"))
+	hud.drag_farm_mode_requested.connect(func(): _on_action_changed(&"FarmZone"))
 	hud.clear_state_requested.connect(_on_clear_state_requested)
 	hud.context_action_requested.connect(_on_context_action_requested)
 	hud.selected_object_action_requested.connect(_on_selected_object_action_requested)
@@ -122,10 +146,12 @@ func _ready() -> void:
 	hud.raid_test_warning_requested.connect(_on_raid_test_warning_requested)
 	hud.bed_assignee_changed.connect(_on_bed_assignee_changed)
 	hud.bed_auto_assign_requested.connect(_on_bed_auto_assign_requested)
-	hud.set_building_catalog(building_defs)
+	hud.research_project_changed.connect(_on_research_project_changed)
+	hud.research_start_requested.connect(_on_research_start_requested)
 	hud.set_workstation_catalog(workstation_defs)
 	hud.set_selected_workstation(selected_workstation_id)
 	hud.set_recipe_catalog(_filter_recipes_for_workstation(selected_workstation_id))
+	hud.set_research_catalog(_get_research_catalog(), _active_research_id)
 	hud.set_selected_count(0)
 	hud.set_needs_preview(null)
 	hud.set_priority_preview(null)
@@ -142,6 +168,7 @@ func _ready() -> void:
 	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
 	hud.set_outfit_mode(_outfit_mode)
 	hud.set_raid_state(_raid_state, _raid_warning_timer)
+	hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
 	hud.set_designation_panel_visible(false)
 	hud.set_bed_assignment_visible(false)
 	hud.set_equipment_preview(null)
@@ -162,6 +189,8 @@ func _process(delta: float) -> void:
 		var food_available: int = int(resource_stock.get(&"Meal", 0)) + int(resource_stock.get(&"FoodRaw", 0))
 		job_system.queue_need_jobs(colonist, food_available)
 	_apply_passive_item_bonuses()
+	_update_farm_zones(delta)
+	_update_defense_traps(delta)
 	job_system.request_combat_jobs(colonists, _get_alive_raiders())
 	_request_designated_resource_jobs()
 	_update_workstation_supply_requests()
@@ -182,11 +211,19 @@ func _process(delta: float) -> void:
 		Callable(self, "_can_start_recipe_at_workstation"),
 		Callable(self, "_on_recipe_started_at_workstation")
 	)
+	job_system.request_research_jobs(
+		colonists,
+		_find_research_bench_pos(),
+		_active_research_id if _research_running else &"",
+		6.0
+	)
 	job_system.assign_jobs(colonists)
+	_apply_combat_tile_occupancy()
 	_reconcile_stockpile_totals_with_resource_stock()
 	hud.set_craft_queue_preview(job_system.get_craft_queue(selected_workstation_id))
 	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
 	hud.set_raid_state(_raid_state, _raid_warning_timer)
+	hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
 	_refresh_hud()
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -239,6 +276,9 @@ func _draw() -> void:
 	if current_action == &"StockpileZone":
 		fill_color = Color(0.95, 0.75, 0.28, 0.18)
 		border_color = Color(1.0, 0.82, 0.3)
+	elif current_action == &"FarmZone":
+		fill_color = Color(0.32, 0.82, 0.36, 0.18)
+		border_color = Color(0.42, 0.93, 0.46, 1.0)
 	draw_rect(rect, fill_color, true)
 	draw_rect(rect, border_color, false, 2.0)
 
@@ -253,11 +293,14 @@ func _spawn_initial_colonists() -> void:
 	for pos in positions:
 		var c := COLONIST_SCENE.instantiate()
 		c.name = "Colonist%d" % [colonists.size() + 1]
-		c.global_position = pos
+		c.global_position = _snap_to_tile(pos)
+		if c.has_method("set_tile_size"):
+			c.set_tile_size(TILE_SIZE)
 		c.status_changed.connect(_on_colonist_status_changed)
 		c.resource_harvested.connect(_on_resource_harvested)
 		c.resource_delivered.connect(_on_resource_delivered)
 		c.craft_completed.connect(_on_craft_completed)
+		c.research_progressed.connect(_on_research_progressed)
 		c.haul_job_released.connect(_on_haul_job_released)
 		c.ate_food.connect(_on_colonist_ate_food)
 		c.died.connect(_on_colonist_died)
@@ -272,6 +315,7 @@ func _spawn_initial_colonists() -> void:
 
 func _on_left_click(world_pos: Vector2) -> void:
 	hud.hide_context_action_button()
+	selected_farm_zone = null
 	var stockpile_item: Dictionary = _find_stockpile_item_at(world_pos)
 	if not stockpile_item.is_empty():
 		_set_selected([])
@@ -293,6 +337,12 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_clear_selected_object()
 		_select_stockpile_zone_near(world_pos)
 		hud.set_active_action(&"StockpileDesignate")
+		return
+	if current_action == &"FarmZone":
+		_clear_selected_object()
+		selected_farm_zone = _find_farm_zone_near(world_pos, 48.0)
+		_refresh_hud()
+		hud.set_active_action(&"FarmZone")
 		return
 	selected_bed_node = null
 	hud.set_bed_assignment_visible(false)
@@ -352,6 +402,22 @@ func _on_left_click(world_pos: Vector2) -> void:
 	else:
 		selected_stockpile_zone = null
 
+	var clicked_farm: Node = _find_farm_zone_near(world_pos, 40.0)
+	if clicked_farm != null:
+		selected_designation_target = null
+		hud.set_designation_panel_visible(false)
+		_set_selected([])
+		selected_farm_zone = clicked_farm
+		_configure_farm_zone_catalog(selected_farm_zone)
+		_selected_object_kind = &"FarmZone"
+		_selected_object_zone = clicked_farm
+		_selected_object_resource = &""
+		_refresh_hud()
+		hud.set_active_action(&"FarmZoneSelected")
+		return
+	else:
+		selected_farm_zone = null
+
 	if pending_install_item != &"":
 		if _try_install_pending_item(world_pos):
 			_clear_pending_placement()
@@ -397,7 +463,14 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 			_select_stockpile_zone_near(rect.get_center())
 		queue_redraw()
 		return
+	if current_action == &"FarmZone":
+		if build_system.place_farm_zone(rect):
+			selected_farm_zone = _find_farm_zone_near(rect.get_center(), 96.0)
+			_configure_farm_zone_catalog(selected_farm_zone)
+		queue_redraw()
+		return
 	selected_stockpile_zone = null
+	selected_farm_zone = null
 	selected_bed_node = null
 	var picked: Array = []
 	for colonist in colonists:
@@ -426,8 +499,9 @@ func _refresh_hud() -> void:
 	hud.set_resource_stock(resource_stock)
 	var focus: Node = selected_colonists[0] if not selected_colonists.is_empty() else null
 	var stockpile_focus: Node = selected_stockpile_zone if selected_stockpile_zone != null and is_instance_valid(selected_stockpile_zone) else null
+	var farm_focus: Node = selected_farm_zone if selected_farm_zone != null and is_instance_valid(selected_farm_zone) else null
 	var object_focus: bool = _selected_object_kind != &"" and _selected_object_zone != null and is_instance_valid(_selected_object_zone)
-	hud.set_selected_status_visible(focus != null or stockpile_focus != null or object_focus)
+	hud.set_selected_status_visible(focus != null or stockpile_focus != null or farm_focus != null or object_focus)
 	hud.set_needs_preview(focus)
 	hud.set_priority_preview(focus)
 	hud.set_current_job_preview(focus)
@@ -435,6 +509,27 @@ func _refresh_hud() -> void:
 	hud.set_equipment_preview(focus)
 	if focus != null:
 		hud.set_stockpile_inventory_preview(null)
+	elif farm_focus != null:
+		var crop_name: String = "미선택"
+		var crop_options: Array = []
+		var selected_crop: StringName = &""
+		if farm_focus.has_method("get_crop_display_name"):
+			crop_name = String(farm_focus.get_crop_display_name())
+		if farm_focus.has_method("get_crop_options"):
+			crop_options = farm_focus.get_crop_options()
+		if farm_focus.has_method("get_crop_type"):
+			selected_crop = StringName(farm_focus.get_crop_type())
+		hud.set_selected_object_preview(
+			"Selected: Farm Zone",
+			"Type: Farm Zone\nCrop: %s\nAction: 성숙 시 자동 수확" % crop_name,
+			[{
+				"type": &"crop_selector",
+				"options": crop_options,
+				"selected_id": selected_crop,
+				"apply_action": &"SetFarmCrop",
+				"apply_label": "작물 적용"
+			}]
+		)
 	elif object_focus:
 		var amount: int = 0
 		if _selected_object_zone.has_method("get_stored_amount"):
@@ -489,6 +584,8 @@ func _on_action_changed(action: StringName) -> void:
 		hud.set_designation_panel_visible(false)
 	if action != &"StockpileZone":
 		selected_stockpile_zone = null
+	if action != &"FarmZone":
+		selected_farm_zone = null
 
 func _on_building_selected(building_id: StringName) -> void:
 	pending_building_id = building_id
@@ -598,6 +695,41 @@ func _on_craft_completed(products: Dictionary, world_pos: Vector2) -> void:
 			continue
 		_spawn_resource_drop(StringName(k), amount, world_pos)
 	job_system.notify_craft_job_finished()
+
+func _on_research_progressed(project_id: StringName, points: float) -> void:
+	if project_id == &"" or points <= 0.0:
+		return
+	if project_id != _active_research_id:
+		return
+	_active_research_points += points
+	var required: float = _active_research_required_points()
+	if required <= 0.0:
+		return
+	if _active_research_points < required:
+		return
+	_research_completed[project_id] = true
+	_apply_research_bonus(project_id)
+	_active_research_points = 0.0
+	_active_research_id = &""
+	_research_running = false
+	_refresh_building_catalog()
+	hud.set_research_catalog(_get_research_catalog(), _active_research_id)
+
+func _on_research_project_changed(project_id: StringName) -> void:
+	if project_id == &"":
+		return
+	if project_id == _active_research_id:
+		return
+	_active_research_id = project_id
+	_active_research_points = 0.0
+	_research_running = false
+
+func _on_research_start_requested() -> void:
+	if _active_research_id == &"":
+		return
+	if bool(_research_completed.get(_active_research_id, false)):
+		return
+	_research_running = true
 
 func _on_craft_recipe_queued(recipe_id: StringName, workstation_id: StringName) -> void:
 	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
@@ -1058,7 +1190,9 @@ func _spawn_raiders(count: int) -> void:
 	var center: Vector2 = WORLD_SIZE * 0.5
 	for _i in range(count):
 		var raider: Node2D = RAIDER_SCENE.instantiate()
-		raider.global_position = _random_edge_spawn(140.0)
+		raider.global_position = _snap_to_tile(_random_edge_spawn(140.0))
+		if raider.has_method("set_tile_size"):
+			raider.set_tile_size(TILE_SIZE)
 		if raider.has_method("look_at"):
 			raider.look_at(center)
 		if raider.has_signal("died"):
@@ -1146,6 +1280,7 @@ func _apply_passive_item_bonuses() -> void:
 		elif weapon_id == &"Weapon":
 			melee_attack += 4.0
 			armor_pen += 1.0
+		accuracy_bonus += _combat_accuracy_bonus_from_research
 		if _outfit_mode == &"Combat" and has_any_apparel:
 			defense += 2.5
 		if colonist.has_method("set_combat_profile"):
@@ -1225,6 +1360,7 @@ func _clear_pending_placement() -> void:
 	pending_install_drop_id = 0
 	selected_designation_target = null
 	selected_stockpile_zone = null
+	selected_farm_zone = null
 	selected_bed_node = null
 	_clear_selected_object()
 	hud.set_selected_building(&"")
@@ -1271,6 +1407,32 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		hud.set_resource_stock(resource_stock)
 		hud.set_active_action(&"InstallBed")
 		hud.set_selected_status_visible(false)
+	elif String(action_id).begins_with("SetFarmCrop:"):
+		var target_zone: Node = null
+		if selected_farm_zone != null and is_instance_valid(selected_farm_zone):
+			target_zone = selected_farm_zone
+		elif _selected_object_kind == &"FarmZone" and _selected_object_zone != null and is_instance_valid(_selected_object_zone):
+			target_zone = _selected_object_zone
+		if target_zone == null:
+			return
+		var prefix: String = "SetFarmCrop:"
+		var raw: String = String(action_id)
+		var crop_raw: String = raw.substr(prefix.length())
+		var crop_id: StringName = StringName(crop_raw)
+		if crop_id == &"":
+			if target_zone.has_method("get_crop_options"):
+				var options: Array = target_zone.get_crop_options()
+				if not options.is_empty():
+					crop_id = StringName(options[0].get("id", &""))
+			if crop_id == &"":
+				return
+		_configure_farm_zone_catalog(target_zone)
+		if target_zone.has_method("set_crop_type"):
+			target_zone.set_crop_type(crop_id)
+		selected_farm_zone = target_zone
+		_selected_object_kind = &"FarmZone"
+		_selected_object_zone = target_zone
+		_refresh_hud()
 
 func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	var world_pos: Vector2 = world_root.get_global_mouse_position()
@@ -1293,16 +1455,17 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	_on_action_changed(&"Interact")
 
 func _issue_selected_move_command(target_pos: Vector2) -> void:
+	var snapped_target: Vector2 = _snap_to_tile(target_pos)
 	for colonist in selected_colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
-		job_system.issue_immediate_move(colonist, target_pos)
+		job_system.issue_immediate_move(colonist, snapped_target)
 
 func _spawn_resource_drop(resource_type: StringName, amount: int, world_pos: Vector2) -> Node:
 	if amount <= 0:
 		return null
 	var drop := RESOURCE_DROP_SCENE.instantiate()
-	drop.global_position = world_pos + Vector2(randf_range(-10.0, 10.0), randf_range(-8.0, 8.0))
+	drop.global_position = _snap_to_tile(world_pos + Vector2(randf_range(-10.0, 10.0), randf_range(-8.0, 8.0)))
 	world_root.add_child(drop)
 	if drop.has_method("setup_drop"):
 		drop.setup_drop(resource_type, amount)
@@ -1331,6 +1494,75 @@ func _filter_recipes_for_workstation(workstation_id: StringName) -> Array:
 	out.sort_custom(func(a, b): return String(a.id) < String(b.id))
 	return out
 
+func _refresh_building_catalog() -> void:
+	var unlocked_defs: Array = []
+	for def in _building_defs_all:
+		if def == null:
+			continue
+		if _is_building_unlocked(def):
+			unlocked_defs.append(def)
+	build_system.configure(world_root, unlocked_defs)
+	hud.set_building_catalog(unlocked_defs)
+	if pending_building_id != &"":
+		var still_exists: bool = false
+		for def in unlocked_defs:
+			if def.id == pending_building_id:
+				still_exists = true
+				break
+		if not still_exists:
+			pending_building_id = &""
+
+func _is_building_unlocked(def: Resource) -> bool:
+	if def == null:
+		return false
+	var required: StringName = StringName(def.required_research)
+	if required == &"":
+		return true
+	return bool(_research_completed.get(required, false))
+
+func _get_research_catalog() -> Array:
+	var defs: Array = []
+	var keys: Array = research_lookup.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	for key_any in keys:
+		var key: StringName = StringName(key_any)
+		defs.append(research_lookup[key])
+	return defs
+
+func _active_research_required_points() -> float:
+	if _active_research_id == &"":
+		return 0.0
+	if not research_lookup.has(_active_research_id):
+		return 0.0
+	return float(research_lookup[_active_research_id].required_points)
+
+func _apply_research_bonus(research_id: StringName) -> void:
+	if not research_lookup.has(research_id):
+		return
+	var def: Resource = research_lookup[research_id]
+	var bonus_type: StringName = StringName(def.bonus_type)
+	var bonus_value: float = float(def.bonus_value)
+	match bonus_type:
+		&"FarmGrowthMultiplier":
+			_farm_growth_multiplier = clampf(bonus_value, 0.3, 1.0)
+		&"CombatAccuracy":
+			_combat_accuracy_bonus_from_research = maxf(_combat_accuracy_bonus_from_research, bonus_value)
+		_:
+			pass
+
+func _find_research_bench_pos() -> Vector2:
+	var pos: Vector2 = _find_workstation_pos(&"ResearchBench")
+	if pos != Vector2.INF:
+		return pos
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not node.has_meta("building_id"):
+			continue
+		if StringName(node.get_meta("building_id")) == &"ResearchBench":
+			return node.global_position
+	return Vector2.INF
+
 func _select_stockpile_zone_near(world_pos: Vector2) -> void:
 	selected_stockpile_zone = _find_stockpile_zone_near(world_pos, 40.0)
 	_refresh_stockpile_filter_ui()
@@ -1342,6 +1574,74 @@ func _find_stockpile_zone_near(world_pos: Vector2, radius: float) -> Node:
 		if zone.global_position.distance_to(world_pos) <= radius:
 			return zone
 	return null
+
+func _find_farm_zone_near(world_pos: Vector2, radius: float) -> Node:
+	for zone in get_tree().get_nodes_in_group("farm_zones"):
+		if zone == null or not is_instance_valid(zone):
+			continue
+		if zone.has_method("contains_point") and bool(zone.contains_point(world_pos)):
+			return zone
+		if zone.global_position.distance_to(world_pos) <= radius:
+			return zone
+	return null
+
+func _update_farm_zones(delta: float) -> void:
+	if _game_paused:
+		return
+	for zone in get_tree().get_nodes_in_group("farm_zones"):
+		if zone == null or not is_instance_valid(zone):
+			continue
+		_configure_farm_zone_catalog(zone)
+		if zone.has_method("tick_growth"):
+			zone.tick_growth(delta)
+		if zone.has_method("request_jobs"):
+			zone.request_jobs(job_system)
+
+func _configure_farm_zone_catalog(zone: Node) -> void:
+	if zone == null or not is_instance_valid(zone):
+		return
+	if zone.has_method("set_crop_catalog"):
+		zone.set_crop_catalog(crop_lookup)
+	if zone.has_method("set_growth_time_multiplier"):
+		zone.set_growth_time_multiplier(_farm_growth_multiplier)
+
+func _update_defense_traps(delta: float) -> void:
+	if _game_paused:
+		return
+	var raiders: Array = _get_alive_raiders()
+	for trap in get_tree().get_nodes_in_group("trap_structures"):
+		if trap == null or not is_instance_valid(trap):
+			continue
+		var trap_damage: int = int(trap.get_meta("trap_damage")) if trap.has_meta("trap_damage") else 0
+		if trap_damage <= 0:
+			continue
+		var cooldown_left: float = float(trap.get_meta("trap_cooldown_left")) if trap.has_meta("trap_cooldown_left") else 0.0
+		if cooldown_left > 0.0:
+			cooldown_left = maxf(0.0, cooldown_left - delta)
+			trap.set_meta("trap_cooldown_left", cooldown_left)
+		if cooldown_left > 0.0:
+			continue
+		var target: Node = null
+		var best_dist: float = 36.0
+		for raider in raiders:
+			if raider == null or not is_instance_valid(raider):
+				continue
+			var dist: float = trap.global_position.distance_to(raider.global_position)
+			if dist <= best_dist:
+				best_dist = dist
+				target = raider
+		if target == null:
+			continue
+		if target.has_method("apply_combat_damage"):
+			target.apply_combat_damage(trap_damage)
+		var cooldown: float = float(trap.get_meta("trap_cooldown_sec")) if trap.has_meta("trap_cooldown_sec") else 3.0
+		trap.set_meta("trap_cooldown_left", maxf(0.3, cooldown))
+		var charges: int = int(trap.get_meta("trap_charges")) if trap.has_meta("trap_charges") else 0
+		if charges > 0:
+			charges -= 1
+			trap.set_meta("trap_charges", charges)
+			if charges <= 0:
+				trap.queue_free()
 
 func _refresh_stockpile_filter_ui() -> void:
 	if selected_stockpile_zone == null or not is_instance_valid(selected_stockpile_zone):
@@ -1479,7 +1779,7 @@ func _clear_group_nodes(group_name: StringName) -> void:
 func _spawn_random_gatherables(resource_type: StringName, display_name: String, tint: Color, count: int, min_amount: int, max_amount: int, gather_speed: int) -> void:
 	for _i in range(count):
 		var node: Node2D = GATHERABLE_SCENE.instantiate()
-		node.global_position = _random_world_position(240.0)
+		node.global_position = _snap_to_tile(_random_world_position(240.0))
 		node.set("resource_type", resource_type)
 		node.set("display_name", display_name)
 		node.set("max_amount", randi_range(min_amount, max_amount))
@@ -1490,7 +1790,7 @@ func _spawn_random_gatherables(resource_type: StringName, display_name: String, 
 func _spawn_random_huntables(display_name: String, tint: Color, count: int, min_hp: int, max_hp: int, min_meat: int, max_meat: int) -> void:
 	for _i in range(count):
 		var node: Node2D = HUNTABLE_SCENE.instantiate()
-		node.global_position = _random_world_position(260.0)
+		node.global_position = _snap_to_tile(_random_world_position(260.0))
 		node.set("display_name", display_name)
 		node.set("max_health", randi_range(min_hp, max_hp))
 		node.set("meat_type", &"FoodRaw")
@@ -1559,6 +1859,42 @@ func _load_workstation_defs() -> Array:
 	defs.sort_custom(func(a, b): return String(a.id) < String(b.id))
 	return defs
 
+func _load_crop_defs() -> Array:
+	var defs: Array = []
+	var dir := DirAccess.open(CROP_DEF_DIR)
+	if dir == null:
+		return defs
+	dir.list_dir_begin()
+	var file_name: String = dir.get_next()
+	while file_name != "":
+		if not dir.current_is_dir() and file_name.ends_with(".tres"):
+			var path := "%s/%s" % [CROP_DEF_DIR, file_name]
+			var def: Resource = load(path)
+			if def != null:
+				defs.append(def)
+		file_name = dir.get_next()
+	dir.list_dir_end()
+	defs.sort_custom(func(a, b): return String(a.id) < String(b.id))
+	return defs
+
+func _load_research_defs() -> Array:
+	var defs: Array = []
+	var dir := DirAccess.open(RESEARCH_DEF_DIR)
+	if dir == null:
+		return defs
+	dir.list_dir_begin()
+	var file_name: String = dir.get_next()
+	while file_name != "":
+		if not dir.current_is_dir() and file_name.ends_with(".tres"):
+			var path := "%s/%s" % [RESEARCH_DEF_DIR, file_name]
+			var def: Resource = load(path)
+			if def != null:
+				defs.append(def)
+		file_name = dir.get_next()
+	dir.list_dir_end()
+	defs.sort_custom(func(a, b): return String(a.id) < String(b.id))
+	return defs
+
 func _find_workstation_pos(building_id: StringName) -> Vector2:
 	for node in get_tree().get_nodes_in_group("structures"):
 		if node != null and is_instance_valid(node) and node.has_meta("building_id"):
@@ -1599,3 +1935,52 @@ func _get_workstation_display_name(workstation_id: StringName) -> String:
 		var ws: Resource = workstation_lookup[workstation_id]
 		return ws.display_name
 	return String(workstation_id)
+
+func _world_to_tile(world_pos: Vector2) -> Vector2i:
+	return Vector2i(
+		int(round(world_pos.x / TILE_SIZE)),
+		int(round(world_pos.y / TILE_SIZE))
+	)
+
+func _tile_to_world(tile: Vector2i) -> Vector2:
+	return Vector2(float(tile.x) * TILE_SIZE, float(tile.y) * TILE_SIZE)
+
+func _snap_to_tile(world_pos: Vector2) -> Vector2:
+	return _tile_to_world(_world_to_tile(world_pos))
+
+func _is_colonist_in_combat(colonist: Node) -> bool:
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	if colonist.has_method("is_dead") and bool(colonist.is_dead()):
+		return false
+	if colonist.current_job.is_empty():
+		return false
+	var job_type: StringName = StringName(colonist.current_job.get("type", &""))
+	return job_type == &"CombatMelee" or job_type == &"CombatRanged"
+
+func _find_free_combat_tile(preferred: Vector2i, max_radius: int = 2) -> Vector2i:
+	if not _combat_tile_claims.has(preferred):
+		return preferred
+	for r in range(1, max_radius + 1):
+		for y in range(-r, r + 1):
+			for x in range(-r, r + 1):
+				var candidate := Vector2i(preferred.x + x, preferred.y + y)
+				if _combat_tile_claims.has(candidate):
+					continue
+				return candidate
+	return preferred
+
+func _apply_combat_tile_occupancy() -> void:
+	_combat_tile_claims.clear()
+	var combat_units: Array[Node2D] = []
+	for c in colonists:
+		if _is_colonist_in_combat(c):
+			combat_units.append(c)
+	for r in _get_alive_raiders():
+		if r != null and is_instance_valid(r):
+			combat_units.append(r)
+	for unit in combat_units:
+		var preferred_tile: Vector2i = _world_to_tile(unit.global_position)
+		var assigned_tile: Vector2i = _find_free_combat_tile(preferred_tile, 2)
+		_combat_tile_claims[assigned_tile] = unit.get_instance_id()
+		unit.global_position = _tile_to_world(assigned_tile)

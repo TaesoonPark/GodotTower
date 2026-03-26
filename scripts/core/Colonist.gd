@@ -6,6 +6,7 @@ signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
 signal resource_delivered(resource_type: StringName, amount: int, zone: Node)
 signal craft_completed(products: Dictionary, world_pos: Vector2)
+signal research_progressed(project_id: StringName, points: float)
 signal haul_job_released(drop_id: int)
 signal ate_food()
 signal died(colonist: Node)
@@ -51,6 +52,7 @@ var work_enabled: Dictionary = {
 	&"Gather": true,
 	&"Hunt": true
 }
+var tile_size: float = 40.0
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
 @onready var sprite: Sprite2D = $Sprite2D
@@ -91,9 +93,49 @@ func _process_movement(delta: float) -> void:
 	var next_pos: Vector2 = nav.get_next_path_position()
 	var dir: Vector2 = global_position.direction_to(next_pos)
 	var speed_mul: float = 1.5 if food_speed_buff_remaining > 0.0 else 1.0
-	global_position += dir * stats.move_speed * speed_mul * delta
-	if global_position.distance_to(next_pos) < 4.0:
+	var proposed: Vector2 = global_position + dir * stats.move_speed * speed_mul * delta
+	if _is_blocked_position(proposed):
+		nav.target_position = global_position
+		return
+	global_position = proposed
+	if global_position.distance_to(next_pos) < 4.0 and not _is_blocked_position(next_pos):
 		global_position = next_pos
+
+func set_tile_size(value: float) -> void:
+	tile_size = maxf(4.0, value)
+
+func _snap_to_tile(world_pos: Vector2) -> Vector2:
+	return Vector2(
+		round(world_pos.x / tile_size) * tile_size,
+		round(world_pos.y / tile_size) * tile_size
+	)
+
+func _is_blocked_position(world_pos: Vector2) -> bool:
+	var tile: Vector2 = _snap_to_tile(world_pos)
+	for node in get_tree().get_nodes_in_group("blocking_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not bool(node.get_meta("blocks_movement")):
+			continue
+		var footprint: Vector2 = node.get_meta("footprint_size") if node.has_meta("footprint_size") else Vector2(tile_size, tile_size)
+		var dx: float = absf(tile.x - node.global_position.x)
+		var dy: float = absf(tile.y - node.global_position.y)
+		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
+			return true
+	return false
+
+func _nearby_cover_bonus() -> float:
+	var best_bonus: float = 0.0
+	for node in get_tree().get_nodes_in_group("cover_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var dist: float = global_position.distance_to(node.global_position)
+		if dist > maxf(48.0, tile_size * 1.2):
+			continue
+		var cover: float = float(node.get_meta("cover_bonus")) if node.has_meta("cover_bonus") else 0.0
+		if cover > best_bonus:
+			best_bonus = cover
+	return best_bonus
 
 func tick_needs(delta: float) -> void:
 	hunger = clampf(hunger - stats.hunger_decay_per_sec * delta, 0.0, 100.0)
@@ -111,24 +153,48 @@ func assign_job(job: Dictionary) -> void:
 	match job_type:
 		&"MoveTo":
 			var target: Vector2 = job.get("target", global_position)
+			target = _snap_to_tile(target)
+			current_job["target"] = target
 			nav.target_position = target
 		&"BuildSite":
 			var build_target: Vector2 = job.get("target", global_position)
+			build_target = _snap_to_tile(build_target)
+			current_job["target"] = build_target
 			nav.target_position = build_target
 		&"Gather":
 			var gather_target: Vector2 = job.get("target", global_position)
+			gather_target = _snap_to_tile(gather_target)
+			current_job["target"] = gather_target
 			nav.target_position = gather_target
 		&"Hunt":
 			var hunt_target: Vector2 = job.get("target", global_position)
+			hunt_target = _snap_to_tile(hunt_target)
+			current_job["target"] = hunt_target
 			nav.target_position = hunt_target
 		&"HaulResource":
 			var drop_target: Vector2 = job.get("target", global_position)
+			drop_target = _snap_to_tile(drop_target)
+			current_job["target"] = drop_target
 			nav.target_position = drop_target
 		&"CraftRecipe":
 			var craft_target: Vector2 = job.get("target", global_position)
+			craft_target = _snap_to_tile(craft_target)
+			current_job["target"] = craft_target
 			nav.target_position = craft_target
+		&"ResearchTask":
+			var research_target: Vector2 = job.get("target", global_position)
+			research_target = _snap_to_tile(research_target)
+			current_job["target"] = research_target
+			nav.target_position = research_target
+		&"PlantCrop", &"HarvestCrop":
+			var farm_target: Vector2 = job.get("target", global_position)
+			farm_target = _snap_to_tile(farm_target)
+			current_job["target"] = farm_target
+			nav.target_position = farm_target
 		&"CombatMelee", &"CombatRanged":
 			var combat_target: Vector2 = job.get("target", global_position)
+			combat_target = _snap_to_tile(combat_target)
+			current_job["target"] = combat_target
 			nav.target_position = combat_target
 			current_job["next_attack_ms"] = 0
 		&"EatStub":
@@ -173,6 +239,12 @@ func cancel_current_job() -> void:
 			if drop != null and is_instance_valid(drop) and drop.has_method("set_job_queued"):
 				drop.set_job_queued(false)
 			haul_job_released.emit(drop_id)
+	elif job_type == &"PlantCrop" or job_type == &"HarvestCrop":
+		var zone_id: int = int(current_job.get("zone_id", 0))
+		if zone_id != 0:
+			var zone_obj: Object = instance_from_id(zone_id)
+			if zone_obj != null and is_instance_valid(zone_obj) and zone_obj.has_method("clear_plot_job"):
+				zone_obj.clear_plot_job(current_job.get("tile", Vector2i.ZERO))
 	current_job.clear()
 	nav.target_position = global_position
 	emit_status()
@@ -283,6 +355,22 @@ func update_job_completion(_delta: float = 0.0) -> void:
 			_set_work_progress(0.0, true)
 			emit_status()
 		return
+	elif job_type == &"ResearchTask" and _is_job_target_reached(18.0):
+		if not bool(current_job.get("work_started", false)):
+			current_job["work_started"] = true
+			current_job["work_elapsed"] = 0.0
+			current_job["work_duration"] = maxf(0.5, float(current_job.get("work_duration", 6.0)))
+			_set_work_progress(0.0, true)
+			emit_status()
+		return
+	elif (job_type == &"PlantCrop" or job_type == &"HarvestCrop") and _is_job_target_reached(12.0):
+		if not bool(current_job.get("work_started", false)):
+			current_job["work_started"] = true
+			current_job["work_elapsed"] = 0.0
+			current_job["work_duration"] = maxf(0.1, float(current_job.get("work_duration", 2.0)))
+			_set_work_progress(0.0, true)
+			emit_status()
+		return
 	elif job_type == &"CombatMelee" or job_type == &"CombatRanged":
 		_process_combat_job(job_type)
 
@@ -340,8 +428,12 @@ func can_do_job(job_type: StringName) -> bool:
 			return bool(work_enabled.get(&"Haul", true))
 		&"CraftRecipe":
 			return bool(work_enabled.get(&"Craft", true))
+		&"ResearchTask":
+			return bool(work_enabled.get(&"Craft", true))
 		&"CombatMelee", &"CombatRanged":
 			return bool(work_enabled.get(&"Combat", true))
+		&"PlantCrop", &"HarvestCrop":
+			return bool(work_enabled.get(&"Gather", true))
 		_:
 			return true
 
@@ -395,6 +487,12 @@ func _job_display_name(job_type: StringName) -> String:
 			return "운반"
 		&"CraftRecipe":
 			return "제작"
+		&"ResearchTask":
+			return "연구"
+		&"PlantCrop":
+			return "파종"
+		&"HarvestCrop":
+			return "수확"
 		&"EatStub":
 			return "식사"
 		&"IdleRecover":
@@ -411,7 +509,7 @@ func _process_active_work(delta: float) -> void:
 		_set_work_progress(0.0, false)
 		return
 	var job_type: StringName = current_job.get("type", &"")
-	if job_type != &"Gather" and job_type != &"BuildSite" and job_type != &"CraftRecipe" and job_type != &"EatStub":
+	if job_type != &"Gather" and job_type != &"BuildSite" and job_type != &"CraftRecipe" and job_type != &"ResearchTask" and job_type != &"EatStub" and job_type != &"PlantCrop" and job_type != &"HarvestCrop":
 		_set_work_progress(0.0, false)
 		return
 	if not bool(current_job.get("work_started", false)):
@@ -428,8 +526,14 @@ func _process_active_work(delta: float) -> void:
 			_complete_gather_job()
 		elif job_type == &"BuildSite":
 			_complete_build_job()
+		elif job_type == &"PlantCrop":
+			_complete_plant_crop_job()
+		elif job_type == &"HarvestCrop":
+			_complete_harvest_crop_job()
 		elif job_type == &"EatStub":
 			_complete_eat_job()
+		elif job_type == &"ResearchTask":
+			_complete_research_job()
 		else:
 			_complete_craft_job()
 
@@ -469,6 +573,33 @@ func _complete_eat_job() -> void:
 	mood = clampf(mood + 15.0, 0.0, 100.0)
 	food_speed_buff_remaining = maxf(food_speed_buff_remaining, 300.0)
 	ate_food.emit()
+	_finish_current_job()
+
+func _complete_research_job() -> void:
+	var project_id: StringName = StringName(current_job.get("project_id", &""))
+	var points: float = maxf(0.1, float(current_job.get("research_points", 1.0)))
+	if project_id != &"":
+		research_progressed.emit(project_id, points)
+	_finish_current_job()
+
+func _complete_plant_crop_job() -> void:
+	var zone_id: int = int(current_job.get("zone_id", 0))
+	if zone_id != 0:
+		var zone_obj: Object = instance_from_id(zone_id)
+		if zone_obj != null and is_instance_valid(zone_obj) and zone_obj.has_method("plant_crop"):
+			zone_obj.plant_crop(current_job.get("tile", Vector2i.ZERO), StringName(current_job.get("crop_type", &"Potato")))
+	_finish_current_job()
+
+func _complete_harvest_crop_job() -> void:
+	var zone_id: int = int(current_job.get("zone_id", 0))
+	if zone_id != 0:
+		var zone_obj: Object = instance_from_id(zone_id)
+		if zone_obj != null and is_instance_valid(zone_obj) and zone_obj.has_method("harvest_crop"):
+			var result: Dictionary = zone_obj.harvest_crop(current_job.get("tile", Vector2i.ZERO))
+			var amount: int = int(result.get("amount", 0))
+			var resource_type: StringName = StringName(result.get("resource_type", &""))
+			if amount > 0 and resource_type != &"":
+				resource_harvested.emit(resource_type, amount, global_position)
 	_finish_current_job()
 
 func _set_work_progress(ratio: float, visible_flag: bool) -> void:
@@ -536,7 +667,7 @@ func get_combat_profile() -> Dictionary:
 
 func get_combat_defender_profile() -> Dictionary:
 	return {
-		"defense": float(combat_profile.get("defense", 0.0))
+		"defense": float(combat_profile.get("defense", 0.0)) + _nearby_cover_bonus()
 	}
 
 func is_dead() -> bool:

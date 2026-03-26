@@ -9,7 +9,7 @@ display_name = "Make Bed"
 workstation_id = &"SimpleBenchStation"
 work_required = 75.0
 ingredients = {
-&"Wood": 20
+&"Wood": 1
 }
 products = {
 &"Bed": 1

@@ -9,8 +9,8 @@ display_name = "Craft Bow"
 workstation_id = &"SimpleBenchStation"
 work_required = 5.0
 ingredients = {
-&"Wood": 8,
-&"Steel": 2
+&"Wood": 1,
+&"Steel": 1
 }
 products = {
 &"Bow": 1

@@ -34,6 +34,7 @@ class_name HUDController
 @onready var mode_cycle_button: Button = $LeftPanel/VBox/CommandGrid/ModeCycleButton
 @onready var drag_gather_button: Button = $LeftPanel/VBox/CommandGrid/DragGatherButton
 @onready var drag_stockpile_button: Button = $LeftPanel/VBox/CommandGrid/DragStockpileButton
+@onready var drag_farm_button: Button = $LeftPanel/VBox/CommandGrid/DragFarmButton
 @onready var clear_state_button: Button = $LeftPanel/VBox/CommandGrid/ClearStateButton
 @onready var command_hint_label: Label = $LeftPanel/VBox/CommandHintLabel
 @onready var designation_panel: PanelContainer = $LeftPanel/VBox/DesignationPanel
@@ -67,6 +68,10 @@ class_name HUDController
 @onready var workstation_row: HBoxContainer = $LeftPanel/VBox/WorkstationRow
 @onready var craft_controls: HBoxContainer = $LeftPanel/VBox/CraftControls
 @onready var craft_queue_buttons: HBoxContainer = $LeftPanel/VBox/CraftQueueButtons
+@onready var research_panel: PanelContainer = $LeftPanel/VBox/ResearchPanel
+@onready var research_option: OptionButton = $LeftPanel/VBox/ResearchPanel/VBox/ResearchOption
+@onready var research_start_button: Button = $LeftPanel/VBox/ResearchPanel/VBox/ResearchStartButton
+@onready var research_progress_label: Label = $LeftPanel/VBox/ResearchPanel/VBox/ResearchProgressLabel
 @onready var stockpile_filter_mode_option: OptionButton = $LeftPanel/VBox/StockpileFilterMode
 @onready var stock_priority_spin: SpinBox = $LeftPanel/VBox/StockPriorityRow/StockPrioritySpin
 @onready var stockpile_filter_title: Label = $LeftPanel/VBox/StockpileFilterTitle
@@ -100,6 +105,7 @@ signal designation_toggle_requested()
 signal mouse_mode_cycle_requested()
 signal drag_gather_mode_requested()
 signal drag_stockpile_mode_requested()
+signal drag_farm_mode_requested()
 signal clear_state_requested()
 signal bed_assignee_changed(colonist_id: int)
 signal bed_auto_assign_requested()
@@ -107,6 +113,8 @@ signal context_action_requested(action_id: StringName)
 signal selected_object_action_requested(action_id: StringName)
 signal outfit_mode_changed(mode: StringName)
 signal raid_test_warning_requested()
+signal research_project_changed(project_id: StringName)
+signal research_start_requested()
 
 var _active_action: StringName = &"Interact"
 var _selected_building_id: StringName = &""
@@ -123,6 +131,11 @@ var _context_action_id: StringName = &""
 var _selected_object_buttons: Array[Button] = []
 var _outfit_mode: StringName = &"Work"
 var _recipe_name_lookup: Dictionary = {}
+var _last_craft_queue_items: Array[String] = []
+var _last_selected_object_title: String = ""
+var _last_selected_object_detail: String = ""
+var _last_selected_object_actions_sig: String = ""
+var _research_ids_by_index: Array[StringName] = []
 
 func _ready() -> void:
 	haul_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Haul", int(v)))
@@ -144,9 +157,12 @@ func _ready() -> void:
 	designation_toggle_button.pressed.connect(func(): designation_toggle_requested.emit())
 	drag_gather_button.pressed.connect(func(): drag_gather_mode_requested.emit())
 	drag_stockpile_button.pressed.connect(func(): drag_stockpile_mode_requested.emit())
+	drag_farm_button.pressed.connect(func(): drag_farm_mode_requested.emit())
 	mode_cycle_button.pressed.connect(_on_order_toggle_pressed)
 	clear_state_button.pressed.connect(_on_outfit_mode_pressed)
 	raid_test_button.pressed.connect(func(): raid_test_warning_requested.emit())
+	research_option.item_selected.connect(_on_research_selected)
+	research_start_button.pressed.connect(func(): research_start_requested.emit())
 	context_action_button.pressed.connect(_on_context_action_button_pressed)
 	bed_assign_option.item_selected.connect(_on_bed_assign_selected)
 	bed_assign_auto_button.pressed.connect(func(): bed_auto_assign_requested.emit())
@@ -170,6 +186,7 @@ func _ready() -> void:
 	_reorder_left_panel_sections()
 	_set_order_panel_visible(false)
 	set_raid_state(&"Idle", 0.0)
+	research_progress_label.text = "연구: 없음"
 	set_craft_panel_visible(false)
 	set_designation_panel_visible(false)
 	set_bed_assignment_visible(false)
@@ -179,6 +196,7 @@ func _reorder_command_buttons() -> void:
 	var ordered_buttons: Array[Node] = [
 		drag_gather_button,
 		drag_stockpile_button,
+		drag_farm_button,
 		mode_cycle_button,
 		clear_state_button
 	]
@@ -206,7 +224,8 @@ func _reorder_left_panel_sections() -> void:
 		workstation_row,
 		craft_controls,
 		craft_queue_buttons,
-		craft_queue_scroll
+		craft_queue_scroll,
+		research_panel
 	]
 	for node in ordered_nodes:
 		if node != null and node.get_parent() == left_vbox:
@@ -255,11 +274,14 @@ func set_active_action(action: StringName) -> void:
 func set_command_button_states(mode: StringName) -> void:
 	drag_gather_button.disabled = mode == &"DragGather"
 	drag_stockpile_button.disabled = mode == &"StockpileZone"
+	drag_farm_button.disabled = mode == &"FarmZone"
 	match mode:
 		&"DragGather":
 			command_hint_label.text = "드래그한 범위를 채집/사냥 대상으로 지정합니다."
 		&"StockpileZone":
 			command_hint_label.text = "드래그한 범위를 저장구역으로 만듭니다."
+		&"FarmZone":
+			command_hint_label.text = "드래그한 범위를 농경지로 지정합니다."
 		_:
 			command_hint_label.text = "상호작용 모드: 클릭 대상에 따라 선택/설정 UI를 엽니다."
 
@@ -430,7 +452,36 @@ func set_selected_object_preview(title: String, detail: String, actions: Array) 
 	selected_object_detail.visible = true
 	selected_object_actions.visible = true
 	selected_object_detail.text = detail
+	var actions_sig: String = _selected_object_actions_signature(actions)
+	if _last_selected_object_title == title and _last_selected_object_detail == detail and _last_selected_object_actions_sig == actions_sig:
+		return
+	_last_selected_object_title = title
+	_last_selected_object_detail = detail
+	_last_selected_object_actions_sig = actions_sig
 	_rebuild_selected_object_actions(actions)
+
+func _selected_object_actions_signature(actions: Array) -> String:
+	var parts: Array[String] = []
+	for entry_any in actions:
+		if not (entry_any is Dictionary):
+			parts.append("non-dict")
+			continue
+		var entry: Dictionary = entry_any
+		var line: String = "type=%s|id=%s|label=%s|selected=%s|apply=%s" % [
+			String(entry.get("type", &"button")),
+			String(entry.get("id", &"")),
+			String(entry.get("label", "")),
+			String(entry.get("selected_id", &"")),
+			String(entry.get("apply_action", &""))
+		]
+		var opts: Array = entry.get("options", [])
+		for opt_any in opts:
+			if not (opt_any is Dictionary):
+				continue
+			var opt: Dictionary = opt_any
+			line += "|opt:%s:%s" % [String(opt.get("id", &"")), String(opt.get("label", ""))]
+		parts.append(line)
+	return "||".join(parts)
 
 func _rebuild_selected_object_actions(actions: Array) -> void:
 	for child in selected_object_actions.get_children():
@@ -442,6 +493,46 @@ func _rebuild_selected_object_actions(actions: Array) -> void:
 	selected_object_actions.visible = true
 	for entry in actions:
 		if not (entry is Dictionary):
+			continue
+		var entry_type: StringName = StringName(entry.get("type", &"button"))
+		if entry_type == &"crop_selector":
+			var selector_row := HBoxContainer.new()
+			selector_row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var option := OptionButton.new()
+			option.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			var options: Array = entry.get("options", [])
+			for i in range(options.size()):
+				var opt: Dictionary = options[i]
+				var opt_id: StringName = StringName(opt.get("id", &""))
+				var opt_label: String = String(opt.get("label", String(opt_id)))
+				if opt_id == &"":
+					continue
+				option.add_item(opt_label)
+				option.set_item_metadata(option.item_count - 1, opt_id)
+			var selected_id: StringName = StringName(entry.get("selected_id", &""))
+			for i in range(option.item_count):
+				if StringName(option.get_item_metadata(i)) == selected_id:
+					option.select(i)
+					break
+			if option.item_count > 0 and option.selected < 0:
+				option.select(0)
+			var apply_text: String = String(entry.get("apply_label", "적용"))
+			var apply_action: StringName = StringName(entry.get("apply_action", &""))
+			var apply_button := Button.new()
+			apply_button.text = apply_text
+			apply_button.disabled = apply_action == &"" or option.item_count <= 0
+			apply_button.pressed.connect(func():
+				if apply_action == &"" or option.item_count <= 0:
+					return
+				var picked_idx: int = option.selected
+				if picked_idx < 0:
+					picked_idx = 0
+				var picked: StringName = StringName(option.get_item_metadata(picked_idx))
+				selected_object_action_requested.emit(StringName("%s:%s" % [String(apply_action), String(picked)]))
+			)
+			selector_row.add_child(option)
+			selector_row.add_child(apply_button)
+			selected_object_actions.add_child(selector_row)
 			continue
 		var action_id: StringName = StringName(entry.get("id", &""))
 		if action_id == &"":
@@ -607,6 +698,7 @@ func set_craft_panel_visible(visible: bool, workstation_name: String = "") -> vo
 	craft_queue_scroll.visible = visible
 	if not visible:
 		craft_queue_title.text = "Queue"
+		_last_craft_queue_items.clear()
 		_rebuild_queue_items([])
 		return
 	if workstation_name.is_empty():
@@ -640,6 +732,9 @@ func set_craft_queue_preview(order_list: Array) -> void:
 			items.append(recipe_name)
 		else:
 			items.append(String(order))
+	if items == _last_craft_queue_items:
+		return
+	_last_craft_queue_items = items.duplicate()
 	_rebuild_queue_items(items)
 
 func _rebuild_queue_items(items: Array[String]) -> void:
@@ -730,6 +825,43 @@ func set_selected_workstation(workstation_id: StringName) -> void:
 		if _workstation_ids_by_index[i] == workstation_id:
 			workstation_option.select(i)
 			return
+
+func set_research_catalog(research_defs: Array, selected_id: StringName = &"") -> void:
+	research_option.clear()
+	_research_ids_by_index.clear()
+	for def in research_defs:
+		if def == null:
+			continue
+		var idx: int = research_option.item_count
+		research_option.add_item(def.display_name)
+		research_option.set_item_tooltip(idx, "%s\n필요 포인트: %.0f" % [String(def.id), float(def.required_points)])
+		_research_ids_by_index.append(def.id)
+	var target_id: StringName = selected_id
+	if target_id == &"" and not _research_ids_by_index.is_empty():
+		target_id = _research_ids_by_index[0]
+	for i in range(_research_ids_by_index.size()):
+		if _research_ids_by_index[i] == target_id:
+			research_option.select(i)
+			break
+	if target_id != &"":
+		research_project_changed.emit(target_id)
+
+func set_research_state(active_id: StringName, points: float, required_points: float, completed_map: Dictionary = {}) -> void:
+	if active_id == &"":
+		research_progress_label.text = "연구: 없음"
+	else:
+		var done_text: String = "완료" if bool(completed_map.get(active_id, false)) else "진행중"
+		research_progress_label.text = "연구 %s [%s] %.0f / %.0f" % [String(active_id), done_text, points, required_points]
+	var selected_idx: int = research_option.get_selected()
+	var selected_id: StringName = &""
+	if selected_idx >= 0 and selected_idx < _research_ids_by_index.size():
+		selected_id = _research_ids_by_index[selected_idx]
+	research_start_button.disabled = selected_id == &"" or bool(completed_map.get(selected_id, false))
+
+func _on_research_selected(index: int) -> void:
+	if index < 0 or index >= _research_ids_by_index.size():
+		return
+	research_project_changed.emit(_research_ids_by_index[index])
 
 func set_stockpile_filter_state(selected: bool, mode: int, item_map: Dictionary, priority: int = 0, limit_map: Dictionary = {}) -> void:
 	_stock_signal_mute = true

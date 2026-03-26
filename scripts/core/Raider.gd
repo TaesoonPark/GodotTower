@@ -21,6 +21,7 @@ var health: float = 0.0
 var _target_colonist_id: int = 0
 var _next_attack_ms: int = 0
 var _weapon_mode: StringName = &"Melee"
+var tile_size: float = 40.0
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
 @onready var sprite: Sprite2D = $Sprite2D
@@ -38,8 +39,17 @@ func _physics_process(delta: float) -> void:
 	_process_movement(delta)
 	_ai_tick()
 
+func set_tile_size(value: float) -> void:
+	tile_size = maxf(4.0, value)
+
+func _snap_to_tile(world_pos: Vector2) -> Vector2:
+	return Vector2(
+		round(world_pos.x / tile_size) * tile_size,
+		round(world_pos.y / tile_size) * tile_size
+	)
+
 func get_combat_defender_profile() -> Dictionary:
-	return {"defense": defense}
+	return {"defense": defense + _nearby_cover_bonus()}
 
 func is_dead() -> bool:
 	return health <= 0.0
@@ -64,7 +74,7 @@ func _ai_tick() -> void:
 	var attack_range: float = ranged_range if _weapon_mode == &"Ranged" else melee_range
 	var dist: float = global_position.distance_to(target.global_position)
 	if dist > attack_range:
-		nav.target_position = target.global_position
+		nav.target_position = _snap_to_tile(target.global_position)
 		return
 	nav.target_position = global_position
 	var now_ms: int = Time.get_ticks_msec()
@@ -108,9 +118,40 @@ func _process_movement(delta: float) -> void:
 		return
 	var next_pos: Vector2 = nav.get_next_path_position()
 	var dir: Vector2 = global_position.direction_to(next_pos)
-	global_position += dir * move_speed * delta
-	if global_position.distance_to(next_pos) < 4.0:
+	var proposed: Vector2 = global_position + dir * move_speed * delta
+	if _is_blocked_position(proposed):
+		nav.target_position = global_position
+		return
+	global_position = proposed
+	if global_position.distance_to(next_pos) < 4.0 and not _is_blocked_position(next_pos):
 		global_position = next_pos
+
+func _is_blocked_position(world_pos: Vector2) -> bool:
+	var tile: Vector2 = _snap_to_tile(world_pos)
+	for node in get_tree().get_nodes_in_group("blocking_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not bool(node.get_meta("blocks_movement")):
+			continue
+		var footprint: Vector2 = node.get_meta("footprint_size") if node.has_meta("footprint_size") else Vector2(tile_size, tile_size)
+		var dx: float = absf(tile.x - node.global_position.x)
+		var dy: float = absf(tile.y - node.global_position.y)
+		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
+			return true
+	return false
+
+func _nearby_cover_bonus() -> float:
+	var best_bonus: float = 0.0
+	for node in get_tree().get_nodes_in_group("cover_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var dist: float = global_position.distance_to(node.global_position)
+		if dist > maxf(48.0, tile_size * 1.2):
+			continue
+		var cover: float = float(node.get_meta("cover_bonus")) if node.has_meta("cover_bonus") else 0.0
+		if cover > best_bonus:
+			best_bonus = cover
+	return best_bonus
 
 func _refresh_label() -> void:
 	if label == null:

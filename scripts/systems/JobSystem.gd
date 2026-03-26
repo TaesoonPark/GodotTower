@@ -72,6 +72,40 @@ func queue_hunt_job(huntable: Node, assigned_to: int = 0) -> void:
 	}
 	_jobs.append(job)
 
+func queue_farm_plant_job(farm_zone: Node, tile: Vector2i, crop_type: StringName, work_duration: float = 2.0, assigned_to: int = 0) -> void:
+	if farm_zone == null or not is_instance_valid(farm_zone):
+		return
+	var target: Vector2 = farm_zone.global_position
+	if farm_zone.has_method("get_plot_world"):
+		target = farm_zone.get_plot_world(tile)
+	_jobs.append({
+		"type": &"PlantCrop",
+		"target": target,
+		"zone_id": farm_zone.get_instance_id(),
+		"tile": tile,
+		"crop_type": crop_type,
+		"work_duration": maxf(0.1, work_duration),
+		"base_priority": 9,
+		"assigned_to": assigned_to
+	})
+
+func queue_farm_harvest_job(farm_zone: Node, tile: Vector2i, crop_type: StringName, work_duration: float = 2.0, assigned_to: int = 0) -> void:
+	if farm_zone == null or not is_instance_valid(farm_zone):
+		return
+	var target: Vector2 = farm_zone.global_position
+	if farm_zone.has_method("get_plot_world"):
+		target = farm_zone.get_plot_world(tile)
+	_jobs.append({
+		"type": &"HarvestCrop",
+		"target": target,
+		"zone_id": farm_zone.get_instance_id(),
+		"tile": tile,
+		"crop_type": crop_type,
+		"work_duration": maxf(0.1, work_duration),
+		"base_priority": 11,
+		"assigned_to": assigned_to
+	})
+
 func queue_combat_job(colonist: Node, enemy: Node, use_ranged: bool) -> void:
 	if colonist == null or not is_instance_valid(colonist):
 		return
@@ -274,6 +308,31 @@ func request_craft_jobs(recipe_lookup: Dictionary, workstation_positions: Dictio
 		_craft_job_inflight = true
 		return
 
+func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: StringName, work_duration: float = 6.0) -> void:
+	if project_id == &"":
+		return
+	if target_pos == Vector2.INF:
+		return
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if not colonist.current_job.is_empty():
+			continue
+		if colonist.has_method("can_do_job") and not colonist.can_do_job(&"ResearchTask"):
+			continue
+		var colonist_id: int = colonist.get_instance_id()
+		if _has_pending_research_job(colonist_id):
+			continue
+		_jobs.append({
+			"type": &"ResearchTask",
+			"target": target_pos,
+			"project_id": project_id,
+			"work_duration": maxf(0.5, work_duration),
+			"research_points": 1.0,
+			"base_priority": 9,
+			"assigned_to": colonist_id
+		})
+
 func request_combat_jobs(colonists: Array, enemies: Array) -> void:
 	_cleanup_stale_combat_jobs()
 	if enemies.is_empty():
@@ -363,6 +422,14 @@ func _pick_best_job_index(colonist: Node) -> int:
 		if job_type == &"Hunt" and colonist is Node2D:
 			var hdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
 			score += clampf(220.0 - hdist, 0.0, 220.0) * 0.003
+		if (job_type == &"PlantCrop" or job_type == &"HarvestCrop") and colonist is Node2D:
+			var fdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
+			score += clampf(220.0 - fdist, 0.0, 220.0) * 0.003
+			score += float(colonist.get_priority(&"Gather")) * 10.0
+		if job_type == &"ResearchTask" and colonist is Node2D:
+			var rdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
+			score += clampf(220.0 - rdist, 0.0, 220.0) * 0.003
+			score += float(colonist.get_priority(&"Craft")) * 10.0
 		if job_type == &"HaulResource" and colonist is Node2D:
 			var dist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
 			score += clampf(180.0 - dist, 0.0, 180.0) * 0.003
@@ -523,6 +590,14 @@ func _has_pending_combat_job(colonist_id: int) -> bool:
 			return true
 	return false
 
+func _has_pending_research_job(colonist_id: int) -> bool:
+	for job in _jobs:
+		if int(job.get("assigned_to", 0)) != colonist_id:
+			continue
+		if StringName(job.get("type", &"")) == &"ResearchTask":
+			return true
+	return false
+
 func _cleanup_stale_combat_jobs() -> void:
 	for i in range(_jobs.size() - 1, -1, -1):
 		var job: Dictionary = _jobs[i]
@@ -538,4 +613,24 @@ func _cleanup_stale_combat_jobs() -> void:
 			_jobs.remove_at(i)
 			continue
 		if obj.has_method("is_dead") and bool(obj.is_dead()):
+			_jobs.remove_at(i)
+	for i in range(_jobs.size() - 1, -1, -1):
+		var job: Dictionary = _jobs[i]
+		var t: StringName = StringName(job.get("type", &""))
+		if t != &"PlantCrop" and t != &"HarvestCrop":
+			continue
+		var zone_id: int = int(job.get("zone_id", 0))
+		if zone_id == 0:
+			_jobs.remove_at(i)
+			continue
+		var zone_obj: Object = instance_from_id(zone_id)
+		if zone_obj == null or not is_instance_valid(zone_obj):
+			_jobs.remove_at(i)
+	for i in range(_jobs.size() - 1, -1, -1):
+		var job: Dictionary = _jobs[i]
+		var t: StringName = StringName(job.get("type", &""))
+		if t != &"ResearchTask":
+			continue
+		var target: Vector2 = job.get("target", Vector2.INF)
+		if target == Vector2.INF:
 			_jobs.remove_at(i)

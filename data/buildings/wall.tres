@@ -10,7 +10,8 @@ category = "Structure"
 required_work = 60.0
 footprint_size = Vector2(40, 40)
 build_cost = {
-&"Stone": 8
+&"Stone": 1
 }
 direct_place_color = Color(0.52, 0.52, 0.56, 1)
 blueprint_color = Color(0.48, 0.5, 0.66, 0.72)
+blocks_movement = true

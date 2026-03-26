@@ -10,8 +10,8 @@ category = "Production"
 required_work = 95.0
 footprint_size = Vector2(80, 40)
 build_cost = {
-&"Steel": 10,
-&"Wood": 15
+&"Steel": 1,
+&"Wood": 1
 }
 direct_place_color = Color(0.45, 0.55, 0.4, 1)
 blueprint_color = Color(0.45, 0.55, 0.4, 0.72)

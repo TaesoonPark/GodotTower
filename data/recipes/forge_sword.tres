@@ -9,8 +9,8 @@ display_name = "Forge Sword"
 workstation_id = &"SimpleBenchStation"
 work_required = 5.0
 ingredients = {
-&"Steel": 8,
-&"Wood": 2
+&"Steel": 1,
+&"Wood": 1
 }
 products = {
 &"Sword": 1

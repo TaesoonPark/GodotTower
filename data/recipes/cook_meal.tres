@@ -9,7 +9,7 @@ display_name = "Cook Meal"
 workstation_id = &"CampfireStation"
 work_required = 45.0
 ingredients = {
-&"FoodRaw": 10
+&"FoodRaw": 1
 }
 products = {
 &"Meal": 5

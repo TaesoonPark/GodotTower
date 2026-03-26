@@ -14,13 +14,13 @@ func get_priority(job_type: StringName) -> int:
 	match job_type:
 		&"Haul", &"HaulResource":
 			return haul
-		&"Gather":
+		&"Gather", &"PlantCrop", &"HarvestCrop":
 			return gather
 		&"Hunt":
 			return hunt
 		&"Build", &"BuildSite":
 			return build
-		&"Craft", &"CraftRecipe":
+		&"Craft", &"CraftRecipe", &"ResearchTask":
 			return craft
 		&"Combat":
 			return combat

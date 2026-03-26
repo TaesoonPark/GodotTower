@@ -9,7 +9,7 @@ display_name = "Cut Stone Block"
 workstation_id = &"SimpleBenchStation"
 work_required = 55.0
 ingredients = {
-&"Stone": 12
+&"Stone": 1
 }
 products = {
 &"StoneBlock": 6

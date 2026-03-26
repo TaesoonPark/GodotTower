@@ -9,3 +9,9 @@ class_name BuildingDef
 @export var build_cost: Dictionary = {}
 @export var direct_place_color: Color = Color(0.38, 0.7, 0.45, 1.0)
 @export var blueprint_color: Color = Color(0.45, 0.55, 0.85, 0.7)
+@export var required_research: StringName = &""
+@export var blocks_movement: bool = false
+@export var cover_bonus: float = 0.0
+@export var trap_damage: int = 0
+@export var trap_cooldown_sec: float = 0.0
+@export var trap_charges: int = 0
