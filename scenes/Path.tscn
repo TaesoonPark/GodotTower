@@ -1,6 +1,0 @@
-[gd_scene load_steps=2 format=3 uid="uid://path"]
-
-[ext_resource type="Curve2D" path="res://assets/road_curve.tres" id="1_road_curve"]
-
-[node name="Path" type="Path2D"]
-curve = ExtResource("1_road_curve")

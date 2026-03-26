@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "godot": {
+      "command": "bash",
+      "args": [
+        "scripts/start-godot-mcp.sh"
+      ],
+      "env": {
+        "DEBUG": "true"
+      }
+    }
+  }
+}

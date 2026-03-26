@@ -1,0 +1,37 @@
+[gd_scene load_steps=8 format=3]
+
+[ext_resource type="Script" path="res://scripts/core/MainController.gd" id="1_main_script"]
+[ext_resource type="PackedScene" path="res://scenes/world/World.tscn" id="2_world_scene"]
+[ext_resource type="PackedScene" path="res://scenes/ui/HUD.tscn" id="3_hud_scene"]
+[ext_resource type="Script" path="res://scripts/systems/InputController.gd" id="4_input_script"]
+[ext_resource type="Script" path="res://scripts/systems/NeedSystem.gd" id="5_need_script"]
+[ext_resource type="Script" path="res://scripts/systems/JobSystem.gd" id="6_job_script"]
+[ext_resource type="Script" path="res://scripts/systems/BuildSystem.gd" id="7_build_script"]
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main_script")
+
+[node name="WorldRoot" parent="." instance=ExtResource("2_world_scene")]
+
+[node name="UnitsRoot" type="Node2D" parent="."]
+
+[node name="Camera2D" type="Camera2D" parent="."]
+position = Vector2(960, 540)
+zoom = Vector2(1, 1)
+enabled = true
+
+[node name="Systems" type="Node" parent="."]
+
+[node name="InputController" type="Node" parent="Systems"]
+script = ExtResource("4_input_script")
+
+[node name="NeedSystem" type="Node" parent="Systems"]
+script = ExtResource("5_need_script")
+
+[node name="JobSystem" type="Node" parent="Systems"]
+script = ExtResource("6_job_script")
+
+[node name="BuildSystem" type="Node" parent="Systems"]
+script = ExtResource("7_build_script")
+
+[node name="HUD" parent="." instance=ExtResource("3_hud_scene")]

@@ -1,74 +1,41 @@
-# Kingdom Rush Clone
+# ColonySimPrototype
 
-Godot 4.6 기반의 타워 디펜스 게임
+Godot 4.6 기반 림월드 라이크 콜로니 시뮬레이터 프로토타입입니다.
 
-## 설치
+## 현재 상태
 
-Godot 4.6을 설치하세요:
-- [Godot Engine 다운로드](https://godotengine.org/download/)
+- RTS 입력: 단일 선택/드래그 다중 선택/우클릭 즉시 이동 명령
+- 주민 상태: `Health`, `Hunger`, `Rest`, `Mood`
+- 작업 시스템: 우선순위 기반 작업 할당(`MoveTo`, `EatStub`, `IdleRecover`, `BuildSite`)
+- 건축 시스템: 빌드 모드에서 청사진 배치, 주민이 건설 진행/완공
+- UI: 선택 수, 욕구 상태, 우선순위 조정, 빌드 모드 토글
 
-## 실행 방법
+상세 정리와 TODO는 `docs/STATUS_AND_TODO.md`를 참고하세요.
 
-```bash
-godot4.6 --path /mnt/d/tower /mnt/d/tower/Main.tscn
-```
-
-## Cursor MCP(Godot) 설정
-
-이 프로젝트에는 Cursor 프로젝트 전용 MCP 설정 파일이 포함되어 있습니다.
-
-- 설정 파일: `.cursor/mcp.json`
-- 서버: `@coding-solo/godot-mcp`
-- 목적: 에이전트가 Godot 실행/디버그 출력을 직접 확인하는 루프 구성
-- 부트스트랩 스크립트: `scripts/start-godot-mcp.sh`
-
-### 1) GODOT_PATH 확인
-
-부트스트랩 스크립트가 아래 순서로 자동 탐지합니다.
-
-1. `GODOT_PATH` 환경 변수
-2. `/Applications/Godot.app/Contents/MacOS/Godot`
-3. `~/Applications/Godot.app/Contents/MacOS/Godot`
-4. 현재 실행 중인 Godot 프로세스 경로
-
-탐지 실패 시 터미널에서 직접 지정:
+## 실행
 
 ```bash
-export GODOT_PATH="/your/path/to/Godot.app/Contents/MacOS/Godot"
+godot --path .
 ```
 
-### 2) Cursor에서 MCP 서버 활성화
+또는 Godot 에디터에서 프로젝트를 열어 실행하세요.
 
-1. Cursor Settings -> Features -> MCP
-2. `godot` 서버가 보이는지 확인
-3. 필요하면 Refresh 후 Enabled 상태 확인
+## 기본 해상도
 
-### 3) 동작 검증
+- `1920 x 1080 (FHD)`
 
-- MCP 툴 `get_godot_version` 실행
-- MCP 툴 `run_project`로 이 프로젝트 실행
-- MCP 툴 `get_debug_output`으로 에러/경고 확인
+## 프로젝트 구조
 
-이 3단계가 통과하면, 에이전트가 수정 -> 실행 -> 로그확인까지 직접 반복할 수 있습니다.
+- `scenes/main` : 메인 진입 씬
+- `scenes/world` : 월드/내비게이션/건설 사이트
+- `scenes/units` : 주민 유닛
+- `scenes/ui` : HUD
+- `scripts/core` : 메인/주민/HUD 핵심 로직
+- `scripts/systems` : 입력/욕구/작업/건축 시스템
+- `scripts/data` + `data` : 커스텀 Resource 스키마와 인스턴스
 
-## 게임 기능
+## MCP 연결
 
-- **타워 설치**: 왼쪽 클릭으로 타워 설치 (100 Gold)
-- **타워 업그레이드**: 업그레이드 버튼 클릭 (75 Gold)
-- **타워 판매**: 판매 버튼 클릭
-- **적 웨이브**: 무한 웨이브 시스템
-- **적 체력바**: 각 적의 체력 표시
+Cursor 외 IDE를 포함한 MCP 공통 설정은 아래 문서 참고:
 
-## 주요 파일
-
-- `scripts/GameManager.gd` - 게임 메인 로직
-- `scripts/Tower.gd` - 타워 공격 로직
-- `scripts/Enemy.gd` - 적 이동 및 체력 시스템
-- `scenes/` - 게임 장면 파일들
-
-## 플레이 방법
-
-1. 게임 시작 시 타워 설치 모드로 진입
-2. 적이 경로를 따라 이동할 때 타워로 공격
-3. 적을 처치하여 돈 획득
-4. 돈으로 타워 업그레이드 또는 추가 설치
+- `docs/MCP_SETUP.md`

@@ -1,0 +1,12 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/core/BuildingSite.gd" id="1_building_site_script"]
+
+[node name="BuildingSite" type="Node2D"]
+script = ExtResource("1_building_site_script")
+
+[node name="BaseSprite" type="Sprite2D" parent="."]
+texture_filter = 1
+
+[node name="ProgressSprite" type="Sprite2D" parent="."]
+position = Vector2(0, 22)

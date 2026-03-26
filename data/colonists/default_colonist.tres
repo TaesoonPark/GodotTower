@@ -1,0 +1,12 @@
+[gd_resource type="Resource" script_class="ColonistStatsData" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/ColonistStatsData.gd" id="1_stats_script"]
+
+[resource]
+script = ExtResource("1_stats_script")
+display_name = "Settler"
+move_speed = 155.0
+max_health = 100.0
+hunger_decay_per_sec = 2.2
+rest_decay_per_sec = 1.4
+mood_decay_per_sec = 0.3

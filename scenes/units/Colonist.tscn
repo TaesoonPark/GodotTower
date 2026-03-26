@@ -1,0 +1,19 @@
+[gd_scene load_steps=5 format=3]
+
+[ext_resource type="Script" path="res://scripts/core/Colonist.gd" id="1_colonist_script"]
+[ext_resource type="Texture2D" path="res://assets/enemy.png" id="2_colonist_texture"]
+[ext_resource type="Resource" path="res://data/colonists/default_colonist.tres" id="3_colonist_stats"]
+[ext_resource type="Resource" path="res://data/priorities/default_priority.tres" id="4_colonist_priority"]
+
+[node name="Colonist" type="Node2D"]
+script = ExtResource("1_colonist_script")
+stats = ExtResource("3_colonist_stats")
+priorities = ExtResource("4_colonist_priority")
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+texture = ExtResource("2_colonist_texture")
+offset = Vector2(0, -18)
+
+[node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
+path_desired_distance = 6.0
+target_desired_distance = 8.0

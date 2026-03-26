@@ -1,0 +1,77 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/core/HUDController.gd" id="1_hud_script"]
+
+[node name="HUD" type="CanvasLayer"]
+script = ExtResource("1_hud_script")
+
+[node name="PanelContainer" type="PanelContainer" parent="."]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 420.0
+offset_bottom = 400.0
+
+[node name="VBox" type="VBoxContainer" parent="PanelContainer"]
+layout_mode = 2
+theme_override_constants/separation = 10
+
+[node name="Title" type="Label" parent="PanelContainer/VBox"]
+text = "Colony Command"
+theme_override_font_sizes/font_size = 22
+
+[node name="SelectedLabel" type="Label" parent="PanelContainer/VBox"]
+text = "Selected: 0"
+theme_override_font_sizes/font_size = 18
+
+[node name="ModeLabel" type="Label" parent="PanelContainer/VBox"]
+text = "Mode: Command"
+theme_override_font_sizes/font_size = 18
+
+[node name="BuildButton" type="Button" parent="PanelContainer/VBox"]
+text = "Build OFF"
+custom_minimum_size = Vector2(0, 38)
+
+[node name="NeedsLabel" type="Label" parent="PanelContainer/VBox"]
+text = "Needs: -"
+theme_override_font_sizes/font_size = 16
+
+[node name="PriorityLabel" type="Label" parent="PanelContainer/VBox"]
+text = "Priority: -"
+theme_override_font_sizes/font_size = 16
+
+[node name="PriorityGrid" type="GridContainer" parent="PanelContainer/VBox"]
+columns = 2
+theme_override_constants/h_separation = 12
+theme_override_constants/v_separation = 8
+
+[node name="HaulText" type="Label" parent="PanelContainer/VBox/PriorityGrid"]
+text = "Haul"
+
+[node name="HaulSlider" type="HSlider" parent="PanelContainer/VBox/PriorityGrid"]
+max_value = 10.0
+value = 3.0
+step = 1.0
+
+[node name="BuildText" type="Label" parent="PanelContainer/VBox/PriorityGrid"]
+text = "Build"
+
+[node name="BuildSlider" type="HSlider" parent="PanelContainer/VBox/PriorityGrid"]
+max_value = 10.0
+value = 5.0
+step = 1.0
+
+[node name="CraftText" type="Label" parent="PanelContainer/VBox/PriorityGrid"]
+text = "Craft"
+
+[node name="CraftSlider" type="HSlider" parent="PanelContainer/VBox/PriorityGrid"]
+max_value = 10.0
+value = 4.0
+step = 1.0
+
+[node name="CombatText" type="Label" parent="PanelContainer/VBox/PriorityGrid"]
+text = "Combat"
+
+[node name="CombatSlider" type="HSlider" parent="PanelContainer/VBox/PriorityGrid"]
+max_value = 10.0
+value = 6.0
+step = 1.0
