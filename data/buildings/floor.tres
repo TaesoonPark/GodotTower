@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"Floor"
+display_name = "Floor Tile"
+category = "Floor"
+required_work = 35.0
+footprint_size = Vector2(40, 40)
+build_cost = {
+&"Stone": 4
+}
+direct_place_color = Color(0.4, 0.44, 0.48, 1)
+blueprint_color = Color(0.35, 0.42, 0.62, 0.72)

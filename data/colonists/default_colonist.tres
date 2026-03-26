@@ -6,7 +6,16 @@
 script = ExtResource("1_stats_script")
 display_name = "Settler"
 move_speed = 155.0
+haul_carry_capacity = 100
 max_health = 100.0
+base_hit_chance = 0.74
+base_defense = 4.0
+base_melee_attack = 11.0
+base_ranged_attack = 7.0
+base_armor_penetration = 1.0
+melee_range = 34.0
+ranged_range = 210.0
+attack_cooldown_sec = 1.05
 hunger_decay_per_sec = 2.2
 rest_decay_per_sec = 1.4
 mood_decay_per_sec = 0.3

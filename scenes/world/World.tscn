@@ -1,14 +1,83 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="PackedScene" path="res://scenes/world/Gatherable.tscn" id="1_gatherable_scene"]
+[ext_resource type="PackedScene" path="res://scenes/world/Huntable.tscn" id="2_huntable_scene"]
 
 [sub_resource type="NavigationPolygon" id="NavigationPolygon_main"]
-vertices = PackedVector2Array(0, 0, 3840, 0, 3840, 2160, 0, 2160)
+vertices = PackedVector2Array(0, 0, 7680, 0, 7680, 4320, 0, 4320)
 polygons = Array[PackedInt32Array]([PackedInt32Array(0, 1, 2, 3)])
 
 [node name="WorldRoot" type="Node2D"]
 
 [node name="Ground" type="Polygon2D" parent="."]
 color = Color(0.12, 0.14, 0.16, 1)
-polygon = PackedVector2Array(0, 0, 3840, 0, 3840, 2160, 0, 2160)
+polygon = PackedVector2Array(0, 0, 7680, 0, 7680, 4320, 0, 4320)
 
 [node name="NavigationRegion2D" type="NavigationRegion2D" parent="."]
 navigation_polygon = SubResource("NavigationPolygon_main")
+
+[node name="TreeA" parent="." instance=ExtResource("1_gatherable_scene")]
+position = Vector2(860, 620)
+resource_type = &"Wood"
+display_name = "Tree"
+max_amount = 80
+gather_per_tick = 10
+tint = Color(0.28, 0.66, 0.34, 1)
+
+[node name="TreeB" parent="." instance=ExtResource("1_gatherable_scene")]
+position = Vector2(930, 730)
+resource_type = &"Wood"
+display_name = "Tree"
+max_amount = 80
+gather_per_tick = 10
+tint = Color(0.26, 0.62, 0.3, 1)
+
+[node name="StoneChunk" parent="." instance=ExtResource("1_gatherable_scene")]
+position = Vector2(1450, 830)
+resource_type = &"Stone"
+display_name = "Stone"
+max_amount = 120
+gather_per_tick = 8
+tint = Color(0.57, 0.58, 0.62, 1)
+
+[node name="SteelVein" parent="." instance=ExtResource("1_gatherable_scene")]
+position = Vector2(1580, 710)
+resource_type = &"Steel"
+display_name = "Steel"
+max_amount = 140
+gather_per_tick = 7
+tint = Color(0.6, 0.66, 0.78, 1)
+
+[node name="BerryBushA" parent="." instance=ExtResource("1_gatherable_scene")]
+position = Vector2(1090, 870)
+resource_type = &"FoodRaw"
+display_name = "Berry"
+max_amount = 90
+gather_per_tick = 9
+tint = Color(0.84, 0.24, 0.46, 1)
+
+[node name="BerryBushB" parent="." instance=ExtResource("1_gatherable_scene")]
+position = Vector2(1180, 920)
+resource_type = &"FoodRaw"
+display_name = "Berry"
+max_amount = 85
+gather_per_tick = 8
+tint = Color(0.8, 0.3, 0.5, 1)
+
+[node name="BoarA" parent="." instance=ExtResource("2_huntable_scene")]
+position = Vector2(1730, 930)
+display_name = "Boar"
+max_health = 80
+hunt_damage_per_tick = 25
+meat_type = &"FoodRaw"
+meat_yield = 42
+tint = Color(0.62, 0.47, 0.33, 1)
+
+[node name="DeerA" parent="." instance=ExtResource("2_huntable_scene")]
+position = Vector2(1830, 840)
+display_name = "Deer"
+max_health = 65
+hunt_damage_per_tick = 25
+meat_type = &"FoodRaw"
+meat_yield = 35
+tint = Color(0.76, 0.62, 0.44, 1)

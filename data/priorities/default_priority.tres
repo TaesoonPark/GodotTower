@@ -4,9 +4,11 @@
 
 [resource]
 script = ExtResource("1_priority_script")
-haul = 3
-build = 5
-craft = 4
-combat = 6
+haul = 5
+build = 9
+craft = 8
+gather = 7
+hunt = 6
+combat = 10
 idle = 1
 eat = 9

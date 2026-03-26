@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"SimpleBench"
+display_name = "Simple Bench"
+category = "Production"
+required_work = 95.0
+footprint_size = Vector2(80, 40)
+build_cost = {
+&"Steel": 10,
+&"Wood": 15
+}
+direct_place_color = Color(0.45, 0.55, 0.4, 1)
+blueprint_color = Color(0.45, 0.55, 0.4, 0.72)

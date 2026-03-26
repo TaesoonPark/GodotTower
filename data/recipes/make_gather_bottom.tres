@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="RecipeDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/RecipeDef.gd" id="1_recipe_def"]
+
+[resource]
+script = ExtResource("1_recipe_def")
+id = &"MakeGatherBottom"
+display_name = "Make Gather Bottom"
+workstation_id = &"SimpleBenchStation"
+work_required = 5.0
+ingredients = {
+&"Meal": 1,
+&"Wood": 6
+}
+products = {
+&"GatherBottom": 1
+}

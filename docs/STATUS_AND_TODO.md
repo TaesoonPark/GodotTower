@@ -14,6 +14,9 @@
   - 좌클릭 단일 선택
   - 드래그 박스 다중 선택
   - 우클릭 이동 명령
+- 마우스 액션 UI
+  - `Move`, `Build`, `Gather`, `Blueprint` 전환
+  - 좌측 액션 패널 + 하단 건축 카탈로그
 - 주민 상태/욕구
   - `Health`, `Hunger`, `Rest`, `Mood`
   - 틱 기반 갱신
@@ -24,9 +27,22 @@
   - 우선순위 점수 기반 할당
   - 필요 작업(`EatStub`, `IdleRecover`) 자동 생성
 - 건축 시스템
-  - 빌드 모드 토글(`B` 키/버튼)
-  - 청사진 배치 후 건설 작업 생성
+  - 건물 정의(`data/buildings`) 기반 선택
+  - `Build`: 즉시 건축(개발용)
+  - `Blueprint`: 청사진 배치 후 건설 작업 생성
   - 주민이 이동해 건설 진행 및 완공
+- 채집 시스템
+  - 맵 `gatherables` 지시 -> `Gather` 작업 생성
+  - 주민 채집 시 자원 스톡 누적(`Wood`, `Stone` 등)
+
+### 2-1) 림월드라이크 확장 시드 데이터
+- 자원 정의: `data/resources`
+- 작업대 정의: `data/workstations`
+- 레시피 정의: `data/recipes`
+- 초기 추천 루프:
+  - `FoodRaw -> Meal` (CookMeal)
+  - `Stone -> StoneBlock` (CutStone)
+  - `Wood -> Bed` (MakeBed)
 
 ### 3) 명령 처리 정책
 - 새 이동 명령 입력 시:

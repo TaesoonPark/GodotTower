@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"Stockpile"
+display_name = "Stockpile"
+category = "Utility"
+required_work = 55.0
+footprint_size = Vector2(64, 64)
+build_cost = {
+&"Wood": 12
+}
+direct_place_color = Color(0.52, 0.44, 0.3, 1)
+blueprint_color = Color(0.5, 0.46, 0.36, 0.72)

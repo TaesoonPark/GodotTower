@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="RecipeDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/RecipeDef.gd" id="1_recipe_def"]
+
+[resource]
+script = ExtResource("1_recipe_def")
+id = &"CookMeal"
+display_name = "Cook Meal"
+workstation_id = &"CampfireStation"
+work_required = 45.0
+ingredients = {
+&"FoodRaw": 10
+}
+products = {
+&"Meal": 5
+}

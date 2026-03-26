@@ -1,7 +1,7 @@
 [gd_scene load_steps=5 format=3]
 
 [ext_resource type="Script" path="res://scripts/core/Colonist.gd" id="1_colonist_script"]
-[ext_resource type="Texture2D" path="res://assets/enemy.png" id="2_colonist_texture"]
+[ext_resource type="Texture2D" path="res://assets/tower.png" id="2_colonist_texture"]
 [ext_resource type="Resource" path="res://data/colonists/default_colonist.tres" id="3_colonist_stats"]
 [ext_resource type="Resource" path="res://data/priorities/default_priority.tres" id="4_colonist_priority"]
 
@@ -17,3 +17,16 @@ offset = Vector2(0, -18)
 [node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
 path_desired_distance = 6.0
 target_desired_distance = 8.0
+
+[node name="JobLabel" type="Label" parent="."]
+position = Vector2(-46, -86)
+theme_override_font_sizes/font_size = 13
+visible = false
+
+[node name="WorkProgress" type="ProgressBar" parent="."]
+position = Vector2(-32, -66)
+custom_minimum_size = Vector2(64, 8)
+show_percentage = false
+max_value = 100.0
+value = 0.0
+visible = false

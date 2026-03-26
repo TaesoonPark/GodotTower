@@ -1,20 +1,26 @@
 extends Resource
 class_name JobPriorityData
 
-@export_range(0, 10, 1) var haul: int = 3
-@export_range(0, 10, 1) var build: int = 4
-@export_range(0, 10, 1) var craft: int = 3
-@export_range(0, 10, 1) var combat: int = 5
+@export_range(0, 10, 1) var haul: int = 5
+@export_range(0, 10, 1) var build: int = 9
+@export_range(0, 10, 1) var craft: int = 8
+@export_range(0, 10, 1) var gather: int = 7
+@export_range(0, 10, 1) var hunt: int = 6
+@export_range(0, 10, 1) var combat: int = 10
 @export_range(0, 10, 1) var idle: int = 1
 @export_range(0, 10, 1) var eat: int = 8
 
 func get_priority(job_type: StringName) -> int:
 	match job_type:
-		&"Haul":
+		&"Haul", &"HaulResource":
 			return haul
-		&"Build":
+		&"Gather":
+			return gather
+		&"Hunt":
+			return hunt
+		&"Build", &"BuildSite":
 			return build
-		&"Craft":
+		&"Craft", &"CraftRecipe":
 			return craft
 		&"Combat":
 			return combat

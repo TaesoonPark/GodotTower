@@ -1,0 +1,11 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/core/Gatherable.gd" id="1_gatherable_script"]
+
+[node name="Gatherable" type="Node2D"]
+script = ExtResource("1_gatherable_script")
+
+[node name="Sprite2D" type="Sprite2D" parent="."]
+
+[node name="Label" type="Label" parent="."]
+position = Vector2(-30, -28)
