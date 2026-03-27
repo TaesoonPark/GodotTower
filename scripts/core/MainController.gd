@@ -2,6 +2,7 @@ extends Node2D
 
 const COLONIST_SCENE: PackedScene = preload("res://scenes/units/Colonist.tscn")
 const RAIDER_SCENE: PackedScene = preload("res://scenes/units/Raider.tscn")
+const ZOMBIE_SCENE: PackedScene = preload("res://scenes/units/Zombie.tscn")
 const GATHERABLE_SCENE: PackedScene = preload("res://scenes/world/Gatherable.tscn")
 const HUNTABLE_SCENE: PackedScene = preload("res://scenes/world/Huntable.tscn")
 const WORKSTATION_DEPOT_SCRIPT: Script = preload("res://scripts/core/WorkstationDepot.gd")
@@ -33,21 +34,25 @@ var selected_colonists: Array = []
 var camera_speed: float = 750.0
 var current_action: StringName = &"Interact"
 var resource_stock: Dictionary = {
-	&"Wood": 30,
-	&"Stone": 20,
-	&"Steel": 15,
-	&"FoodRaw": 0,
-	&"Meal": 0,
+	&"Wood": 120,
+	&"Stone": 120,
+	&"Steel": 60,
+	&"FoodRaw": 40,
+	&"Meal": 20,
 	&"Bed": 0,
 	&"GatherTop": 0,
 	&"GatherBottom": 0,
 	&"StrawHat": 0,
 	&"Weapon": 0,
-	&"CombatTop": 0,
-	&"CombatBottom": 0,
-	&"CombatHat": 0,
+	&"CombatTop": 4,
+	&"CombatBottom": 4,
+	&"CombatHat": 4,
 	&"Sword": 0,
-	&"Bow": 0
+	&"Bow": 4
+}
+var _free_build_allowance: Dictionary = {
+	&"Wall": 100,
+	&"Gate": 8
 }
 var target_stock: Dictionary = {
 	&"Wood": 80,
@@ -89,14 +94,18 @@ var _selected_object_kind: StringName = &""
 var _selected_object_resource: StringName = &""
 var _selected_object_zone: Node = null
 var _workstation_depots: Dictionary = {}
-var _outfit_mode: StringName = &"Work"
+var _outfit_mode: StringName = &"Combat"
 var _equipped_weapon_kind: Dictionary = {}
 var _raid_state: StringName = &"Idle"
 var _raid_warning_timer: float = 0.0
 var _raid_wave_size: int = 0
+var _raid_wave_kind: StringName = &"RaiderOnly"
 var _combat_tile_claims: Dictionary = {}
+var _combat_rally_point: Vector2 = WORLD_SIZE * 0.5
+var _rally_flag_node: Node2D = null
 
 func _ready() -> void:
+	add_to_group("main_controller")
 	randomize()
 	_configure_world_bounds()
 	_randomize_world_spawns()
@@ -121,6 +130,7 @@ func _ready() -> void:
 		if research_def != null:
 			research_lookup[research_def.id] = research_def
 	_spawn_initial_colonists()
+	_set_combat_rally_point(_snap_to_tile(WORLD_SIZE * 0.5))
 	_refresh_building_catalog()
 	if input_controller != null and input_controller.has_method("set_grid_size"):
 		input_controller.set_grid_size(TILE_SIZE)
@@ -141,6 +151,7 @@ func _ready() -> void:
 	hud.drag_gather_mode_requested.connect(func(): _on_action_changed(&"DragGather"))
 	hud.drag_stockpile_mode_requested.connect(func(): _on_action_changed(&"StockpileZone"))
 	hud.drag_farm_mode_requested.connect(func(): _on_action_changed(&"FarmZone"))
+	hud.rally_flag_mode_requested.connect(func(): _on_action_changed(&"SetRallyFlag"))
 	hud.clear_state_requested.connect(_on_clear_state_requested)
 	hud.context_action_requested.connect(_on_context_action_requested)
 	hud.selected_object_action_requested.connect(_on_selected_object_action_requested)
@@ -169,7 +180,7 @@ func _ready() -> void:
 	hud.set_command_button_states(current_action)
 	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
 	hud.set_outfit_mode(_outfit_mode)
-	hud.set_raid_state(_raid_state, _raid_warning_timer)
+	hud.set_raid_state(_raid_state, _raid_warning_timer, _raid_wave_kind)
 	hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
 	hud.set_designation_panel_visible(false)
 	hud.set_bed_assignment_visible(false)
@@ -178,6 +189,10 @@ func _ready() -> void:
 	_clamp_camera()
 
 func _process(delta: float) -> void:
+	if input_controller != null and input_controller.dragging:
+		queue_redraw()
+	elif _has_demolish_queued_structure():
+		queue_redraw()
 	_process_camera(_get_camera_delta(delta))
 	if not _game_paused:
 		_elapsed_game_seconds += delta
@@ -193,7 +208,8 @@ func _process(delta: float) -> void:
 	_apply_passive_item_bonuses()
 	_update_farm_zones(delta)
 	_update_defense_traps(delta)
-	job_system.request_combat_jobs(colonists, _get_alive_raiders())
+	var rally_pos: Vector2 = _combat_rally_point if _outfit_mode == &"Combat" else Vector2.INF
+	job_system.request_combat_jobs(colonists, _get_alive_raiders(), rally_pos, TILE_SIZE * 3.0)
 	_request_designated_resource_jobs()
 	_update_workstation_supply_requests()
 	var haul_targets: Array = get_tree().get_nodes_in_group("stockpile_zones")
@@ -207,6 +223,8 @@ func _process(delta: float) -> void:
 		target_stock
 	)
 	build_system.request_build_jobs(job_system)
+	_refresh_structure_integrity()
+	job_system.request_repair_jobs(_get_damaged_repairable_structures())
 	job_system.request_craft_jobs(
 		recipe_lookup,
 		_build_workstation_slots_map(),
@@ -225,9 +243,17 @@ func _process(delta: float) -> void:
 	_reconcile_stockpile_totals_with_resource_stock()
 	hud.set_craft_queue_preview(job_system.get_craft_queue(selected_workstation_id))
 	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
-	hud.set_raid_state(_raid_state, _raid_warning_timer)
+	hud.set_raid_state(_raid_state, _raid_warning_timer, _raid_wave_kind)
 	hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
 	_refresh_hud()
+
+func _has_demolish_queued_structure() -> bool:
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if bool(node.get_meta("demolish_job_queued")):
+			return true
+	return false
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_RIGHT and event.pressed:
@@ -271,9 +297,12 @@ func _unhandled_input(event: InputEvent) -> void:
 		queue_redraw()
 
 func _draw() -> void:
+	_draw_demolish_queued_outlines()
 	if not input_controller.dragging:
 		return
-	var rect: Rect2 = Rect2(input_controller.drag_start, input_controller.drag_end - input_controller.drag_start).abs()
+	var drag_start_world: Vector2 = _snap_to_tile(input_controller.drag_start)
+	var drag_end_world: Vector2 = _snap_to_tile(world_root.get_global_mouse_position())
+	var rect: Rect2 = Rect2(drag_start_world, drag_end_world - drag_start_world).abs()
 	var fill_color := Color(0.3, 0.8, 1.0, 0.15)
 	var border_color := Color(0.3, 0.8, 1.0)
 	if current_action == &"StockpileZone":
@@ -286,6 +315,13 @@ func _draw() -> void:
 	draw_rect(rect, border_color, false, 2.0)
 	# Always show a green translucent command outline while dragging.
 	draw_rect(rect.grow(1.0), Color(0.24, 0.96, 0.42, 0.55), false, 3.0)
+	if pending_building_id != &"" and _can_drag_line_place(pending_building_id):
+		var preview_tiles: Array[Vector2i] = _build_line_tiles_from_world(drag_start_world, drag_end_world)
+		for tile in preview_tiles:
+			var center: Vector2 = _tile_to_world(tile)
+			var tile_rect := Rect2(center - Vector2(TILE_SIZE * 0.5, TILE_SIZE * 0.5), Vector2(TILE_SIZE, TILE_SIZE))
+			draw_rect(tile_rect, Color(0.35, 0.92, 0.4, 0.22), true)
+			draw_rect(tile_rect, Color(0.42, 1.0, 0.5, 0.92), false, 2.0)
 
 func _spawn_initial_colonists() -> void:
 	var center: Vector2 = WORLD_SIZE * 0.5
@@ -305,6 +341,7 @@ func _spawn_initial_colonists() -> void:
 		c.resource_harvested.connect(_on_resource_harvested)
 		c.resource_delivered.connect(_on_resource_delivered)
 		c.craft_completed.connect(_on_craft_completed)
+		c.structure_demolished.connect(_on_structure_demolished)
 		c.research_progressed.connect(_on_research_progressed)
 		c.haul_job_released.connect(_on_haul_job_released)
 		c.ate_food.connect(_on_colonist_ate_food)
@@ -319,6 +356,10 @@ func _spawn_initial_colonists() -> void:
 		colonists.append(c)
 
 func _on_left_click(world_pos: Vector2) -> void:
+	if current_action == &"SetRallyFlag":
+		_set_combat_rally_point(world_pos)
+		_on_action_changed(&"Interact")
+		return
 	hud.hide_context_action_button()
 	selected_farm_zone = null
 	var stockpile_item: Dictionary = _find_stockpile_item_at(world_pos)
@@ -449,10 +490,44 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_refresh_hud()
 		return
 
+	if pending_building_id == &"Gate":
+		var wall_site_target: Node = _find_build_site_near(world_pos, 28.0, &"Wall")
+		if wall_site_target != null:
+			_cancel_build_site(wall_site_target)
+			_try_place_building_by_id(wall_site_target.global_position, &"Gate")
+			_refresh_hud()
+			return
+		var wall_target: Node = _find_structure_by_building_near(world_pos, &"Wall", 32.0)
+		if wall_target != null:
+			_queue_demolish_structure(wall_target, &"Gate")
+			_refresh_hud()
+			return
+
 	if pending_building_id != &"":
 		_try_place_building_by_id(world_pos, pending_building_id)
-		_clear_pending_placement()
 		_refresh_hud()
+		return
+
+	var build_site_target: Node = _find_build_site_near(world_pos, 30.0)
+	if build_site_target != null:
+		_clear_selected_object()
+		_set_selected([])
+		_selected_object_kind = &"BuildSite"
+		_selected_object_zone = build_site_target
+		_selected_object_resource = StringName(build_site_target.get("building_id"))
+		_refresh_hud()
+		hud.set_active_action(&"BuildSiteSelected")
+		return
+
+	var structure_target: Node = _find_demolishable_structure_near(world_pos, 32.0)
+	if structure_target != null:
+		_clear_selected_object()
+		_set_selected([])
+		_selected_object_kind = &"Structure"
+		_selected_object_zone = structure_target
+		_selected_object_resource = StringName(structure_target.get_meta("building_id")) if structure_target.has_meta("building_id") else &"Structure"
+		_refresh_hud()
+		hud.set_active_action(&"StructureSelected")
 		return
 
 	_set_selected([])
@@ -466,6 +541,12 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 	hud.hide_context_action_button()
 	_clear_selected_object()
 	var rect := Rect2(start_pos, end_pos - start_pos).abs()
+	if pending_building_id != &"" and _can_drag_line_place(pending_building_id):
+		var snapped_start: Vector2 = _snap_to_tile(start_pos)
+		var snapped_end: Vector2 = _snap_to_tile(end_pos)
+		_try_place_building_line_by_id(snapped_start, snapped_end, pending_building_id)
+		queue_redraw()
+		return
 	if current_action == &"DragGather":
 		for node in get_tree().get_nodes_in_group("gatherables"):
 			if node == null or not is_instance_valid(node):
@@ -588,6 +669,25 @@ func _refresh_hud() -> void:
 					{"id": &"StartResearch", "label": "연구 시작"}
 				]
 			)
+		elif _selected_object_kind == &"BuildSite":
+			var bid_site: StringName = StringName(_selected_object_zone.get("building_id"))
+			var work_need: float = float(_selected_object_zone.get("required_work"))
+			var work_done: float = float(_selected_object_zone.get("work_progress"))
+			hud.set_selected_object_preview(
+				"Selected: Blueprint %s" % String(bid_site),
+				"Type: Build Site\n진행도: %.1f / %.1f" % [work_done, work_need],
+				[{"id": &"CancelBuildSite", "label": "건축 취소"}]
+			)
+		elif _selected_object_kind == &"Structure":
+			var building_id: StringName = StringName(_selected_object_zone.get_meta("building_id")) if _selected_object_zone.has_meta("building_id") else &"Structure"
+			var hp: float = float(_selected_object_zone.get_meta("structure_health")) if _selected_object_zone.has_meta("structure_health") else 0.0
+			var max_hp: float = float(_selected_object_zone.get_meta("structure_max_health")) if _selected_object_zone.has_meta("structure_max_health") else hp
+			var detail: String = "Type: Structure\nID: %s\n내구도: %.0f / %.0f" % [String(building_id), hp, max_hp]
+			hud.set_selected_object_preview(
+				"Selected: %s" % String(building_id),
+				detail,
+				[{"id": &"DemolishSelectedStructure", "label": "해체"}]
+			)
 		else:
 			var amount: int = 0
 			if _selected_object_zone.has_method("get_stored_amount"):
@@ -644,6 +744,30 @@ func _on_action_changed(action: StringName) -> void:
 		selected_stockpile_zone = null
 	if action != &"FarmZone":
 		selected_farm_zone = null
+
+func _set_combat_rally_point(world_pos: Vector2) -> void:
+	_combat_rally_point = _snap_to_tile(world_pos)
+	if _rally_flag_node == null or not is_instance_valid(_rally_flag_node):
+		_rally_flag_node = Node2D.new()
+		_rally_flag_node.name = "RallyFlag"
+		var pole := Sprite2D.new()
+		var pole_img := Image.create(8, 32, false, Image.FORMAT_RGBA8)
+		pole_img.fill(Color(0.78, 0.78, 0.78, 0.9))
+		pole.texture = ImageTexture.create_from_image(pole_img)
+		pole.position = Vector2(0.0, -16.0)
+		_rally_flag_node.add_child(pole)
+		var cloth := Sprite2D.new()
+		var cloth_img := Image.create(20, 12, false, Image.FORMAT_RGBA8)
+		cloth_img.fill(Color(0.92, 0.36, 0.22, 0.9))
+		cloth.texture = ImageTexture.create_from_image(cloth_img)
+		cloth.position = Vector2(10.0, -24.0)
+		_rally_flag_node.add_child(cloth)
+		var label := Label.new()
+		label.text = "집합 깃발"
+		label.position = Vector2(-26.0, -46.0)
+		_rally_flag_node.add_child(label)
+		world_root.add_child(_rally_flag_node)
+	_rally_flag_node.global_position = _combat_rally_point
 
 func _on_building_selected(building_id: StringName) -> void:
 	pending_building_id = building_id
@@ -734,6 +858,84 @@ func _find_structure_by_building_near(world_pos: Vector2, building_id: StringNam
 			return node
 	return null
 
+func _find_build_site_near(world_pos: Vector2, radius: float, required_building_id: StringName = &"") -> Node:
+	var best: Node = null
+	var best_dist: float = radius
+	for site in get_tree().get_nodes_in_group("build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if bool(site.get("complete")):
+			continue
+		var site_building_id: StringName = StringName(site.get("building_id"))
+		if required_building_id != &"" and site_building_id != required_building_id:
+			continue
+		var d: float = site.global_position.distance_to(world_pos)
+		if d > best_dist:
+			continue
+		best_dist = d
+		best = site
+	return best
+
+func _cancel_build_site(site: Node) -> void:
+	if site == null or not is_instance_valid(site):
+		return
+	if build_system != null and is_instance_valid(build_system) and build_system.has_method("cancel_build_site"):
+		build_system.cancel_build_site(site)
+		return
+	if site.has_method("set_job_queued"):
+		site.set_job_queued(false)
+	site.queue_free()
+
+func _find_demolishable_structure_near(world_pos: Vector2, radius: float) -> Node:
+	var best: Node = null
+	var best_dist: float = radius
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not node.has_meta("building_id"):
+			continue
+		var bid: StringName = StringName(node.get_meta("building_id"))
+		if bid == &"InstalledBed" or bid == &"ResearchBench":
+			continue
+		if _is_workstation_building_id(bid):
+			continue
+		var d: float = node.global_position.distance_to(world_pos)
+		if d > best_dist:
+			continue
+		best_dist = d
+		best = node
+	return best
+
+func _is_workstation_building_id(building_id: StringName) -> bool:
+	for ws_id_any in workstation_lookup.keys():
+		var ws_id: StringName = StringName(ws_id_any)
+		var ws: Resource = workstation_lookup.get(ws_id, null)
+		if ws == null:
+			continue
+		if StringName(ws.linked_building_id) == building_id:
+			return true
+	return false
+
+func _queue_demolish_structure(structure: Node, replace_building_id: StringName = &"") -> void:
+	if structure == null or not is_instance_valid(structure):
+		return
+	var required_work: float = 30.0
+	if structure.has_meta("required_work"):
+		required_work = float(structure.get_meta("required_work"))
+	var demolish_work: float = maxf(0.5, required_work / 3.0)
+	job_system.queue_demolish_job(structure, demolish_work, replace_building_id)
+
+func _draw_demolish_queued_outlines() -> void:
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not bool(node.get_meta("demolish_job_queued")):
+			continue
+		var size: Vector2 = node.get_meta("footprint_size") if node.has_meta("footprint_size") else Vector2(TILE_SIZE, TILE_SIZE)
+		var rect := Rect2(node.global_position - size * 0.5, size)
+		draw_rect(rect, Color(1.0, 0.2, 0.2, 0.22), true)
+		draw_rect(rect, Color(1.0, 0.3, 0.3, 0.95), false, 2.0)
+
 func _on_resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2) -> void:
 	# Harvest result is always dropped in world first; stock updates only after hauling into stockpile.
 	_spawn_resource_drop(resource_type, amount, world_pos)
@@ -765,6 +967,11 @@ func _on_craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id
 			continue
 		_spawn_resource_drop(StringName(k), amount, world_pos)
 	job_system.notify_craft_job_finished(craft_slot_id)
+
+func _on_structure_demolished(world_pos: Vector2, replace_building_id: StringName) -> void:
+	if replace_building_id == &"":
+		return
+	_try_place_building_by_id(world_pos, replace_building_id)
 
 func _on_research_progressed(project_id: StringName, points: float) -> void:
 	if project_id == &"" or points <= 0.0:
@@ -832,15 +1039,9 @@ func _on_colonist_ate_food() -> void:
 		hud.set_resource_stock(resource_stock)
 
 func _try_place_selected_building(world_pos: Vector2, as_blueprint: bool) -> void:
-	var snapshot: Dictionary = resource_stock.duplicate(true)
-	if not build_system.consume_selected_cost(resource_stock):
-		return
 	var placed: bool = build_system.place_building(world_pos, as_blueprint)
-	if not placed:
-		resource_stock = snapshot
-	else:
-		_consume_stockpile_by_delta(snapshot, resource_stock)
-	hud.set_resource_stock(resource_stock)
+	if placed and not as_blueprint:
+		hud.set_resource_stock(resource_stock)
 
 func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> void:
 	if building_id == &"Stockpile":
@@ -857,6 +1058,48 @@ func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> v
 		return
 	build_system.set_selected_building(building_id)
 	_try_place_selected_building(world_pos, true)
+
+func try_supply_build_site(site_obj: Object) -> bool:
+	if site_obj == null or not is_instance_valid(site_obj):
+		return false
+	if not (site_obj is Node):
+		return false
+	var site_node: Node = site_obj
+	if site_node.has_method("requires_material_delivery") and not bool(site_node.requires_material_delivery()):
+		return true
+	var site_building_id: StringName = StringName(site_node.get("building_id"))
+	if site_building_id != &"" and _consume_free_build_allowance(site_building_id):
+		if site_node.has_method("mark_materials_delivered"):
+			site_node.mark_materials_delivered()
+		return true
+	var build_cost: Dictionary = {}
+	if site_node.has_method("get_build_cost"):
+		build_cost = site_node.get_build_cost()
+	if build_cost.is_empty():
+		if site_node.has_method("mark_materials_delivered"):
+			site_node.mark_materials_delivered()
+		return true
+	if not _can_afford_build_cost(build_cost):
+		return false
+	_consume_build_cost(build_cost)
+	if site_node.has_method("mark_materials_delivered"):
+		site_node.mark_materials_delivered()
+	hud.set_resource_stock(resource_stock)
+	return true
+
+func _can_afford_build_cost(cost: Dictionary) -> bool:
+	for key_any in cost.keys():
+		var key: StringName = StringName(key_any)
+		var need: int = int(cost[key_any])
+		if int(resource_stock.get(key, 0)) < need:
+			return false
+	return true
+
+func _consume_build_cost(cost: Dictionary) -> void:
+	for key_any in cost.keys():
+		var key: StringName = StringName(key_any)
+		var need: int = int(cost[key_any])
+		_consume_resource_stock(key, need)
 
 func _try_install_pending_item(world_pos: Vector2) -> bool:
 	if pending_install_item != &"Bed":
@@ -1238,14 +1481,26 @@ func _start_raid_warning() -> void:
 	_raid_state = &"Warning"
 	_raid_warning_timer = 18.0
 	_raid_wave_size = maxi(2, 2 + int(floor(_elapsed_game_seconds / 120.0)))
+	_raid_wave_kind = _pick_raid_wave_kind()
 
 func _start_raid_wave() -> void:
 	_raid_state = &"Active"
 	_raid_warning_timer = 0.0
-	_spawn_raiders(_raid_wave_size)
+	match _raid_wave_kind:
+		&"ZombieHorde":
+			_spawn_zombies(_raid_wave_size + 1)
+		&"Mixed":
+			var zombie_count: int = maxi(1, int(round(_raid_wave_size * 0.55)))
+			var raider_count: int = maxi(1, _raid_wave_size - zombie_count)
+			_spawn_zombies(zombie_count)
+			_spawn_raiders(raider_count)
+		_:
+			_spawn_raiders(_raid_wave_size)
 
 func _resolve_raid(_colony_survived: bool) -> void:
 	_raid_state = &"Resolved"
+	if _colony_survived:
+		_grant_raid_reward()
 
 func _on_raid_test_warning_requested() -> void:
 	if _raid_state == &"Warning" or _raid_state == &"Active":
@@ -1268,6 +1523,38 @@ func _spawn_raiders(count: int) -> void:
 		if raider.has_signal("died"):
 			raider.died.connect(_on_raider_died)
 		units_root.add_child(raider)
+
+func _spawn_zombies(count: int) -> void:
+	if count <= 0:
+		return
+	for _i in range(count):
+		var zombie: Node2D = ZOMBIE_SCENE.instantiate()
+		zombie.global_position = _snap_to_tile(_random_edge_spawn(120.0))
+		if zombie.has_method("set_tile_size"):
+			zombie.set_tile_size(TILE_SIZE)
+		units_root.add_child(zombie)
+
+func _pick_raid_wave_kind() -> StringName:
+	var roll: float = randf()
+	var tier: int = int(floor(_elapsed_game_seconds / 240.0))
+	if tier <= 0:
+		return &"RaiderOnly"
+	if tier == 1:
+		if roll < 0.5:
+			return &"RaiderOnly"
+		return &"ZombieHorde"
+	if roll < 0.35:
+		return &"RaiderOnly"
+	if roll < 0.7:
+		return &"ZombieHorde"
+	return &"Mixed"
+
+func _grant_raid_reward() -> void:
+	var bonus_scale: int = maxi(1, _raid_wave_size)
+	var food_amount: int = 2 + bonus_scale
+	var wood_amount: int = 1 + int(floor(bonus_scale * 0.5))
+	_spawn_resource_drop(&"FoodRaw", food_amount, _snap_to_tile(WORLD_SIZE * 0.5 + Vector2(60.0, -40.0)))
+	_spawn_resource_drop(&"Wood", wood_amount, _snap_to_tile(WORLD_SIZE * 0.5 + Vector2(-50.0, -36.0)))
 
 func _on_raider_died(_raider: Node) -> void:
 	if _raid_state == &"Active" and _get_alive_raiders().is_empty():
@@ -1519,6 +1806,21 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 			return
 		_on_research_project_changed(project_id)
 		_refresh_hud()
+	elif action_id == &"DemolishSelectedStructure":
+		if _selected_object_kind != &"Structure":
+			return
+		if _selected_object_zone == null or not is_instance_valid(_selected_object_zone):
+			return
+		_queue_demolish_structure(_selected_object_zone)
+		_refresh_hud()
+	elif action_id == &"CancelBuildSite":
+		if _selected_object_kind != &"BuildSite":
+			return
+		if _selected_object_zone == null or not is_instance_valid(_selected_object_zone):
+			return
+		_cancel_build_site(_selected_object_zone)
+		_clear_selected_object()
+		_refresh_hud()
 
 func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	var world_pos: Vector2 = world_root.get_global_mouse_position()
@@ -1751,6 +2053,36 @@ func _update_defense_traps(delta: float) -> void:
 			trap.set_meta("trap_charges", charges)
 			if charges <= 0:
 				trap.queue_free()
+
+func _refresh_structure_integrity() -> void:
+	for node in get_tree().get_nodes_in_group("repairable_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var max_hp: float = float(node.get_meta("structure_max_health")) if node.has_meta("structure_max_health") else 0.0
+		if max_hp <= 0.0:
+			continue
+		var hp: float = float(node.get_meta("structure_health")) if node.has_meta("structure_health") else max_hp
+		hp = clampf(hp, 0.0, max_hp)
+		node.set_meta("structure_health", hp)
+		var ratio: float = hp / max_hp
+		for child in node.get_children():
+			if child is Sprite2D:
+				child.modulate = Color(1.0, ratio, ratio, 1.0)
+				break
+
+func _get_damaged_repairable_structures() -> Array:
+	var out: Array = []
+	for node in get_tree().get_nodes_in_group("repairable_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var max_hp: float = float(node.get_meta("structure_max_health")) if node.has_meta("structure_max_health") else 0.0
+		if max_hp <= 0.0:
+			continue
+		var hp: float = float(node.get_meta("structure_health")) if node.has_meta("structure_health") else max_hp
+		if hp >= max_hp - 0.5:
+			continue
+		out.append(node)
+	return out
 
 func _refresh_stockpile_filter_ui() -> void:
 	if selected_stockpile_zone == null or not is_instance_valid(selected_stockpile_zone):
@@ -2083,6 +2415,44 @@ func _tile_to_world(tile: Vector2i) -> Vector2:
 
 func _snap_to_tile(world_pos: Vector2) -> Vector2:
 	return _tile_to_world(_world_to_tile(world_pos))
+
+func _can_drag_line_place(building_id: StringName) -> bool:
+	return building_id == &"Wall" or building_id == &"Gate"
+
+func _build_line_tiles_from_world(start_world: Vector2, end_world: Vector2) -> Array[Vector2i]:
+	var start_tile: Vector2i = _world_to_tile(start_world)
+	var end_tile: Vector2i = _world_to_tile(end_world)
+	var out: Array[Vector2i] = []
+	var dx: int = end_tile.x - start_tile.x
+	var dy: int = end_tile.y - start_tile.y
+	# Lock to the dominant axis so wall drag remains a straight line.
+	if abs(dx) >= abs(dy):
+		var dir_x: int = 1 if dx >= 0 else -1
+		for x in range(start_tile.x, end_tile.x + dir_x, dir_x):
+			out.append(Vector2i(x, start_tile.y))
+	else:
+		var dir_y: int = 1 if dy >= 0 else -1
+		for y in range(start_tile.y, end_tile.y + dir_y, dir_y):
+			out.append(Vector2i(start_tile.x, y))
+	return out
+
+func _try_place_building_line_by_id(start_world: Vector2, end_world: Vector2, building_id: StringName) -> void:
+	if building_id == &"":
+		return
+	var tiles: Array[Vector2i] = _build_line_tiles_from_world(start_world, end_world)
+	if tiles.is_empty():
+		return
+	for tile in tiles:
+		_try_place_building_by_id(_tile_to_world(tile), building_id)
+
+func _consume_free_build_allowance(building_id: StringName) -> bool:
+	if building_id == &"":
+		return false
+	var remain: int = int(_free_build_allowance.get(building_id, 0))
+	if remain <= 0:
+		return false
+	_free_build_allowance[building_id] = remain - 1
+	return true
 
 func _is_colonist_in_combat(colonist: Node) -> bool:
 	if colonist == null or not is_instance_valid(colonist):

@@ -107,6 +107,7 @@ signal drag_gather_mode_requested()
 signal drag_stockpile_mode_requested()
 signal drag_farm_mode_requested()
 signal clear_state_requested()
+signal rally_flag_mode_requested()
 signal bed_assignee_changed(colonist_id: int)
 signal bed_auto_assign_requested()
 signal context_action_requested(action_id: StringName)
@@ -136,6 +137,7 @@ var _last_selected_object_title: String = ""
 var _last_selected_object_detail: String = ""
 var _last_selected_object_actions_sig: String = ""
 var _research_ids_by_index: Array[StringName] = []
+var _rally_flag_button: Button = null
 
 func _ready() -> void:
 	haul_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Haul", int(v)))
@@ -160,6 +162,13 @@ func _ready() -> void:
 	drag_farm_button.pressed.connect(func(): drag_farm_mode_requested.emit())
 	mode_cycle_button.pressed.connect(_on_order_toggle_pressed)
 	clear_state_button.pressed.connect(_on_outfit_mode_pressed)
+	_rally_flag_button = Button.new()
+	_rally_flag_button.name = "RallyFlagButton"
+	_rally_flag_button.custom_minimum_size = Vector2(186, 34)
+	_rally_flag_button.text = "집합 깃발 설정"
+	_rally_flag_button.tooltip_text = "클릭 후 맵에서 집합 위치를 지정합니다."
+	_rally_flag_button.pressed.connect(func(): rally_flag_mode_requested.emit())
+	command_grid.add_child(_rally_flag_button)
 	raid_test_button.pressed.connect(func(): raid_test_warning_requested.emit())
 	research_option.item_selected.connect(_on_research_selected)
 	research_start_button.pressed.connect(func(): research_start_requested.emit())
@@ -197,6 +206,7 @@ func _reorder_command_buttons() -> void:
 		drag_gather_button,
 		drag_stockpile_button,
 		drag_farm_button,
+		_rally_flag_button,
 		mode_cycle_button,
 		clear_state_button
 	]
@@ -275,6 +285,8 @@ func set_command_button_states(mode: StringName) -> void:
 	drag_gather_button.disabled = mode == &"DragGather"
 	drag_stockpile_button.disabled = mode == &"StockpileZone"
 	drag_farm_button.disabled = mode == &"FarmZone"
+	if _rally_flag_button != null:
+		_rally_flag_button.disabled = mode == &"SetRallyFlag"
 	match mode:
 		&"DragGather":
 			command_hint_label.text = "드래그한 범위를 채집/사냥 대상으로 지정합니다."
@@ -282,6 +294,8 @@ func set_command_button_states(mode: StringName) -> void:
 			command_hint_label.text = "드래그한 범위를 저장구역으로 만듭니다."
 		&"FarmZone":
 			command_hint_label.text = "드래그한 범위를 농경지로 지정합니다."
+		&"SetRallyFlag":
+			command_hint_label.text = "집합 깃발 위치 지정: 원하는 타일을 클릭하세요."
 		_:
 			command_hint_label.text = "상호작용 모드: 클릭 대상에 따라 선택/설정 UI를 엽니다."
 
@@ -302,21 +316,31 @@ func set_outfit_mode(mode: StringName) -> void:
 	if clear_state_button != null:
 		clear_state_button.text = "복장: %s" % ("전투" if _outfit_mode == &"Combat" else "작업")
 
-func set_raid_state(state: StringName, warning_seconds: float = 0.0) -> void:
+func set_raid_state(state: StringName, warning_seconds: float = 0.0, wave_kind: StringName = &"") -> void:
 	if raid_status_label == null:
 		return
+	var kind_text: String = ""
+	match wave_kind:
+		&"ZombieHorde":
+			kind_text = " [좀비]"
+		&"Mixed":
+			kind_text = " [혼합]"
+		&"RaiderOnly":
+			kind_text = " [약탈자]"
+		_:
+			kind_text = ""
 	match state:
 		&"Warning":
-			raid_status_label.text = "습격 경고: %.0fs" % ceil(warning_seconds)
+			raid_status_label.text = "습격 경고%s: %.0fs" % [kind_text, ceil(warning_seconds)]
 			raid_status_label.modulate = Color(1.0, 0.78, 0.32, 1.0)
 		&"Active":
-			raid_status_label.text = "습격 진행중"
+			raid_status_label.text = "습격 진행중%s" % kind_text
 			raid_status_label.modulate = Color(1.0, 0.35, 0.35, 1.0)
 		&"Resolved":
-			raid_status_label.text = "습격 종료"
+			raid_status_label.text = "습격 종료%s" % kind_text
 			raid_status_label.modulate = Color(0.68, 0.96, 0.68, 1.0)
 		_:
-			raid_status_label.text = "습격 대기"
+			raid_status_label.text = "습격 대기%s" % kind_text
 			raid_status_label.modulate = Color(0.8, 0.86, 0.95, 1.0)
 
 func set_time_flow_state(paused: bool, speed_scale: float, elapsed_game_seconds: float) -> void:

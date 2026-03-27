@@ -1,6 +1,7 @@
 extends Node2D
 
 const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
+const FRIENDLY_PATHING: Script = preload("res://scripts/core/pathing/FriendlyPathing.gd")
 
 signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
@@ -8,6 +9,7 @@ signal resource_delivered(resource_type: StringName, amount: int, zone: Node)
 signal craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id: int)
 signal research_progressed(project_id: StringName, points: float)
 signal haul_job_released(drop_id: int)
+signal structure_demolished(world_pos: Vector2, replace_building_id: StringName)
 signal ate_food()
 signal died(colonist: Node)
 
@@ -53,6 +55,18 @@ var work_enabled: Dictionary = {
 	&"Hunt": true
 }
 var tile_size: float = 40.0
+const BUILD_WORK_TARGET_THRESHOLD: float = 18.0
+const BUILD_WORK_SITE_RANGE_TILES: float = 1.6
+const MOVE_STUCK_REPATH_SEC: float = 0.55
+const UPDATE_NEAR_RADIUS: float = 900.0
+const UPDATE_FAR_INTERVAL_SEC: float = 0.12
+const OBSTACLE_SIG_INTERVAL_SEC: float = 0.25
+
+var _move_stuck_elapsed: float = 0.0
+var _reroute_target_pending: Vector2 = Vector2.INF
+var _friendly_pathing: FriendlyPathing = null
+var _sim_accum: float = 0.0
+var _obstacle_sig_left: float = 0.0
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
 @onready var sprite: Sprite2D = $Sprite2D
@@ -79,30 +93,103 @@ func _ready() -> void:
 		"weapon_mode": &"Melee"
 	})
 	_fit_sprite()
+	_friendly_pathing = FRIENDLY_PATHING.new()
+	_friendly_pathing.setup(tile_size)
 	emit_status()
 
 func _physics_process(delta: float) -> void:
+	_sim_accum += delta
+	var tick_interval: float = _lod_tick_interval()
+	if _sim_accum < tick_interval:
+		return
+	var sim_delta: float = _sim_accum
+	_sim_accum = 0.0
 	if food_speed_buff_remaining > 0.0:
-		food_speed_buff_remaining = maxf(0.0, food_speed_buff_remaining - delta)
-	_process_movement(delta)
-	_process_active_work(delta)
+		food_speed_buff_remaining = maxf(0.0, food_speed_buff_remaining - sim_delta)
+	if _friendly_pathing != null:
+		_friendly_pathing.tick(sim_delta)
+	_update_local_obstacle_signature(sim_delta)
+	_process_movement(sim_delta)
+	_process_active_work(sim_delta)
+
+func _lod_tick_interval() -> float:
+	var cam: Camera2D = get_viewport().get_camera_2d()
+	if cam == null:
+		return 0.0
+	if global_position.distance_to(cam.global_position) <= UPDATE_NEAR_RADIUS:
+		return 0.0
+	return UPDATE_FAR_INTERVAL_SEC
+
+func _update_local_obstacle_signature(delta: float) -> void:
+	if _friendly_pathing == null:
+		return
+	if current_job.is_empty():
+		return
+	_obstacle_sig_left = maxf(0.0, _obstacle_sig_left - delta)
+	if _obstacle_sig_left > 0.0:
+		return
+	_obstacle_sig_left = OBSTACLE_SIG_INTERVAL_SEC
+	_friendly_pathing.notify_obstacle_signature(_compute_local_obstacle_signature())
+
+func _compute_local_obstacle_signature() -> int:
+	var radius: float = tile_size * 3.2
+	var sig: int = 17
+	for node in get_tree().get_nodes_in_group("blocking_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not bool(node.get_meta("blocks_movement")):
+			continue
+		if bool(node.get_meta("passable_for_friendly")):
+			continue
+		if global_position.distance_to(node.global_position) > radius:
+			continue
+		sig = int((sig * 131 + node.get_instance_id()) % 2147483647)
+	for site in get_tree().get_nodes_in_group("build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if bool(site.get("complete")):
+			continue
+		if global_position.distance_to(site.global_position) > radius:
+			continue
+		sig = int((sig * 131 + site.get_instance_id()) % 2147483647)
+	return sig
 
 func _process_movement(delta: float) -> void:
-	if nav.is_navigation_finished():
+	var goal: Vector2 = _resolve_move_goal()
+	if goal == Vector2.INF:
+		_clear_path_cache()
+		_move_stuck_elapsed = 0.0
 		return
-	var next_pos: Vector2 = nav.get_next_path_position()
-	var dir: Vector2 = global_position.direction_to(next_pos)
+	if global_position.distance_to(goal) <= 6.0:
+		_clear_path_cache()
+		_move_stuck_elapsed = 0.0
+		if _reroute_target_pending != Vector2.INF:
+			nav.target_position = _reroute_target_pending
+			_reroute_target_pending = Vector2.INF
+		return
 	var speed_mul: float = 1.5 if food_speed_buff_remaining > 0.0 else 1.0
-	var proposed: Vector2 = global_position + dir * stats.move_speed * speed_mul * delta
-	if _is_blocked_position(proposed):
-		nav.target_position = global_position
+	var result: Dictionary = {}
+	if _friendly_pathing != null:
+		result = _friendly_pathing.move_step(
+			global_position,
+			goal,
+			stats.move_speed * speed_mul,
+			delta,
+			Callable(self, "_is_blocked_position")
+		)
+	var blocked: bool = bool(result.get("blocked", false))
+	if blocked:
+		_move_stuck_elapsed += delta
+		if _move_stuck_elapsed >= MOVE_STUCK_REPATH_SEC:
+			_move_stuck_elapsed = 0.0
 		return
-	global_position = proposed
-	if global_position.distance_to(next_pos) < 4.0 and not _is_blocked_position(next_pos):
-		global_position = next_pos
+	global_position = result.get("position", global_position)
+	_move_stuck_elapsed = 0.0
 
 func set_tile_size(value: float) -> void:
 	tile_size = maxf(4.0, value)
+	if _friendly_pathing != null:
+		_friendly_pathing.setup(tile_size)
 
 func _snap_to_tile(world_pos: Vector2) -> Vector2:
 	return Vector2(
@@ -117,12 +204,39 @@ func _is_blocked_position(world_pos: Vector2) -> bool:
 			continue
 		if not bool(node.get_meta("blocks_movement")):
 			continue
+		# Friendly colonists can pass through gate-like structures.
+		if bool(node.get_meta("passable_for_friendly")):
+			continue
 		var footprint: Vector2 = node.get_meta("footprint_size") if node.has_meta("footprint_size") else Vector2(tile_size, tile_size)
 		var dx: float = absf(tile.x - node.global_position.x)
 		var dy: float = absf(tile.y - node.global_position.y)
 		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
 			return true
+	for site in get_tree().get_nodes_in_group("build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if bool(site.get("complete")):
+			continue
+		var footprint: Vector2 = site.get("footprint_size") if site.get("footprint_size") != null else Vector2(tile_size, tile_size)
+		var dx: float = absf(tile.x - site.global_position.x)
+		var dy: float = absf(tile.y - site.global_position.y)
+		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
+			return true
 	return false
+
+func _resolve_move_goal() -> Vector2:
+	if current_job.is_empty():
+		return Vector2.INF
+	if current_job.has("target"):
+		return _snap_to_tile(current_job.get("target", global_position))
+	return _snap_to_tile(nav.target_position)
+
+func _is_at_goal(goal: Vector2) -> bool:
+	return global_position.distance_to(goal) <= 6.0
+
+func _clear_path_cache() -> void:
+	if _friendly_pathing != null:
+		_friendly_pathing.clear()
 
 func _nearby_cover_bonus() -> float:
 	var best_bonus: float = 0.0
@@ -149,6 +263,9 @@ func get_priority(job_type: StringName) -> int:
 
 func assign_job(job: Dictionary) -> void:
 	current_job = job
+	_reroute_target_pending = Vector2.INF
+	_move_stuck_elapsed = 0.0
+	_clear_path_cache()
 	var job_type: StringName = job.get("type", &"Idle")
 	match job_type:
 		&"MoveTo":
@@ -161,6 +278,16 @@ func assign_job(job: Dictionary) -> void:
 			build_target = _snap_to_tile(build_target)
 			current_job["target"] = build_target
 			nav.target_position = build_target
+		&"RepairStructure":
+			var repair_target: Vector2 = job.get("target", global_position)
+			repair_target = _snap_to_tile(repair_target)
+			current_job["target"] = repair_target
+			nav.target_position = repair_target
+		&"DemolishStructure":
+			var demolish_target: Vector2 = job.get("target", global_position)
+			demolish_target = _snap_to_tile(demolish_target)
+			current_job["target"] = demolish_target
+			nav.target_position = demolish_target
 		&"Gather":
 			var gather_target: Vector2 = job.get("target", global_position)
 			gather_target = _snap_to_tile(gather_target)
@@ -220,6 +347,18 @@ func cancel_current_job() -> void:
 			var site: Object = instance_from_id(site_id)
 			if site != null and is_instance_valid(site):
 				site.set_job_queued(false)
+	elif job_type == &"RepairStructure":
+		var structure_id: int = int(current_job.get("structure_id", 0))
+		if structure_id != 0:
+			var structure: Object = instance_from_id(structure_id)
+			if structure != null and is_instance_valid(structure):
+				structure.set_meta("repair_job_queued", false)
+	elif job_type == &"DemolishStructure":
+		var structure_id: int = int(current_job.get("structure_id", 0))
+		if structure_id != 0:
+			var structure: Object = instance_from_id(structure_id)
+			if structure != null and is_instance_valid(structure):
+				structure.set_meta("demolish_job_queued", false)
 	elif job_type == &"Gather":
 		var gatherable_id: int = int(current_job.get("gatherable_id", 0))
 		if gatherable_id != 0:
@@ -246,6 +385,9 @@ func cancel_current_job() -> void:
 			if zone_obj != null and is_instance_valid(zone_obj) and zone_obj.has_method("clear_plot_job"):
 				zone_obj.clear_plot_job(current_job.get("tile", Vector2i.ZERO))
 	current_job.clear()
+	_reroute_target_pending = Vector2.INF
+	_move_stuck_elapsed = 0.0
+	_clear_path_cache()
 	nav.target_position = global_position
 	emit_status()
 
@@ -258,11 +400,48 @@ func update_job_completion(_delta: float = 0.0) -> void:
 	var job_type: StringName = current_job.get("type", &"")
 	if job_type == &"MoveTo" and _is_job_target_reached(10.0):
 		_finish_current_job()
-	elif job_type == &"BuildSite" and _is_job_target_reached(18.0):
+	elif job_type == &"BuildSite":
+		var site_for_supply: Object = instance_from_id(int(current_job.get("site_id", 0)))
+		if site_for_supply == null or not is_instance_valid(site_for_supply):
+			_finish_current_job()
+			return
+		if bool(site_for_supply.get("complete")):
+			_finish_current_job()
+			return
+		if _is_build_site_reach_failed(site_for_supply):
+			if site_for_supply.has_method("set_job_queued"):
+				site_for_supply.set_job_queued(false)
+			_finish_current_job()
+			return
+		if not _can_start_build_site_work(site_for_supply):
+			return
+		if site_for_supply != null and is_instance_valid(site_for_supply):
+			if site_for_supply.has_method("requires_material_delivery") and bool(site_for_supply.requires_material_delivery()):
+				if not _try_supply_build_site(site_for_supply):
+					if site_for_supply.has_method("set_job_queued"):
+						site_for_supply.set_job_queued(false)
+					_finish_current_job()
+					return
 		if not bool(current_job.get("work_started", false)):
 			current_job["work_started"] = true
 			current_job["work_elapsed"] = 0.0
 			current_job["work_duration"] = maxf(1.0, float(current_job.get("work_duration", 30.0)))
+			_set_work_progress(0.0, true)
+			emit_status()
+		return
+	elif job_type == &"RepairStructure" and _is_job_target_reached(18.0):
+		if not bool(current_job.get("work_started", false)):
+			current_job["work_started"] = true
+			current_job["work_elapsed"] = 0.0
+			current_job["work_duration"] = maxf(0.2, float(current_job.get("work_duration", 8.0)))
+			_set_work_progress(0.0, true)
+			emit_status()
+		return
+	elif job_type == &"DemolishStructure" and _is_job_target_reached(18.0):
+		if not bool(current_job.get("work_started", false)):
+			current_job["work_started"] = true
+			current_job["work_elapsed"] = 0.0
+			current_job["work_duration"] = maxf(0.2, float(current_job.get("work_duration", 4.0)))
 			_set_work_progress(0.0, true)
 			emit_status()
 		return
@@ -420,6 +599,10 @@ func can_do_job(job_type: StringName) -> bool:
 	match job_type:
 		&"BuildSite":
 			return bool(work_enabled.get(&"Build", true))
+		&"RepairStructure":
+			return bool(work_enabled.get(&"Build", true))
+		&"DemolishStructure":
+			return bool(work_enabled.get(&"Build", true))
 		&"Gather":
 			return bool(work_enabled.get(&"Gather", true))
 		&"Hunt":
@@ -452,10 +635,34 @@ func _fit_sprite() -> void:
 	sprite.scale = Vector2(scale_factor, scale_factor)
 
 func _is_job_target_reached(threshold: float) -> bool:
-	if nav.is_navigation_finished():
-		return true
 	var target: Vector2 = current_job.get("target", global_position)
 	return global_position.distance_to(target) <= threshold
+
+func _can_start_build_site_work(site_obj: Object) -> bool:
+	if site_obj == null or not is_instance_valid(site_obj):
+		return false
+	var target: Vector2 = current_job.get("target", global_position)
+	if global_position.distance_to(target) > BUILD_WORK_TARGET_THRESHOLD:
+		return false
+	if site_obj is Node2D:
+		var site_range: float = maxf(tile_size * BUILD_WORK_SITE_RANGE_TILES, BUILD_WORK_TARGET_THRESHOLD + 6.0)
+		if global_position.distance_to((site_obj as Node2D).global_position) > site_range:
+			return false
+	return true
+
+func _is_build_site_reach_failed(site_obj: Object) -> bool:
+	if site_obj == null or not is_instance_valid(site_obj):
+		return true
+	var target: Vector2 = current_job.get("target", global_position)
+	if not _is_at_goal(target):
+		return false
+	if global_position.distance_to(target) > BUILD_WORK_TARGET_THRESHOLD + 4.0:
+		return true
+	if site_obj is Node2D:
+		var site_range: float = maxf(tile_size * BUILD_WORK_SITE_RANGE_TILES, BUILD_WORK_TARGET_THRESHOLD + 10.0)
+		if global_position.distance_to((site_obj as Node2D).global_position) > site_range:
+			return true
+	return false
 
 func _update_job_label() -> void:
 	if job_label == null:
@@ -479,6 +686,10 @@ func _job_display_name(job_type: StringName) -> String:
 			return "이동"
 		&"BuildSite":
 			return "건설"
+		&"RepairStructure":
+			return "수리"
+		&"DemolishStructure":
+			return "해체"
 		&"Gather":
 			return "채집"
 		&"Hunt":
@@ -509,7 +720,7 @@ func _process_active_work(delta: float) -> void:
 		_set_work_progress(0.0, false)
 		return
 	var job_type: StringName = current_job.get("type", &"")
-	if job_type != &"Gather" and job_type != &"BuildSite" and job_type != &"CraftRecipe" and job_type != &"ResearchTask" and job_type != &"EatStub" and job_type != &"PlantCrop" and job_type != &"HarvestCrop":
+	if job_type != &"Gather" and job_type != &"BuildSite" and job_type != &"RepairStructure" and job_type != &"DemolishStructure" and job_type != &"CraftRecipe" and job_type != &"ResearchTask" and job_type != &"EatStub" and job_type != &"PlantCrop" and job_type != &"HarvestCrop":
 		_set_work_progress(0.0, false)
 		return
 	if not bool(current_job.get("work_started", false)):
@@ -526,6 +737,10 @@ func _process_active_work(delta: float) -> void:
 			_complete_gather_job()
 		elif job_type == &"BuildSite":
 			_complete_build_job()
+		elif job_type == &"RepairStructure":
+			_complete_repair_job()
+		elif job_type == &"DemolishStructure":
+			_complete_demolish_job()
 		elif job_type == &"PlantCrop":
 			_complete_plant_crop_job()
 		elif job_type == &"HarvestCrop":
@@ -561,6 +776,29 @@ func _complete_build_job() -> void:
 			site.apply_work(maxf(0.0, target_work - progressed))
 			if not bool(site.get("complete")) and site.has_method("set_job_queued"):
 				site.set_job_queued(false)
+	_finish_current_job()
+
+func _complete_repair_job() -> void:
+	var structure_id: int = int(current_job.get("structure_id", 0))
+	if structure_id != 0:
+		var structure: Object = instance_from_id(structure_id)
+		if structure != null and is_instance_valid(structure):
+			var max_hp: float = float(structure.get_meta("structure_max_health")) if structure.has_meta("structure_max_health") else 0.0
+			if max_hp > 0.0:
+				structure.set_meta("structure_health", max_hp)
+			structure.set_meta("repair_job_queued", false)
+	_finish_current_job()
+
+func _complete_demolish_job() -> void:
+	var structure_id: int = int(current_job.get("structure_id", 0))
+	var replace_building_id: StringName = StringName(current_job.get("replace_building_id", &""))
+	if structure_id != 0:
+		var structure: Object = instance_from_id(structure_id)
+		if structure != null and is_instance_valid(structure):
+			var pos: Vector2 = structure.global_position if structure is Node2D else global_position
+			structure.set_meta("demolish_job_queued", false)
+			structure.queue_free()
+			structure_demolished.emit(pos, replace_building_id)
 	_finish_current_job()
 
 func _complete_craft_job() -> void:
@@ -740,8 +978,21 @@ func _die() -> void:
 	died.emit(self)
 	queue_free()
 
+func _try_supply_build_site(site_obj: Object) -> bool:
+	if site_obj == null or not is_instance_valid(site_obj):
+		return false
+	var controller: Node = get_tree().get_first_node_in_group("main_controller")
+	if controller == null or not is_instance_valid(controller):
+		return false
+	if not controller.has_method("try_supply_build_site"):
+		return false
+	return bool(controller.try_supply_build_site(site_obj))
+
 func _finish_current_job() -> void:
 	current_job.clear()
+	_reroute_target_pending = Vector2.INF
+	_move_stuck_elapsed = 0.0
+	_clear_path_cache()
 	_set_work_progress(0.0, false)
 	nav.target_position = global_position
 	emit_status()

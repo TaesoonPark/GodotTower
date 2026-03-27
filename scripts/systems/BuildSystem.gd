@@ -26,7 +26,7 @@ func place_building(world_pos: Vector2, as_blueprint: bool) -> bool:
 	if def == null:
 		return false
 	var snapped_pos: Vector2 = _snap_world_to_grid(world_pos)
-	if _has_site_near(snapped_pos, 16.0):
+	if _is_footprint_occupied(snapped_pos, def.footprint_size):
 		return false
 	if as_blueprint:
 		_place_blueprint(def, snapped_pos)
@@ -77,6 +77,15 @@ func _place_blueprint(def: Resource, world_pos: Vector2) -> void:
 		site.setup_building(def, false)
 	_sites.append(site)
 
+func cancel_build_site(site: Node) -> bool:
+	if site == null or not is_instance_valid(site):
+		return false
+	_sites.erase(site)
+	if site.has_method("set_job_queued"):
+		site.set_job_queued(false)
+	site.queue_free()
+	return true
+
 func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	var placed := Node2D.new()
 	placed.name = "Built_%s" % String(def.id)
@@ -96,13 +105,22 @@ func _place_direct(def: Resource, world_pos: Vector2) -> void:
 
 func _apply_structure_metas(node: Node2D, def: Resource) -> void:
 	node.set_meta("building_id", def.id)
+	node.set_meta("required_work", float(def.required_work))
 	node.set_meta("footprint_size", def.footprint_size)
 	node.set_meta("blocks_movement", bool(def.blocks_movement))
+	node.set_meta("passable_for_friendly", bool(def.passable_for_friendly))
 	node.set_meta("cover_bonus", float(def.cover_bonus))
 	node.set_meta("trap_damage", int(def.trap_damage))
 	node.set_meta("trap_cooldown_sec", float(def.trap_cooldown_sec))
 	node.set_meta("trap_charges", int(def.trap_charges))
 	node.set_meta("trap_cooldown_left", 0.0)
+	var max_health: float = maxf(10.0, float(def.max_health))
+	node.set_meta("structure_max_health", max_health)
+	node.set_meta("structure_health", max_health)
+	node.set_meta("repair_work", maxf(0.1, float(def.repair_work)))
+	node.set_meta("repair_job_queued", false)
+	node.set_meta("demolish_job_queued", false)
+	node.add_to_group("repairable_structures")
 	if bool(def.blocks_movement):
 		node.add_to_group("blocking_structures")
 	if float(def.cover_bonus) > 0.0:
@@ -111,7 +129,7 @@ func _apply_structure_metas(node: Node2D, def: Resource) -> void:
 		node.add_to_group("trap_structures")
 
 func request_build_jobs(job_system: Node) -> void:
-	_sites = _sites.filter(func(s): return s != null and is_instance_valid(s))
+	_sites = _sites.filter(func(s): return _is_active_site(s))
 	for site in _sites:
 		if site.complete:
 			continue
@@ -148,9 +166,40 @@ func place_farm_zone(area_rect: Rect2) -> bool:
 
 func _has_site_near(pos: Vector2, radius: float) -> bool:
 	for site in _sites:
-		if site == null or not is_instance_valid(site):
+		if not _is_active_site(site):
 			continue
 		if site.global_position.distance_to(pos) <= radius:
+			return true
+	return false
+
+func _is_active_site(site: Object) -> bool:
+	if site == null or not is_instance_valid(site):
+		return false
+	if not (site is Node):
+		return false
+	var site_node: Node = site
+	if site_node.is_queued_for_deletion():
+		return false
+	if not site_node.is_inside_tree():
+		return false
+	return true
+
+func _is_footprint_occupied(center: Vector2, footprint_size: Vector2) -> bool:
+	var half: Vector2 = footprint_size * 0.5
+	var candidate_rect := Rect2(center - half, footprint_size)
+	for site in _sites:
+		if not _is_active_site(site):
+			continue
+		var site_footprint: Vector2 = site.get("footprint_size") if site.get("footprint_size") != null else Vector2(grid_size, grid_size)
+		var site_rect := Rect2(site.global_position - site_footprint * 0.5, site_footprint)
+		if candidate_rect.intersects(site_rect):
+			return true
+	for structure in get_tree().get_nodes_in_group("structures"):
+		if structure == null or not is_instance_valid(structure):
+			continue
+		var structure_footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(grid_size, grid_size)
+		var structure_rect := Rect2(structure.global_position - structure_footprint * 0.5, structure_footprint)
+		if candidate_rect.intersects(structure_rect):
 			return true
 	return false
 

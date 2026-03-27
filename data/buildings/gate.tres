@@ -4,18 +4,18 @@
 
 [resource]
 script = ExtResource("1_building_def")
-id = &"Barricade"
-display_name = "Barricade"
+id = &"Gate"
+display_name = "Gate"
 category = "Defense"
-required_work = 50.0
+required_work = 70.0
 footprint_size = Vector2(40, 40)
 build_cost = {
-&"Wood": 1
+&"Wood": 1,
+&"Steel": 1
 }
-direct_place_color = Color(0.56, 0.4, 0.24, 1)
-blueprint_color = Color(0.56, 0.4, 0.24, 0.72)
-required_research = &"DefenseTheoryI"
+direct_place_color = Color(0.42, 0.34, 0.22, 1)
+blueprint_color = Color(0.42, 0.34, 0.22, 0.72)
 blocks_movement = true
-cover_bonus = 3.0
-max_health = 220.0
-repair_work = 7.0
+passable_for_friendly = true
+max_health = 260.0
+repair_work = 8.0

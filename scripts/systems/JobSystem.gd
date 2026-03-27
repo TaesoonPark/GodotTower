@@ -3,6 +3,7 @@ class_name JobSystem
 
 const HAUL_QUEUE_TIMEOUT_MS: int = 5000
 const HAUL_ASSIGN_TIMEOUT_MS: int = 12000
+const WORK_ADJACENT_OFFSET: float = 40.0
 
 var _jobs: Array[Dictionary] = []
 var _craft_queues: Dictionary = {}
@@ -30,15 +31,51 @@ func issue_immediate_move(colonist: Node, target: Vector2) -> void:
 	})
 
 func queue_build_job(site: Node) -> void:
+	var work_target: Vector2 = site.global_position
+	if site is Node2D:
+		work_target = _find_adjacent_work_position(site)
 	var job: Dictionary = {
 		"type": &"BuildSite",
-		"target": site.global_position,
+		"target": work_target,
 		"site_id": site.get_instance_id(),
 		"work_duration": float(site.get("required_work")),
 		"base_priority": 11,
 		"assigned_to": 0
 	}
 	_jobs.append(job)
+
+func queue_repair_job(structure: Node, work_duration: float = 8.0) -> void:
+	if structure == null or not is_instance_valid(structure):
+		return
+	if bool(structure.get_meta("repair_job_queued")):
+		return
+	structure.set_meta("repair_job_queued", true)
+	var target_pos: Vector2 = structure.global_position if structure is Node2D else Vector2.ZERO
+	_jobs.append({
+		"type": &"RepairStructure",
+		"target": target_pos,
+		"structure_id": structure.get_instance_id(),
+		"work_duration": maxf(0.2, work_duration),
+		"base_priority": 10,
+		"assigned_to": 0
+	})
+
+func queue_demolish_job(structure: Node, work_duration: float = 4.0, replace_building_id: StringName = &"") -> void:
+	if structure == null or not is_instance_valid(structure):
+		return
+	if bool(structure.get_meta("demolish_job_queued")):
+		return
+	structure.set_meta("demolish_job_queued", true)
+	var target_pos: Vector2 = structure.global_position if structure is Node2D else Vector2.ZERO
+	_jobs.append({
+		"type": &"DemolishStructure",
+		"target": target_pos,
+		"structure_id": structure.get_instance_id(),
+		"replace_building_id": replace_building_id,
+		"work_duration": maxf(0.2, work_duration),
+		"base_priority": 10,
+		"assigned_to": 0
+	})
 
 func queue_gather_job(gatherable: Node, assigned_to: int = 0) -> void:
 	if gatherable == null or not is_instance_valid(gatherable):
@@ -359,7 +396,20 @@ func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: St
 		})
 		return
 
-func request_combat_jobs(colonists: Array, enemies: Array) -> void:
+func request_repair_jobs(structures: Array) -> void:
+	for structure in structures:
+		if structure == null or not is_instance_valid(structure):
+			continue
+		var max_hp: float = float(structure.get_meta("structure_max_health")) if structure.has_meta("structure_max_health") else 0.0
+		if max_hp <= 0.0:
+			continue
+		var hp: float = float(structure.get_meta("structure_health")) if structure.has_meta("structure_health") else max_hp
+		if hp >= max_hp - 0.5:
+			continue
+		var work_duration: float = float(structure.get_meta("repair_work")) if structure.has_meta("repair_work") else 8.0
+		queue_repair_job(structure, work_duration)
+
+func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = Vector2.INF, rally_radius: float = 120.0) -> void:
 	_cleanup_stale_combat_jobs()
 	if enemies.is_empty():
 		return
@@ -371,8 +421,23 @@ func request_combat_jobs(colonists: Array, enemies: Array) -> void:
 		var colonist_id: int = colonist.get_instance_id()
 		if _has_pending_combat_job(colonist_id):
 			continue
+		if _has_pending_move_job(colonist_id):
+			continue
 		if not colonist.current_job.is_empty():
 			continue
+		if rally_pos != Vector2.INF:
+			var dist_to_rally: float = colonist.global_position.distance_to(rally_pos)
+			if dist_to_rally > maxf(20.0, rally_radius):
+				var dir: Vector2 = rally_pos - colonist.global_position
+				var normalized: Vector2 = dir.normalized() if dir.length() > 0.001 else Vector2.RIGHT
+				var move_target: Vector2 = rally_pos - normalized * minf(rally_radius * 0.55, 72.0)
+				_jobs.append({
+					"type": &"MoveTo",
+					"target": move_target,
+					"base_priority": 14,
+					"assigned_to": colonist_id
+				})
+				continue
 		var nearest_enemy: Node = null
 		var best_dist: float = INF
 		for enemy in enemies:
@@ -449,6 +514,14 @@ func _pick_best_job_index(colonist: Node) -> int:
 		if job_type == &"BuildSite" and colonist is Node2D:
 			var bdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
 			score += clampf(140.0 - bdist, 0.0, 140.0) * 0.003
+		if job_type == &"RepairStructure" and colonist is Node2D:
+			var rdist2: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
+			score += clampf(180.0 - rdist2, 0.0, 180.0) * 0.003
+			score += float(colonist.get_priority(&"Build")) * 10.0
+		if job_type == &"DemolishStructure" and colonist is Node2D:
+			var ddist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
+			score += clampf(180.0 - ddist, 0.0, 180.0) * 0.003
+			score += float(colonist.get_priority(&"Build")) * 10.0
 		if job_type == &"Gather" and colonist is Node2D:
 			var gdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
 			score += clampf(180.0 - gdist, 0.0, 180.0) * 0.003
@@ -623,6 +696,14 @@ func _has_pending_combat_job(colonist_id: int) -> bool:
 			return true
 	return false
 
+func _has_pending_move_job(colonist_id: int) -> bool:
+	for job in _jobs:
+		if int(job.get("assigned_to", 0)) != colonist_id:
+			continue
+		if StringName(job.get("type", &"")) == &"MoveTo":
+			return true
+	return false
+
 func _has_pending_research_job(colonist_id: int) -> bool:
 	for job in _jobs:
 		if int(job.get("assigned_to", 0)) != colonist_id:
@@ -645,6 +726,17 @@ func _has_any_active_or_pending_research_job(colonists: Array) -> bool:
 	return false
 
 func _cleanup_stale_combat_jobs() -> void:
+	for i in range(_jobs.size() - 1, -1, -1):
+		var job: Dictionary = _jobs[i]
+		if StringName(job.get("type", &"")) != &"BuildSite":
+			continue
+		var site_id: int = int(job.get("site_id", 0))
+		if site_id == 0:
+			_jobs.remove_at(i)
+			continue
+		var site_obj: Object = instance_from_id(site_id)
+		if site_obj == null or not is_instance_valid(site_obj):
+			_jobs.remove_at(i)
 	for i in range(_jobs.size() - 1, -1, -1):
 		var job: Dictionary = _jobs[i]
 		var t: StringName = StringName(job.get("type", &""))
@@ -680,6 +772,30 @@ func _cleanup_stale_combat_jobs() -> void:
 		var target: Vector2 = job.get("target", Vector2.INF)
 		if target == Vector2.INF:
 			_jobs.remove_at(i)
+	for i in range(_jobs.size() - 1, -1, -1):
+		var job: Dictionary = _jobs[i]
+		if StringName(job.get("type", &"")) != &"RepairStructure":
+			continue
+		var structure_id: int = int(job.get("structure_id", 0))
+		if structure_id == 0:
+			_jobs.remove_at(i)
+			continue
+		var obj: Object = instance_from_id(structure_id)
+		if obj == null or not is_instance_valid(obj):
+			_jobs.remove_at(i)
+			continue
+	for i in range(_jobs.size() - 1, -1, -1):
+		var job: Dictionary = _jobs[i]
+		if StringName(job.get("type", &"")) != &"DemolishStructure":
+			continue
+		var structure_id: int = int(job.get("structure_id", 0))
+		if structure_id == 0:
+			_jobs.remove_at(i)
+			continue
+		var obj: Object = instance_from_id(structure_id)
+		if obj == null or not is_instance_valid(obj):
+			_jobs.remove_at(i)
+			continue
 
 func _cleanup_craft_slot_reservations(colonists: Array) -> void:
 	var active_slots: Dictionary = {}
@@ -708,3 +824,77 @@ func _cleanup_craft_slot_reservations(colonists: Array) -> void:
 		stale_slot_ids.append(slot_id)
 	for slot_id in stale_slot_ids:
 		_reserved_craft_slot_ids.erase(slot_id)
+
+func _find_adjacent_work_position(site: Node2D) -> Vector2:
+	var center: Vector2 = site.global_position
+	var candidates: Array[Vector2] = [
+		center + Vector2(WORK_ADJACENT_OFFSET, 0.0),
+		center + Vector2(-WORK_ADJACENT_OFFSET, 0.0),
+		center + Vector2(0.0, WORK_ADJACENT_OFFSET),
+		center + Vector2(0.0, -WORK_ADJACENT_OFFSET),
+		center + Vector2(WORK_ADJACENT_OFFSET, WORK_ADJACENT_OFFSET),
+		center + Vector2(WORK_ADJACENT_OFFSET, -WORK_ADJACENT_OFFSET),
+		center + Vector2(-WORK_ADJACENT_OFFSET, WORK_ADJACENT_OFFSET),
+		center + Vector2(-WORK_ADJACENT_OFFSET, -WORK_ADJACENT_OFFSET)
+	]
+	var site_id: int = site.get_instance_id()
+	for pos in candidates:
+		if _is_blocked_by_structure(pos):
+			continue
+		if _is_work_position_reserved(pos, site_id):
+			continue
+		return pos
+	return candidates[0]
+
+func _is_work_position_reserved(world_pos: Vector2, for_site_id: int) -> bool:
+	for job in _jobs:
+		if StringName(job.get("type", &"")) != &"BuildSite":
+			continue
+		var job_site_id: int = int(job.get("site_id", 0))
+		if job_site_id == 0 or job_site_id == for_site_id:
+			continue
+		var target: Vector2 = job.get("target", Vector2.INF)
+		if target == Vector2.INF:
+			continue
+		if target.distance_to(world_pos) <= 8.0:
+			return true
+	for colonist in get_tree().get_nodes_in_group("colonists"):
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		var active_job: Dictionary = colonist.get("current_job")
+		if active_job.is_empty():
+			continue
+		if StringName(active_job.get("type", &"")) != &"BuildSite":
+			continue
+		var job_site_id: int = int(active_job.get("site_id", 0))
+		if job_site_id == 0 or job_site_id == for_site_id:
+			continue
+		var active_target: Vector2 = active_job.get("target", Vector2.INF)
+		if active_target == Vector2.INF:
+			continue
+		if active_target.distance_to(world_pos) <= 10.0:
+			return true
+	return false
+
+func _is_blocked_by_structure(world_pos: Vector2) -> bool:
+	for node in get_tree().get_nodes_in_group("blocking_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not bool(node.get_meta("blocks_movement")):
+			continue
+		var footprint: Vector2 = node.get_meta("footprint_size") if node.has_meta("footprint_size") else Vector2(WORK_ADJACENT_OFFSET, WORK_ADJACENT_OFFSET)
+		var dx: float = absf(world_pos.x - node.global_position.x)
+		var dy: float = absf(world_pos.y - node.global_position.y)
+		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
+			return true
+	for site in get_tree().get_nodes_in_group("build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if bool(site.get("complete")):
+			continue
+		var footprint: Vector2 = site.get("footprint_size") if site.get("footprint_size") != null else Vector2(WORK_ADJACENT_OFFSET, WORK_ADJACENT_OFFSET)
+		var dx: float = absf(world_pos.x - site.global_position.x)
+		var dy: float = absf(world_pos.y - site.global_position.y)
+		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
+			return true
+	return false

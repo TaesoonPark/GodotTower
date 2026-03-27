@@ -7,7 +7,7 @@ script = ExtResource("1_building_def")
 id = &"Wall"
 display_name = "Wall"
 category = "Structure"
-required_work = 60.0
+required_work = 1.0
 footprint_size = Vector2(40, 40)
 build_cost = {
 &"Stone": 1
@@ -15,3 +15,5 @@ build_cost = {
 direct_place_color = Color(0.52, 0.52, 0.56, 1)
 blueprint_color = Color(0.48, 0.5, 0.66, 0.72)
 blocks_movement = true
+max_health = 320.0
+repair_work = 9.0

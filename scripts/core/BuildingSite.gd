@@ -10,10 +10,15 @@ var footprint_size: Vector2 = Vector2(40, 40)
 var complete_color: Color = Color(0.35, 0.75, 0.35, 1.0)
 var blueprint_color: Color = Color(0.45, 0.55, 0.85, 0.7)
 var blocks_movement: bool = false
+var passable_for_friendly: bool = false
 var cover_bonus: float = 0.0
 var trap_damage: int = 0
 var trap_cooldown_sec: float = 0.0
 var trap_charges: int = 0
+var structure_max_health: float = 180.0
+var repair_work: float = 8.0
+var build_cost: Dictionary = {}
+var materials_delivered: bool = false
 
 @onready var base_sprite: Sprite2D = $BaseSprite
 @onready var progress_sprite: Sprite2D = $ProgressSprite
@@ -36,18 +41,31 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 	complete_color = def.direct_place_color
 	blueprint_color = def.blueprint_color
 	blocks_movement = bool(def.blocks_movement)
+	passable_for_friendly = bool(def.passable_for_friendly)
 	cover_bonus = float(def.cover_bonus)
 	trap_damage = int(def.trap_damage)
 	trap_cooldown_sec = float(def.trap_cooldown_sec)
 	trap_charges = int(def.trap_charges)
+	structure_max_health = maxf(10.0, float(def.max_health))
+	repair_work = maxf(0.1, float(def.repair_work))
+	build_cost = def.build_cost.duplicate(true)
+	materials_delivered = false
 	set_meta("building_id", building_id)
+	set_meta("required_work", required_work)
 	set_meta("footprint_size", footprint_size)
 	set_meta("blocks_movement", blocks_movement)
+	set_meta("passable_for_friendly", passable_for_friendly)
 	set_meta("cover_bonus", cover_bonus)
 	set_meta("trap_damage", trap_damage)
 	set_meta("trap_cooldown_sec", trap_cooldown_sec)
 	set_meta("trap_charges", trap_charges)
 	set_meta("trap_cooldown_left", 0.0)
+	set_meta("structure_max_health", structure_max_health)
+	set_meta("structure_health", structure_max_health)
+	set_meta("repair_work", repair_work)
+	set_meta("repair_job_queued", false)
+	set_meta("demolish_job_queued", false)
+	set_meta("materials_delivered", materials_delivered)
 	if is_node_ready():
 		base_sprite.texture = _make_texture(int(footprint_size.x), int(footprint_size.y), blueprint_color)
 		progress_sprite.texture = _make_texture(max(12, int(footprint_size.x - 4.0)), 6, Color(0.3, 0.95, 0.4, 0.85))
@@ -61,6 +79,18 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 
 func set_job_queued(v: bool) -> void:
 	job_queued = v
+
+func get_build_cost() -> Dictionary:
+	return build_cost.duplicate(true)
+
+func requires_material_delivery() -> bool:
+	return not materials_delivered
+
+func mark_materials_delivered() -> void:
+	materials_delivered = true
+	set_meta("materials_delivered", true)
+	if is_node_ready():
+		_update_visual()
 
 func apply_work(amount: float) -> void:
 	if complete:
@@ -82,7 +112,10 @@ func _update_visual() -> void:
 		base_sprite.modulate = complete_color
 		progress_sprite.visible = false
 	else:
-		base_sprite.modulate = blueprint_color
+		if materials_delivered:
+			base_sprite.modulate = blueprint_color
+		else:
+			base_sprite.modulate = blueprint_color.darkened(0.28)
 		progress_sprite.visible = true
 
 func _build_complete_visual() -> void:
@@ -98,6 +131,7 @@ func _build_complete_visual() -> void:
 
 func _on_completed() -> void:
 	add_to_group("structures")
+	add_to_group("repairable_structures")
 	if blocks_movement:
 		add_to_group("blocking_structures")
 	if cover_bonus > 0.0:

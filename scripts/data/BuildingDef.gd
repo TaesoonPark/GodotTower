@@ -11,7 +11,10 @@ class_name BuildingDef
 @export var blueprint_color: Color = Color(0.45, 0.55, 0.85, 0.7)
 @export var required_research: StringName = &""
 @export var blocks_movement: bool = false
+@export var passable_for_friendly: bool = false
 @export var cover_bonus: float = 0.0
 @export var trap_damage: int = 0
 @export var trap_cooldown_sec: float = 0.0
 @export var trap_charges: int = 0
+@export var max_health: float = 180.0
+@export var repair_work: float = 8.0

@@ -18,3 +18,5 @@ required_research = &"DefenseTheoryI"
 trap_damage = 24
 trap_cooldown_sec = 5.0
 trap_charges = 8
+max_health = 130.0
+repair_work = 6.0

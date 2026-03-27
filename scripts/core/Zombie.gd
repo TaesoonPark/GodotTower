@@ -1,23 +1,20 @@
 extends Node2D
-class_name Raider
+class_name Zombie
 
 const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
 const ENEMY_PATHING: Script = preload("res://scripts/core/pathing/EnemyPathing.gd")
 
-signal died(raider: Node)
+signal died(zombie: Node)
 
-@export var max_health: float = 95.0
-@export var move_speed: float = 145.0
-@export var base_hit_chance: float = 0.68
-@export var defense: float = 3.0
-@export var melee_attack: float = 10.0
-@export var ranged_attack: float = 8.0
-@export var armor_penetration: float = 1.0
-@export var melee_range: float = 32.0
-@export var ranged_range: float = 180.0
-@export var attack_cooldown_sec: float = 1.2
-@export var ranged_ratio: float = 0.4
-@export var structure_attack_damage: float = 10.0
+@export var max_health: float = 165.0
+@export var move_speed: float = 78.0
+@export var base_hit_chance: float = 0.56
+@export var defense: float = 2.0
+@export var melee_attack: float = 12.0
+@export var armor_penetration: float = 0.5
+@export var melee_range: float = 28.0
+@export var attack_cooldown_sec: float = 1.45
+@export var structure_attack_damage: float = 16.0
 @export var structure_attack_range: float = 30.0
 const UPDATE_NEAR_RADIUS: float = 900.0
 const UPDATE_FAR_INTERVAL_SEC: float = 0.14
@@ -27,7 +24,6 @@ var health: float = 0.0
 var _target_colonist_id: int = 0
 var _next_attack_ms: int = 0
 var _next_structure_attack_ms: int = 0
-var _weapon_mode: StringName = &"Melee"
 var tile_size: float = 40.0
 var _enemy_pathing: EnemyPathing = null
 var _sim_accum: float = 0.0
@@ -39,12 +35,12 @@ var _obstacle_sig_left: float = 0.0
 
 func _ready() -> void:
 	health = max_health
-	_weapon_mode = &"Ranged" if randf() < ranged_ratio else &"Melee"
+	add_to_group("zombies")
 	add_to_group("raiders")
 	_enemy_pathing = ENEMY_PATHING.new()
 	_enemy_pathing.setup(tile_size)
 	if sprite != null and sprite.texture == null:
-		sprite.texture = _make_texture(28, 34, Color(0.86, 0.22, 0.22, 1.0))
+		sprite.texture = _make_texture(30, 36, Color(0.26, 0.68, 0.31, 1.0))
 	_refresh_label()
 
 func _physics_process(delta: float) -> void:
@@ -99,7 +95,7 @@ func _snap_to_tile(world_pos: Vector2) -> Vector2:
 	)
 
 func get_combat_defender_profile() -> Dictionary:
-	return {"defense": defense + _nearby_cover_bonus()}
+	return {"defense": defense}
 
 func is_dead() -> bool:
 	return health <= 0.0
@@ -119,24 +115,23 @@ func _ai_tick() -> void:
 	var target: Node2D = _resolve_target()
 	if target == null:
 		_target_colonist_id = 0
+		_try_attack_structure()
 		return
 	_target_colonist_id = target.get_instance_id()
-	var attack_range: float = ranged_range if _weapon_mode == &"Ranged" else melee_range
 	var dist: float = global_position.distance_to(target.global_position)
-	if dist > attack_range:
+	if dist > melee_range:
 		nav.target_position = _snap_to_tile(target.global_position)
 		return
 	nav.target_position = global_position
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms < _next_attack_ms:
 		return
-	var attack_power: float = ranged_attack if _weapon_mode == &"Ranged" else melee_attack
 	var attacker: Dictionary = {
-		"attack_power": attack_power,
+		"attack_power": melee_attack,
 		"armor_penetration": armor_penetration,
 		"base_hit": base_hit_chance,
 		"accuracy_bonus": 0.0,
-		"attack_range": attack_range
+		"attack_range": melee_range
 	}
 	var defender: Dictionary = {"defense": 0.0}
 	if target.has_method("get_combat_defender_profile"):
@@ -231,24 +226,10 @@ func _find_blocking_structure_near(center: Vector2, radius: float) -> Node:
 		best = node
 	return best
 
-func _nearby_cover_bonus() -> float:
-	var best_bonus: float = 0.0
-	for node in get_tree().get_nodes_in_group("cover_structures"):
-		if node == null or not is_instance_valid(node):
-			continue
-		var dist: float = global_position.distance_to(node.global_position)
-		if dist > maxf(48.0, tile_size * 1.2):
-			continue
-		var cover: float = float(node.get_meta("cover_bonus")) if node.has_meta("cover_bonus") else 0.0
-		if cover > best_bonus:
-			best_bonus = cover
-	return best_bonus
-
 func _refresh_label() -> void:
 	if label == null:
 		return
-	var weapon_text: String = "활" if _weapon_mode == &"Ranged" else "칼"
-	label.text = "Raider(%s) HP:%d" % [weapon_text, int(round(health))]
+	label.text = "Zombie HP:%d" % int(round(health))
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)
