@@ -6,7 +6,7 @@ const HAUL_ASSIGN_TIMEOUT_MS: int = 12000
 
 var _jobs: Array[Dictionary] = []
 var _craft_queues: Dictionary = {}
-var _craft_job_inflight: bool = false
+var _reserved_craft_slot_ids: Dictionary = {}
 var _reserved_drop_ids: Dictionary = {}
 
 func queue_move_job(colonist: Node, target: Vector2) -> void:
@@ -212,8 +212,9 @@ func get_craft_queue(workstation_id: StringName) -> Array[Dictionary]:
 			out.append(item)
 	return out
 
-func notify_craft_job_finished() -> void:
-	_craft_job_inflight = false
+func notify_craft_job_finished(craft_slot_id: int = 0) -> void:
+	if craft_slot_id != 0:
+		_reserved_craft_slot_ids.erase(craft_slot_id)
 
 func request_designated_gather_jobs(gatherables: Array) -> void:
 	for node in gatherables:
@@ -263,9 +264,8 @@ func request_haul_jobs(drops: Array, stockpile_zones: Array, current_stock: Dict
 		queue_haul_job(drop_node, nearest_zone, 0, base_priority, as_craft_supply)
 		_set_latest_haul_meta(drop_node.get_instance_id(), urgency, drop_amount)
 
-func request_craft_jobs(recipe_lookup: Dictionary, workstation_positions: Dictionary, can_start_callback: Callable = Callable(), on_start_callback: Callable = Callable()) -> void:
-	if _craft_job_inflight:
-		return
+func request_craft_jobs(recipe_lookup: Dictionary, workstation_slots: Dictionary, colonists: Array, can_start_callback: Callable = Callable(), on_start_callback: Callable = Callable()) -> void:
+	_cleanup_craft_slot_reservations(colonists)
 	if _craft_queues.is_empty():
 		return
 	var ws_keys: Array = _craft_queues.keys()
@@ -275,43 +275,68 @@ func request_craft_jobs(recipe_lookup: Dictionary, workstation_positions: Dictio
 		var queue: Array = _craft_queues[workstation_id]
 		if queue.is_empty():
 			continue
-		var order: Dictionary = queue[0]
-		var recipe_id: StringName = order.get("recipe_id", &"")
-		var station_pos: Vector2 = workstation_positions.get(workstation_id, Vector2.INF)
-		if station_pos == Vector2.INF:
+		var slots: Array = workstation_slots.get(workstation_id, [])
+		if slots.is_empty():
 			continue
-		if not recipe_lookup.has(recipe_id):
+		var free_slots: Array[Dictionary] = []
+		for slot_any in slots:
+			if not (slot_any is Dictionary):
+				continue
+			var slot: Dictionary = slot_any
+			var slot_id: int = int(slot.get("slot_id", 0))
+			if slot_id == 0:
+				continue
+			if _reserved_craft_slot_ids.has(slot_id):
+				continue
+			free_slots.append(slot)
+		if free_slots.is_empty():
+			continue
+		for slot in free_slots:
+			if queue.is_empty():
+				break
+			var order: Dictionary = queue[0]
+			var recipe_id: StringName = order.get("recipe_id", &"")
+			if not recipe_lookup.has(recipe_id):
+				queue.remove_at(0)
+				_craft_queues[workstation_id] = queue
+				continue
+			var recipe: Resource = recipe_lookup[recipe_id]
+			var can_start: bool = true
+			if can_start_callback.is_valid():
+				can_start = bool(can_start_callback.call(workstation_id, recipe))
+			if not can_start:
+				break
+			if on_start_callback.is_valid():
+				on_start_callback.call(workstation_id, recipe)
+			var slot_id: int = int(slot.get("slot_id", 0))
+			var station_pos: Vector2 = slot.get("pos", Vector2.INF)
+			if slot_id == 0 or station_pos == Vector2.INF:
+				continue
+			_jobs.append({
+				"type": &"CraftRecipe",
+				"target": station_pos,
+				"recipe_id": recipe.id,
+				"workstation_id": workstation_id,
+				"recipe_name": recipe.display_name,
+				"work_duration": maxf(0.1, float(recipe.work_required)),
+				"products": recipe.products,
+				"craft_slot_id": slot_id,
+				"base_priority": 11,
+				"assigned_to": 0
+			})
+			_reserved_craft_slot_ids[slot_id] = {
+				"assigned_to": 0,
+				"reserved_at_ms": Time.get_ticks_msec()
+			}
 			queue.remove_at(0)
 			_craft_queues[workstation_id] = queue
-			continue
-		var recipe: Resource = recipe_lookup[recipe_id]
-		var can_start: bool = true
-		if can_start_callback.is_valid():
-			can_start = bool(can_start_callback.call(workstation_id, recipe))
-		if not can_start:
-			continue
-		if on_start_callback.is_valid():
-			on_start_callback.call(workstation_id, recipe)
-		_jobs.append({
-			"type": &"CraftRecipe",
-			"target": station_pos,
-			"recipe_id": recipe.id,
-			"workstation_id": workstation_id,
-			"recipe_name": recipe.display_name,
-			"work_duration": maxf(0.1, float(recipe.work_required)),
-			"products": recipe.products,
-			"base_priority": 11,
-			"assigned_to": 0
-		})
-		queue.remove_at(0)
-		_craft_queues[workstation_id] = queue
-		_craft_job_inflight = true
-		return
 
 func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: StringName, work_duration: float = 6.0) -> void:
 	if project_id == &"":
 		return
 	if target_pos == Vector2.INF:
+		return
+	if _has_any_active_or_pending_research_job(colonists):
 		return
 	for colonist in colonists:
 		if colonist == null or not is_instance_valid(colonist):
@@ -332,6 +357,7 @@ func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: St
 			"base_priority": 9,
 			"assigned_to": colonist_id
 		})
+		return
 
 func request_combat_jobs(colonists: Array, enemies: Array) -> void:
 	_cleanup_stale_combat_jobs()
@@ -399,6 +425,13 @@ func assign_jobs(colonists: Array) -> void:
 				"assigned_to": colonist.get_instance_id(),
 				"reserved_at_ms": Time.get_ticks_msec()
 			}
+		if job.get("type", &"") == &"CraftRecipe":
+			var slot_id: int = int(job.get("craft_slot_id", 0))
+			if slot_id != 0:
+				_reserved_craft_slot_ids[slot_id] = {
+					"assigned_to": colonist.get_instance_id(),
+					"reserved_at_ms": Time.get_ticks_msec()
+				}
 		colonist.assign_job(job)
 
 func _pick_best_job_index(colonist: Node) -> int:
@@ -598,6 +631,19 @@ func _has_pending_research_job(colonist_id: int) -> bool:
 			return true
 	return false
 
+func _has_any_active_or_pending_research_job(colonists: Array) -> bool:
+	for job in _jobs:
+		if StringName(job.get("type", &"")) == &"ResearchTask":
+			return true
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if colonist.current_job.is_empty():
+			continue
+		if StringName(colonist.current_job.get("type", &"")) == &"ResearchTask":
+			return true
+	return false
+
 func _cleanup_stale_combat_jobs() -> void:
 	for i in range(_jobs.size() - 1, -1, -1):
 		var job: Dictionary = _jobs[i]
@@ -634,3 +680,31 @@ func _cleanup_stale_combat_jobs() -> void:
 		var target: Vector2 = job.get("target", Vector2.INF)
 		if target == Vector2.INF:
 			_jobs.remove_at(i)
+
+func _cleanup_craft_slot_reservations(colonists: Array) -> void:
+	var active_slots: Dictionary = {}
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		var current_job: Dictionary = colonist.current_job
+		if current_job.is_empty():
+			continue
+		if StringName(current_job.get("type", &"")) != &"CraftRecipe":
+			continue
+		var active_slot_id: int = int(current_job.get("craft_slot_id", 0))
+		if active_slot_id != 0:
+			active_slots[active_slot_id] = colonist.get_instance_id()
+	for job in _jobs:
+		if StringName(job.get("type", &"")) != &"CraftRecipe":
+			continue
+		var queued_slot_id: int = int(job.get("craft_slot_id", 0))
+		if queued_slot_id != 0:
+			active_slots[queued_slot_id] = 0
+	var stale_slot_ids: Array[int] = []
+	for slot_id_any in _reserved_craft_slot_ids.keys():
+		var slot_id: int = int(slot_id_any)
+		if active_slots.has(slot_id):
+			continue
+		stale_slot_ids.append(slot_id)
+	for slot_id in stale_slot_ids:
+		_reserved_craft_slot_ids.erase(slot_id)

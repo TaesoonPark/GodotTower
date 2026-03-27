@@ -122,6 +122,8 @@ func _ready() -> void:
 			research_lookup[research_def.id] = research_def
 	_spawn_initial_colonists()
 	_refresh_building_catalog()
+	if input_controller != null and input_controller.has_method("set_grid_size"):
+		input_controller.set_grid_size(TILE_SIZE)
 	input_controller.left_click.connect(_on_left_click)
 	input_controller.drag_selection.connect(_on_drag_selection)
 	hud.priority_changed.connect(_on_priority_changed)
@@ -207,7 +209,8 @@ func _process(delta: float) -> void:
 	build_system.request_build_jobs(job_system)
 	job_system.request_craft_jobs(
 		recipe_lookup,
-		_build_workstation_position_map(),
+		_build_workstation_slots_map(),
+		colonists,
 		Callable(self, "_can_start_recipe_at_workstation"),
 		Callable(self, "_on_recipe_started_at_workstation")
 	)
@@ -281,6 +284,8 @@ func _draw() -> void:
 		border_color = Color(0.42, 0.93, 0.46, 1.0)
 	draw_rect(rect, fill_color, true)
 	draw_rect(rect, border_color, false, 2.0)
+	# Always show a green translucent command outline while dragging.
+	draw_rect(rect.grow(1.0), Color(0.24, 0.96, 0.42, 0.55), false, 3.0)
 
 func _spawn_initial_colonists() -> void:
 	var center: Vector2 = WORLD_SIZE * 0.5
@@ -379,12 +384,32 @@ func _on_left_click(world_pos: Vector2) -> void:
 		hud.set_active_action(&"HuntTarget")
 		return
 
+	var research_bench: Node = _find_structure_by_building_near(world_pos, &"ResearchBench", 56.0)
+	if research_bench != null:
+		_clear_selected_object()
+		selected_designation_target = null
+		hud.set_designation_panel_visible(false)
+		_selected_object_kind = &"ResearchBench"
+		_selected_object_zone = research_bench
+		_selected_object_resource = &"ResearchBench"
+		_refresh_hud()
+		hud.set_active_action(&"ResearchBenchSelected")
+		return
+
 	var ws_id: StringName = _find_workstation_id_near(world_pos, 56.0)
 	if ws_id != &"":
 		_clear_selected_object()
 		selected_designation_target = null
 		hud.set_designation_panel_visible(false)
+		var ws_node: Node = _find_workstation_node_near(world_pos, 56.0, ws_id)
+		if workstation_lookup.has(ws_id):
+			var ws_def: Resource = workstation_lookup[ws_id]
+			if StringName(ws_def.linked_building_id) == &"ResearchBench":
+				_selected_object_kind = &"ResearchBench"
+				_selected_object_resource = ws_id
+				_selected_object_zone = ws_node
 		_activate_workstation(ws_id)
+		_refresh_hud()
 		hud.set_active_action(&"Workstation")
 		return
 	hud.set_craft_panel_visible(false)
@@ -531,15 +556,48 @@ func _refresh_hud() -> void:
 			}]
 		)
 	elif object_focus:
-		var amount: int = 0
-		if _selected_object_zone.has_method("get_stored_amount"):
-			amount = int(_selected_object_zone.get_stored_amount(_selected_object_resource))
-		var title: String = "Selected: %s" % String(_selected_object_resource)
-		var detail: String = "Type: Stockpile Item\nAmount: %d" % amount
-		var actions: Array = []
-		if _selected_object_resource == &"Bed" and amount > 0:
-			actions.append({"id": &"PlaceBedFromStockpile", "label": "배치하기"})
-		hud.set_selected_object_preview(title, detail, actions)
+		if _selected_object_kind == &"ResearchBench":
+			var options: Array = []
+			var keys: Array = research_lookup.keys()
+			keys.sort_custom(func(a, b): return String(a) < String(b))
+			for key_any in keys:
+				var key: StringName = StringName(key_any)
+				var def: Resource = research_lookup[key]
+				options.append({
+					"id": key,
+					"label": "%s (%.0f)" % [String(def.display_name), float(def.required_points)]
+				})
+			var progress_text: String = "없음"
+			if _active_research_id != &"":
+				progress_text = "%s %.0f / %.0f" % [
+					String(_active_research_id),
+					_active_research_points,
+					_active_research_required_points()
+				]
+			hud.set_selected_object_preview(
+				"Selected: Research Bench",
+				"Type: Research Bench\n현재 연구: %s" % progress_text,
+				[
+					{
+						"type": &"crop_selector",
+						"options": options,
+						"selected_id": _active_research_id,
+						"apply_action": &"SetResearchProject",
+						"apply_label": "연구 선택"
+					},
+					{"id": &"StartResearch", "label": "연구 시작"}
+				]
+			)
+		else:
+			var amount: int = 0
+			if _selected_object_zone.has_method("get_stored_amount"):
+				amount = int(_selected_object_zone.get_stored_amount(_selected_object_resource))
+			var title: String = "Selected: %s" % String(_selected_object_resource)
+			var detail: String = "Type: Stockpile Item\nAmount: %d" % amount
+			var actions: Array = []
+			if _selected_object_resource == &"Bed" and amount > 0:
+				actions.append({"id": &"PlaceBedFromStockpile", "label": "배치하기"})
+			hud.set_selected_object_preview(title, detail, actions)
 	else:
 		hud.set_stockpile_inventory_preview(stockpile_focus)
 	if focus != null:
@@ -664,6 +722,18 @@ func _find_installed_bed_near(world_pos: Vector2, radius: float) -> Node:
 			return node
 	return null
 
+func _find_structure_by_building_near(world_pos: Vector2, building_id: StringName, radius: float) -> Node:
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not node.has_meta("building_id"):
+			continue
+		if StringName(node.get_meta("building_id")) != building_id:
+			continue
+		if node.global_position.distance_to(world_pos) <= radius:
+			return node
+	return null
+
 func _on_resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2) -> void:
 	# Harvest result is always dropped in world first; stock updates only after hauling into stockpile.
 	_spawn_resource_drop(resource_type, amount, world_pos)
@@ -688,13 +758,13 @@ func _on_resource_delivered(resource_type: StringName, amount: int, zone: Node) 
 		_spawn_resource_drop(resource_type, remain, zone.global_position)
 	hud.set_resource_stock(resource_stock)
 
-func _on_craft_completed(products: Dictionary, world_pos: Vector2) -> void:
+func _on_craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id: int = 0) -> void:
 	for k in products.keys():
 		var amount: int = int(products[k])
 		if amount <= 0:
 			continue
 		_spawn_resource_drop(StringName(k), amount, world_pos)
-	job_system.notify_craft_job_finished()
+	job_system.notify_craft_job_finished(craft_slot_id)
 
 func _on_research_progressed(project_id: StringName, points: float) -> void:
 	if project_id == &"" or points <= 0.0:
@@ -1433,6 +1503,22 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		_selected_object_kind = &"FarmZone"
 		_selected_object_zone = target_zone
 		_refresh_hud()
+	elif action_id == &"StartResearch":
+		if _selected_object_kind != &"ResearchBench":
+			return
+		_on_research_start_requested()
+		_refresh_hud()
+	elif String(action_id).begins_with("SetResearchProject:"):
+		if _selected_object_kind != &"ResearchBench":
+			return
+		var prefix: String = "SetResearchProject:"
+		var raw: String = String(action_id)
+		var project_raw: String = raw.substr(prefix.length())
+		var project_id: StringName = StringName(project_raw)
+		if project_id == &"":
+			return
+		_on_research_project_changed(project_id)
+		_refresh_hud()
 
 func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	var world_pos: Vector2 = world_root.get_global_mouse_position()
@@ -1476,6 +1562,29 @@ func _build_workstation_position_map() -> Dictionary:
 	for ws_id in workstation_lookup.keys():
 		var ws: Resource = workstation_lookup[ws_id]
 		out[ws_id] = _find_workstation_pos(ws.linked_building_id)
+	return out
+
+func _build_workstation_slots_map() -> Dictionary:
+	var out: Dictionary = {}
+	for ws_id_any in workstation_lookup.keys():
+		out[StringName(ws_id_any)] = []
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not node.has_meta("building_id"):
+			continue
+		var building_id: StringName = StringName(node.get_meta("building_id"))
+		for ws_id_any in workstation_lookup.keys():
+			var ws_id: StringName = StringName(ws_id_any)
+			var ws: Resource = workstation_lookup[ws_id]
+			if StringName(ws.linked_building_id) != building_id:
+				continue
+			var slots: Array = out.get(ws_id, [])
+			slots.append({
+				"slot_id": node.get_instance_id(),
+				"pos": node.global_position
+			})
+			out[ws_id] = slots
 	return out
 
 func _filter_recipes_for_workstation(workstation_id: StringName) -> Array:
@@ -1910,16 +2019,43 @@ func _find_workstation_pos(building_id: StringName) -> Vector2:
 func _find_workstation_id_near(world_pos: Vector2, radius: float) -> StringName:
 	var best_id: StringName = &""
 	var best_dist: float = radius
-	for ws_id in workstation_lookup.keys():
-		var ws: Resource = workstation_lookup[ws_id]
-		var pos: Vector2 = _find_workstation_pos(ws.linked_building_id)
-		if pos == Vector2.INF:
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
 			continue
-		var dist: float = pos.distance_to(world_pos)
-		if dist <= best_dist:
-			best_dist = dist
-			best_id = ws.id
+		if not node.has_meta("building_id"):
+			continue
+		var building_id: StringName = StringName(node.get_meta("building_id"))
+		for ws_id_any in workstation_lookup.keys():
+			var ws_id: StringName = StringName(ws_id_any)
+			var ws: Resource = workstation_lookup[ws_id]
+			if StringName(ws.linked_building_id) != building_id:
+				continue
+			var dist: float = node.global_position.distance_to(world_pos)
+			if dist <= best_dist:
+				best_dist = dist
+				best_id = ws.id
 	return best_id
+
+func _find_workstation_node_near(world_pos: Vector2, radius: float, workstation_id: StringName = &"") -> Node:
+	var best_node: Node = null
+	var best_dist: float = radius
+	var target_building_id: StringName = &""
+	if workstation_id != &"" and workstation_lookup.has(workstation_id):
+		target_building_id = StringName(workstation_lookup[workstation_id].linked_building_id)
+	for node in get_tree().get_nodes_in_group("structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not node.has_meta("building_id"):
+			continue
+		var building_id: StringName = StringName(node.get_meta("building_id"))
+		if target_building_id != &"" and building_id != target_building_id:
+			continue
+		var dist: float = node.global_position.distance_to(world_pos)
+		if dist > best_dist:
+			continue
+		best_dist = dist
+		best_node = node
+	return best_node
 
 func _activate_workstation(workstation_id: StringName) -> void:
 	if workstation_id == &"":
@@ -1972,13 +2108,18 @@ func _find_free_combat_tile(preferred: Vector2i, max_radius: int = 2) -> Vector2
 
 func _apply_combat_tile_occupancy() -> void:
 	_combat_tile_claims.clear()
+	var raid_active: bool = _raid_state == &"Active"
 	var combat_units: Array[Node2D] = []
 	for c in colonists:
 		if _is_colonist_in_combat(c):
 			combat_units.append(c)
-	for r in _get_alive_raiders():
-		if r != null and is_instance_valid(r):
-			combat_units.append(r)
+	# Units can overlap in normal state; enforce one-unit-per-tile only in combat.
+	if raid_active:
+		for r in _get_alive_raiders():
+			if r != null and is_instance_valid(r):
+				combat_units.append(r)
+	if combat_units.is_empty():
+		return
 	for unit in combat_units:
 		var preferred_tile: Vector2i = _world_to_tile(unit.global_position)
 		var assigned_tile: Vector2i = _find_free_combat_tile(preferred_tile, 2)

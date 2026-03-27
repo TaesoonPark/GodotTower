@@ -9,6 +9,8 @@ var crop_type: StringName = &""
 var crop_catalog: Dictionary = {}
 var growth_time_multiplier: float = 1.0
 var _plots: Dictionary = {}
+var _plot_markers: Dictionary = {}
+var _plot_marker_root: Node2D = null
 
 @onready var fill_polygon: Polygon2D = $Fill
 @onready var outline: Line2D = $Outline
@@ -27,9 +29,11 @@ func setup_from_rect(rect: Rect2) -> void:
 
 func _ready() -> void:
 	add_to_group("farm_zones")
+	_ensure_plot_marker_root()
 	if _plots.is_empty():
 		_rebuild_plots()
 	_refresh_shape()
+	_refresh_plot_markers()
 
 func contains_point(world_point: Vector2) -> bool:
 	var local: Vector2 = to_local(world_point)
@@ -86,6 +90,7 @@ func get_crop_display_name() -> String:
 	return String(crop_def.display_name)
 
 func tick_growth(delta: float) -> void:
+	var changed: bool = false
 	for tile in _plots.keys():
 		var plot: Dictionary = _plots[tile]
 		var state: StringName = StringName(plot.get("state", &"Empty"))
@@ -99,7 +104,10 @@ func tick_growth(delta: float) -> void:
 			growth_seconds = float(crop_catalog[growth_crop].growth_seconds)
 		if elapsed >= growth_seconds * growth_time_multiplier:
 			plot["state"] = &"Mature"
+			changed = true
 		_plots[tile] = plot
+	if changed:
+		_refresh_plot_markers()
 	_refresh_label()
 
 func request_jobs(job_system: Node) -> void:
@@ -118,8 +126,6 @@ func request_jobs(job_system: Node) -> void:
 		clear_plot_job(tile)
 
 func claim_next_job() -> Dictionary:
-	if crop_type == &"":
-		return {}
 	var crop_def: Resource = get_crop_def()
 	var plant_work: float = 2.0
 	var harvest_work: float = 2.0
@@ -134,14 +140,17 @@ func claim_next_job() -> Dictionary:
 			continue
 		plot["job_queued"] = true
 		_plots[tile] = plot
+		var harvested_crop: StringName = StringName(plot.get("crop", crop_type))
 		return {
 			"type": &"HarvestCrop",
 			"target": get_plot_world(tile),
 			"zone_id": get_instance_id(),
 			"tile": tile,
-			"crop_type": crop_type,
+			"crop_type": harvested_crop,
 			"work_duration": harvest_work
 		}
+	if crop_type == &"":
+		return {}
 	for tile in _plots.keys():
 		var plot: Dictionary = _plots[tile]
 		if bool(plot.get("job_queued", false)):
@@ -183,6 +192,7 @@ func plant_crop(tile: Vector2i, planted_crop: StringName) -> bool:
 	plot["job_queued"] = false
 	_plots[tile] = plot
 	_refresh_label()
+	_refresh_plot_markers()
 	return true
 
 func harvest_crop(tile: Vector2i) -> Dictionary:
@@ -201,6 +211,7 @@ func harvest_crop(tile: Vector2i) -> Dictionary:
 	plot["job_queued"] = false
 	_plots[tile] = plot
 	_refresh_label()
+	_refresh_plot_markers()
 	if crop_catalog.has(harvested_crop):
 		var crop_def: Resource = crop_catalog[harvested_crop]
 		return {
@@ -272,3 +283,58 @@ func _rebuild_plots() -> void:
 				"elapsed": 0.0,
 				"job_queued": false
 			}
+	_refresh_plot_markers()
+
+func _ensure_plot_marker_root() -> void:
+	if _plot_marker_root != null and is_instance_valid(_plot_marker_root):
+		return
+	_plot_marker_root = Node2D.new()
+	_plot_marker_root.name = "PlotMarkers"
+	_plot_marker_root.z_index = 2
+	add_child(_plot_marker_root)
+
+func _refresh_plot_markers() -> void:
+	_ensure_plot_marker_root()
+	var stale_tiles: Array[Vector2i] = []
+	for tile_any in _plot_markers.keys():
+		var tile: Vector2i = tile_any
+		if not _plots.has(tile):
+			stale_tiles.append(tile)
+			continue
+		var plot: Dictionary = _plots[tile]
+		var state: StringName = StringName(plot.get("state", &"Empty"))
+		if state != &"Growing" and state != &"Mature":
+			stale_tiles.append(tile)
+	for tile in stale_tiles:
+		var old_marker: Polygon2D = _plot_markers.get(tile, null)
+		if old_marker != null and is_instance_valid(old_marker):
+			old_marker.queue_free()
+		_plot_markers.erase(tile)
+	for tile_any in _plots.keys():
+		var tile: Vector2i = tile_any
+		var plot: Dictionary = _plots[tile]
+		var state: StringName = StringName(plot.get("state", &"Empty"))
+		if state != &"Growing" and state != &"Mature":
+			continue
+		var marker: Polygon2D = _plot_markers.get(tile, null)
+		if marker == null or not is_instance_valid(marker):
+			marker = Polygon2D.new()
+			marker.name = "PlotMarker_%d_%d" % [tile.x, tile.y]
+			_plot_marker_root.add_child(marker)
+			_plot_markers[tile] = marker
+		marker.position = to_local(get_plot_world(tile))
+		_apply_plot_marker_style(marker, state)
+
+func _apply_plot_marker_style(marker: Polygon2D, state: StringName) -> void:
+	var size: float = 8.0
+	var color: Color = Color(0.35, 0.86, 0.38, 0.88)
+	if state == &"Mature":
+		size = 12.0
+		color = Color(0.96, 0.84, 0.26, 0.95)
+	marker.polygon = PackedVector2Array([
+		Vector2(0.0, -size),
+		Vector2(size, 0.0),
+		Vector2(0.0, size),
+		Vector2(-size, 0.0)
+	])
+	marker.color = color

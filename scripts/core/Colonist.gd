@@ -5,7 +5,7 @@ const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
 signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
 signal resource_delivered(resource_type: StringName, amount: int, zone: Node)
-signal craft_completed(products: Dictionary, world_pos: Vector2)
+signal craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id: int)
 signal research_progressed(project_id: StringName, points: float)
 signal haul_job_released(drop_id: int)
 signal ate_food()
@@ -565,7 +565,8 @@ func _complete_build_job() -> void:
 
 func _complete_craft_job() -> void:
 	var products: Dictionary = current_job.get("products", {})
-	craft_completed.emit(products, global_position)
+	var craft_slot_id: int = int(current_job.get("craft_slot_id", 0))
+	craft_completed.emit(products, global_position, craft_slot_id)
 	_finish_current_job()
 
 func _complete_eat_job() -> void:

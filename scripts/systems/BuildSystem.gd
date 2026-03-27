@@ -25,10 +25,7 @@ func place_building(world_pos: Vector2, as_blueprint: bool) -> bool:
 	var def: Resource = get_selected_building()
 	if def == null:
 		return false
-	var snapped_pos := Vector2(
-		round(world_pos.x / grid_size) * grid_size,
-		round(world_pos.y / grid_size) * grid_size
-	)
+	var snapped_pos: Vector2 = _snap_world_to_grid(world_pos)
 	if _has_site_near(snapped_pos, 16.0):
 		return false
 	if as_blueprint:
@@ -126,7 +123,7 @@ func request_build_jobs(job_system: Node) -> void:
 func place_stockpile_zone(area_rect: Rect2) -> bool:
 	if _world_root == null:
 		return false
-	var safe_rect := area_rect.abs()
+	var safe_rect: Rect2 = _snap_rect_to_grid(area_rect.abs())
 	if safe_rect.size.x < 24.0 or safe_rect.size.y < 24.0:
 		return false
 	var zone := STOCKPILE_ZONE_SCENE.instantiate()
@@ -139,7 +136,7 @@ func place_stockpile_zone(area_rect: Rect2) -> bool:
 func place_farm_zone(area_rect: Rect2) -> bool:
 	if _world_root == null:
 		return false
-	var safe_rect := area_rect.abs()
+	var safe_rect: Rect2 = _snap_rect_to_grid(area_rect.abs())
 	if safe_rect.size.x < 24.0 or safe_rect.size.y < 24.0:
 		return false
 	var zone := FARM_ZONE_SCENE.instantiate()
@@ -163,6 +160,22 @@ func _make_block_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(width, height, false, Image.FORMAT_RGBA8)
 	image.fill(color)
 	return ImageTexture.create_from_image(image)
+
+func _snap_world_to_grid(world_pos: Vector2) -> Vector2:
+	return Vector2(
+		round(world_pos.x / grid_size) * grid_size,
+		round(world_pos.y / grid_size) * grid_size
+	)
+
+func _snap_rect_to_grid(rect: Rect2) -> Rect2:
+	var start: Vector2 = _snap_world_to_grid(rect.position)
+	var end: Vector2 = _snap_world_to_grid(rect.position + rect.size)
+	var min_x: float = minf(start.x, end.x)
+	var min_y: float = minf(start.y, end.y)
+	var max_x: float = maxf(start.x, end.x)
+	var max_y: float = maxf(start.y, end.y)
+	var snapped_size := Vector2(maxf(grid_size, max_x - min_x), maxf(grid_size, max_y - min_y))
+	return Rect2(Vector2(min_x, min_y), snapped_size)
 
 func _can_afford_cost(cost: Dictionary, stock: Dictionary) -> bool:
 	for k in cost.keys():
