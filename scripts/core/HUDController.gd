@@ -94,13 +94,16 @@ signal action_changed(action: StringName)
 signal building_selected(building_id: StringName)
 signal work_toggle_changed(work_type: StringName, enabled: bool)
 signal craft_recipe_queued(recipe_id: StringName, workstation_id: StringName)
+signal craft_recipe_front_queued(recipe_id: StringName, workstation_id: StringName)
 signal craft_queue_clear_requested()
 signal craft_queue_remove_requested(workstation_id: StringName, index: int)
+signal craft_queue_pause_toggled(workstation_id: StringName, paused: bool)
 signal workstation_changed(workstation_id: StringName)
 signal stockpile_filter_mode_changed(mode: int)
 signal stockpile_filter_item_changed(resource_type: StringName, enabled: bool)
 signal stockpile_priority_changed(value: int)
 signal stockpile_limit_changed(resource_type: StringName, limit: int)
+signal stockpile_preset_apply_requested(preset_id: StringName)
 signal designation_toggle_requested()
 signal mouse_mode_cycle_requested()
 signal drag_gather_mode_requested()
@@ -138,14 +141,50 @@ var _last_selected_object_detail: String = ""
 var _last_selected_object_actions_sig: String = ""
 var _research_ids_by_index: Array[StringName] = []
 var _rally_flag_button: Button = null
+var _craft_pause_button: Button = null
+var _craft_queue_paused: bool = false
+var _stock_preset_row: HBoxContainer = null
+var _stock_preset_option: OptionButton = null
+var _stock_preset_apply_button: Button = null
+var _defense_status_label: Label = null
+var _priority_signal_mute: bool = false
+var _last_resource_stock_text: String = ""
+var _last_building_catalog_sig: String = ""
+var _research_lock_map: Dictionary = {}
+var _research_prereq_map: Dictionary = {}
+var _research_tree_label: RichTextLabel = null
 
 func _ready() -> void:
-	haul_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Haul", int(v)))
-	build_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Build", int(v)))
-	craft_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Craft", int(v)))
-	combat_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Combat", int(v)))
-	gather_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Gather", int(v)))
-	hunt_slider.value_changed.connect(func(v: float): priority_changed.emit(&"Hunt", int(v)))
+	haul_slider.value_changed.connect(func(v: float):
+		if _priority_signal_mute:
+			return
+		priority_changed.emit(&"Haul", int(v))
+	)
+	build_slider.value_changed.connect(func(v: float):
+		if _priority_signal_mute:
+			return
+		priority_changed.emit(&"Build", int(v))
+	)
+	craft_slider.value_changed.connect(func(v: float):
+		if _priority_signal_mute:
+			return
+		priority_changed.emit(&"Craft", int(v))
+	)
+	combat_slider.value_changed.connect(func(v: float):
+		if _priority_signal_mute:
+			return
+		priority_changed.emit(&"Combat", int(v))
+	)
+	gather_slider.value_changed.connect(func(v: float):
+		if _priority_signal_mute:
+			return
+		priority_changed.emit(&"Gather", int(v))
+	)
+	hunt_slider.value_changed.connect(func(v: float):
+		if _priority_signal_mute:
+			return
+		priority_changed.emit(&"Hunt", int(v))
+	)
 	haul_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Haul", v))
 	build_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Build", v))
 	craft_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Craft", v))
@@ -153,7 +192,17 @@ func _ready() -> void:
 	gather_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Gather", v))
 	hunt_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Hunt", v))
 	queue_craft_button.pressed.connect(_on_queue_craft_button_pressed)
+	queue_front_button.pressed.connect(_on_queue_craft_front_button_pressed)
 	clear_queue_button.pressed.connect(func(): craft_queue_clear_requested.emit())
+	_craft_pause_button = Button.new()
+	_craft_pause_button.text = "일시정지"
+	_craft_pause_button.custom_minimum_size = Vector2(96, 0)
+	_craft_pause_button.pressed.connect(func():
+		_craft_queue_paused = not _craft_queue_paused
+		_refresh_craft_pause_button()
+		craft_queue_pause_toggled.emit(_selected_workstation_id, _craft_queue_paused)
+	)
+	craft_queue_buttons.add_child(_craft_pause_button)
 	workstation_option.item_selected.connect(_on_workstation_selected)
 	_setup_stockpile_filter_widgets()
 	designation_toggle_button.pressed.connect(func(): designation_toggle_requested.emit())
@@ -187,16 +236,34 @@ func _ready() -> void:
 	clear_state_button.tooltip_text = "작업/전투 복장 선호도를 전환합니다."
 	raid_test_button.text = "습격 테스트"
 	raid_test_button.tooltip_text = "습격 경고(카운트다운)부터 시작"
+	_defense_status_label = Label.new()
+	_defense_status_label.text = "방어 상태: -"
+	_defense_status_label.position = Vector2(16.0, 86.0)
+	add_child(_defense_status_label)
 	queue_craft_button.text = "실행"
 	clear_queue_button.text = "초기화"
-	queue_front_button.visible = false
+	queue_front_button.visible = true
+	queue_front_button.text = "앞에 추가"
 	dequeue_button.visible = false
+	_refresh_craft_pause_button()
 	_reorder_command_buttons()
 	_reorder_left_panel_sections()
 	_set_order_panel_visible(false)
 	set_raid_state(&"Idle", 0.0)
 	research_progress_label.text = "연구: 없음"
+	_research_tree_label = RichTextLabel.new()
+	_research_tree_label.name = "ResearchTreeLabel"
+	_research_tree_label.bbcode_enabled = true
+	_research_tree_label.fit_content = true
+	_research_tree_label.scroll_active = false
+	_research_tree_label.text = "[b]연구 트리[/b]\n없음"
+	_research_tree_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_research_tree_label.add_theme_font_size_override("font_size", 11)
+	var research_vbox: Node = research_panel.get_node("VBox")
+	if research_vbox != null:
+		research_vbox.add_child(_research_tree_label)
 	set_craft_panel_visible(false)
+	set_research_panel_visible(false)
 	set_designation_panel_visible(false)
 	set_bed_assignment_visible(false)
 	set_active_action(_active_action)
@@ -309,7 +376,11 @@ func set_resource_stock(stock: Dictionary) -> void:
 	var chunks: Array[String] = []
 	for key in keys:
 		chunks.append("%s:%d" % [String(key), int(stock.get(key, 0))])
-	resources_label.text = "Resources: %s" % ", ".join(chunks)
+	var next_text: String = "Resources: %s" % ", ".join(chunks)
+	if next_text == _last_resource_stock_text:
+		return
+	_last_resource_stock_text = next_text
+	resources_label.text = next_text
 
 func set_outfit_mode(mode: StringName) -> void:
 	_outfit_mode = &"Combat" if mode == &"Combat" else &"Work"
@@ -342,6 +413,11 @@ func set_raid_state(state: StringName, warning_seconds: float = 0.0, wave_kind: 
 		_:
 			raid_status_label.text = "습격 대기%s" % kind_text
 			raid_status_label.modulate = Color(0.8, 0.86, 0.95, 1.0)
+
+func set_defense_status(text: String) -> void:
+	if _defense_status_label == null:
+		return
+	_defense_status_label.text = "방어 상태: %s" % text
 
 func set_time_flow_state(paused: bool, speed_scale: float, elapsed_game_seconds: float) -> void:
 	var elapsed_text: String = _format_elapsed_time(elapsed_game_seconds)
@@ -582,12 +658,14 @@ func set_priority_preview(colonist: Node) -> void:
 		colonist.priorities.haul
 	]
 	set_current_job_preview(colonist)
+	_priority_signal_mute = true
 	haul_slider.value = colonist.priorities.haul
 	build_slider.value = colonist.priorities.build
 	craft_slider.value = colonist.priorities.craft
 	combat_slider.value = colonist.priorities.combat
 	gather_slider.value = colonist.priorities.gather
 	hunt_slider.value = colonist.priorities.hunt
+	_priority_signal_mute = false
 
 func set_current_job_preview(colonist: Node) -> void:
 	if colonist == null:
@@ -606,22 +684,41 @@ func set_carry_capacity_preview(colonist: Node) -> void:
 	carry_capacity_label.text = "Carry: %d" % int(colonist.stats.haul_carry_capacity)
 
 func set_building_catalog(building_defs: Array) -> void:
-	for child in building_list.get_children():
-		child.queue_free()
-	_building_button_map.clear()
+	var sig_parts: Array[String] = []
+	for def_sig in building_defs:
+		if def_sig == null:
+			continue
+		sig_parts.append("%s|%s" % [String(def_sig.id), _compact_cost_text(def_sig.build_cost)])
+	sig_parts.sort()
+	var catalog_sig: String = "||".join(sig_parts)
+	if catalog_sig == _last_building_catalog_sig:
+		_refresh_building_selection()
+		return
+	_last_building_catalog_sig = catalog_sig
+	var seen_ids: Dictionary = {}
 	for def in building_defs:
 		if def == null:
 			continue
 		var building_id: StringName = def.id
-		var button := Button.new()
-		button.custom_minimum_size = Vector2(180, 64)
+		seen_ids[building_id] = true
+		var button: Button = _building_button_map.get(building_id, null)
+		if button == null:
+			button = Button.new()
+			button.custom_minimum_size = Vector2(180, 64)
+			button.pressed.connect(_on_building_button_pressed.bind(building_id))
+			building_list.add_child(button)
+			_building_button_map[building_id] = button
 		button.text = _format_building_button_text(def)
 		button.tooltip_text = _format_building_tooltip(def)
-		button.pressed.connect(func():
-			_on_building_button_pressed(building_id)
-		)
-		building_list.add_child(button)
-		_building_button_map[building_id] = button
+	var stale_ids: Array = _building_button_map.keys()
+	for id_any in stale_ids:
+		var stale_id: StringName = StringName(id_any)
+		if seen_ids.has(stale_id):
+			continue
+		var stale_button: Button = _building_button_map[stale_id]
+		if stale_button != null and is_instance_valid(stale_button):
+			stale_button.queue_free()
+		_building_button_map.erase(stale_id)
 	_refresh_building_selection()
 
 func set_selected_building(building_id: StringName) -> void:
@@ -686,6 +783,9 @@ func set_selected_status_visible(visible: bool) -> void:
 
 func set_designation_panel_visible(visible: bool) -> void:
 	designation_panel.visible = visible
+
+func set_research_panel_visible(visible: bool) -> void:
+	research_panel.visible = visible
 
 func set_designation_target_preview(target_name: String, enabled: bool, kind: String) -> void:
 	designation_panel.visible = true
@@ -799,6 +899,22 @@ func _on_queue_craft_button_pressed() -> void:
 		return
 	craft_recipe_queued.emit(_recipe_id_by_index[idx], _selected_workstation_id)
 
+func _on_queue_craft_front_button_pressed() -> void:
+	var idx: int = recipe_option.get_selected()
+	if idx < 0 and recipe_option.item_count > 0:
+		recipe_option.select(0)
+		idx = 0
+	if idx < 0 or idx >= _recipe_id_by_index.size():
+		return
+	var ws_index: int = workstation_option.get_selected()
+	if ws_index >= 0 and ws_index < _workstation_ids_by_index.size():
+		_selected_workstation_id = _workstation_ids_by_index[ws_index]
+	elif _selected_workstation_id == &"" and not _workstation_ids_by_index.is_empty():
+		_selected_workstation_id = _workstation_ids_by_index[0]
+	if _selected_workstation_id == &"":
+		return
+	craft_recipe_front_queued.emit(_recipe_id_by_index[idx], _selected_workstation_id)
+
 func _on_queue_item_remove_pressed(index: int) -> void:
 	var ws_id: StringName = _selected_workstation_id
 	var ws_index: int = workstation_option.get_selected()
@@ -850,25 +966,48 @@ func set_selected_workstation(workstation_id: StringName) -> void:
 			workstation_option.select(i)
 			return
 
-func set_research_catalog(research_defs: Array, selected_id: StringName = &"") -> void:
+func set_research_catalog(
+	research_defs: Array,
+	selected_id: StringName = &"",
+	lock_map: Dictionary = {},
+	prereq_map: Dictionary = {},
+	tree_rows: Array[Dictionary] = []
+) -> void:
 	research_option.clear()
 	_research_ids_by_index.clear()
+	_research_lock_map = lock_map.duplicate(true)
+	_research_prereq_map = prereq_map.duplicate(true)
 	for def in research_defs:
 		if def == null:
 			continue
 		var idx: int = research_option.item_count
 		research_option.add_item(def.display_name)
-		research_option.set_item_tooltip(idx, "%s\n필요 포인트: %.0f" % [String(def.id), float(def.required_points)])
+		var rid: StringName = def.id
+		var req: StringName = StringName(_research_prereq_map.get(rid, &""))
+		var unlocked: bool = bool(_research_lock_map.get(rid, true))
+		var state_text: String = "가능" if unlocked else "잠김"
+		var tip: String = "%s\n필요 포인트: %.0f\n상태: %s" % [String(def.id), float(def.required_points), state_text]
+		if req != &"":
+			tip += "\n선행 연구: %s" % String(req)
+		research_option.set_item_tooltip(idx, tip)
+		research_option.set_item_disabled(idx, not unlocked)
 		_research_ids_by_index.append(def.id)
 	var target_id: StringName = selected_id
 	if target_id == &"" and not _research_ids_by_index.is_empty():
-		target_id = _research_ids_by_index[0]
+		for rid in _research_ids_by_index:
+			if bool(_research_lock_map.get(rid, true)):
+				target_id = rid
+				break
+		if target_id == &"":
+			target_id = _research_ids_by_index[0]
 	for i in range(_research_ids_by_index.size()):
 		if _research_ids_by_index[i] == target_id:
 			research_option.select(i)
 			break
 	if target_id != &"":
 		research_project_changed.emit(target_id)
+	if _research_tree_label != null:
+		_research_tree_label.text = _build_research_tree_bbcode(tree_rows)
 
 func set_research_state(active_id: StringName, points: float, required_points: float, completed_map: Dictionary = {}) -> void:
 	if active_id == &"":
@@ -880,12 +1019,53 @@ func set_research_state(active_id: StringName, points: float, required_points: f
 	var selected_id: StringName = &""
 	if selected_idx >= 0 and selected_idx < _research_ids_by_index.size():
 		selected_id = _research_ids_by_index[selected_idx]
-	research_start_button.disabled = selected_id == &"" or bool(completed_map.get(selected_id, false))
+	var selected_unlocked: bool = bool(_research_lock_map.get(selected_id, true))
+	research_start_button.disabled = selected_id == &"" or bool(completed_map.get(selected_id, false)) or not selected_unlocked
 
 func _on_research_selected(index: int) -> void:
 	if index < 0 or index >= _research_ids_by_index.size():
 		return
-	research_project_changed.emit(_research_ids_by_index[index])
+	var rid: StringName = _research_ids_by_index[index]
+	if not bool(_research_lock_map.get(rid, true)):
+		return
+	research_project_changed.emit(rid)
+
+func _build_research_tree_bbcode(tree_rows: Array[Dictionary]) -> String:
+	if tree_rows.is_empty():
+		return "[b]연구 트리[/b]\n없음"
+	var lines: Array[String] = ["[b]연구 트리[/b]"]
+	for row_any in tree_rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var depth: int = int(row.get("depth", 0))
+		var rid: StringName = StringName(row.get("id", &""))
+		var name: String = String(row.get("name", rid))
+		var state: StringName = StringName(row.get("state", &"locked"))
+		var prereq: StringName = StringName(row.get("prereq", &""))
+		var indent: String = ""
+		for _i in range(depth):
+			indent += "  "
+		var symbol: String = "○"
+		var color: String = "#9ca3af"
+		match state:
+			&"done":
+				symbol = "●"
+				color = "#34d399"
+			&"active":
+				symbol = "◆"
+				color = "#fbbf24"
+			&"ready":
+				symbol = "◉"
+				color = "#60a5fa"
+			_:
+				symbol = "○"
+				color = "#9ca3af"
+		var tail: String = ""
+		if state == &"locked" and prereq != &"":
+			tail = "  [color=#fca5a5](선행: %s)[/color]" % String(prereq)
+		lines.append("%s[color=%s]%s[/color] [b]%s[/b]%s" % [indent, color, symbol, name, tail])
+	return "\n".join(lines)
 
 func set_stockpile_filter_state(selected: bool, mode: int, item_map: Dictionary, priority: int = 0, limit_map: Dictionary = {}) -> void:
 	_stock_signal_mute = true
@@ -895,6 +1075,8 @@ func set_stockpile_filter_state(selected: bool, mode: int, item_map: Dictionary,
 	stock_priority_row.visible = selected
 	stockpile_filter_grid.visible = selected
 	stock_limit_row.visible = selected
+	if _stock_preset_row != null:
+		_stock_preset_row.visible = selected
 	stockpile_filter_mode_option.disabled = not selected
 	stockpile_filter_mode_option.select(clampi(mode, 0, 2))
 	stock_priority_spin.editable = selected
@@ -980,3 +1162,52 @@ func _refresh_limit_spin_by_selected_resource() -> void:
 		return
 	var key: StringName = StringName(stock_limit_resource_option.get_item_text(idx))
 	stock_limit_spin.value = int(_stock_limit_lookup.get(key, -1))
+
+func set_craft_queue_paused_state(paused: bool) -> void:
+	_craft_queue_paused = paused
+	_refresh_craft_pause_button()
+
+func _refresh_craft_pause_button() -> void:
+	if _craft_pause_button == null:
+		return
+	_craft_pause_button.text = "재개" if _craft_queue_paused else "일시정지"
+
+func set_stockpile_presets(preset_options: Array, selected_id: StringName = &"") -> void:
+	if _stock_preset_row == null:
+		_stock_preset_row = HBoxContainer.new()
+		_stock_preset_row.name = "StockPresetRow"
+		_stock_preset_option = OptionButton.new()
+		_stock_preset_option.custom_minimum_size = Vector2(120, 0)
+		_stock_preset_apply_button = Button.new()
+		_stock_preset_apply_button.text = "Preset 적용"
+		_stock_preset_apply_button.custom_minimum_size = Vector2(98, 0)
+		_stock_preset_apply_button.pressed.connect(func():
+			if _stock_preset_option == null or _stock_preset_option.item_count <= 0:
+				return
+			var idx: int = _stock_preset_option.get_selected()
+			if idx < 0:
+				idx = 0
+			var preset_id: StringName = StringName(_stock_preset_option.get_item_metadata(idx))
+			stockpile_preset_apply_requested.emit(preset_id)
+		)
+		_stock_preset_row.add_child(_stock_preset_option)
+		_stock_preset_row.add_child(_stock_preset_apply_button)
+		left_vbox.add_child(_stock_preset_row)
+	_stock_preset_option.clear()
+	for opt_any in preset_options:
+		if not (opt_any is Dictionary):
+			continue
+		var opt: Dictionary = opt_any
+		var id: StringName = StringName(opt.get("id", &""))
+		if id == &"":
+			continue
+		var label_text: String = String(opt.get("label", String(id)))
+		_stock_preset_option.add_item(label_text)
+		_stock_preset_option.set_item_metadata(_stock_preset_option.item_count - 1, id)
+	if _stock_preset_option.item_count > 0:
+		var selected_idx: int = 0
+		for i in range(_stock_preset_option.item_count):
+			if StringName(_stock_preset_option.get_item_metadata(i)) == selected_id:
+				selected_idx = i
+				break
+		_stock_preset_option.select(selected_idx)

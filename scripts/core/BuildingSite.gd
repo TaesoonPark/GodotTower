@@ -1,5 +1,10 @@
 extends Node2D
 
+signal site_changed(site: Node)
+signal site_completed(site: Node)
+signal site_removed(site: Node)
+signal site_retry_due(site: Node)
+
 var building_id: StringName = &""
 var building_name: String = "Blueprint"
 var required_work: float = 30.0
@@ -15,6 +20,13 @@ var cover_bonus: float = 0.0
 var trap_damage: int = 0
 var trap_cooldown_sec: float = 0.0
 var trap_charges: int = 0
+var command_aura_bonus: float = 0.0
+var command_aura_defense_bonus: float = 0.0
+var command_aura_move_bonus: float = 0.0
+var command_aura_range: float = 140.0
+var farm_growth_bonus: float = 0.0
+var farm_yield_bonus: float = 0.0
+var farm_support_range: float = 160.0
 var structure_max_health: float = 180.0
 var repair_work: float = 8.0
 var build_cost: Dictionary = {}
@@ -30,6 +42,7 @@ func _ready() -> void:
 	if progress_sprite.texture == null:
 		progress_sprite.texture = _make_texture(max(12, int(footprint_size.x - 4.0)), 6, Color(0.3, 0.95, 0.4, 0.85))
 	_update_visual()
+	site_changed.emit(self)
 
 func setup_building(def: Resource, start_complete: bool = false) -> void:
 	if def == null:
@@ -46,6 +59,13 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 	trap_damage = int(def.trap_damage)
 	trap_cooldown_sec = float(def.trap_cooldown_sec)
 	trap_charges = int(def.trap_charges)
+	command_aura_bonus = float(def.command_aura_bonus)
+	command_aura_defense_bonus = float(def.command_aura_defense_bonus)
+	command_aura_move_bonus = float(def.command_aura_move_bonus)
+	command_aura_range = float(def.command_aura_range)
+	farm_growth_bonus = float(def.farm_growth_bonus)
+	farm_yield_bonus = float(def.farm_yield_bonus)
+	farm_support_range = float(def.farm_support_range)
 	structure_max_health = maxf(10.0, float(def.max_health))
 	repair_work = maxf(0.1, float(def.repair_work))
 	build_cost = def.build_cost.duplicate(true)
@@ -59,7 +79,16 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 	set_meta("trap_damage", trap_damage)
 	set_meta("trap_cooldown_sec", trap_cooldown_sec)
 	set_meta("trap_charges", trap_charges)
+	set_meta("trap_max_charges", trap_charges)
 	set_meta("trap_cooldown_left", 0.0)
+	set_meta("trap_maint_job_queued", false)
+	set_meta("command_aura_bonus", command_aura_bonus)
+	set_meta("command_aura_defense_bonus", command_aura_defense_bonus)
+	set_meta("command_aura_move_bonus", command_aura_move_bonus)
+	set_meta("command_aura_range", command_aura_range)
+	set_meta("farm_growth_bonus", farm_growth_bonus)
+	set_meta("farm_yield_bonus", farm_yield_bonus)
+	set_meta("farm_support_range", farm_support_range)
 	set_meta("structure_max_health", structure_max_health)
 	set_meta("structure_health", structure_max_health)
 	set_meta("repair_work", repair_work)
@@ -76,9 +105,26 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 		_build_complete_visual()
 	if is_node_ready():
 		_update_visual()
+	site_changed.emit(self)
 
 func set_job_queued(v: bool) -> void:
 	job_queued = v
+	site_changed.emit(self)
+
+func set_retry_after_ms(at_ms: int) -> void:
+	var safe_ms: int = maxi(0, at_ms)
+	set_meta("build_retry_after_ms", safe_ms)
+	site_changed.emit(self)
+	var delay_sec: float = maxf(0.02, float(safe_ms - Time.get_ticks_msec()) / 1000.0)
+	var timer := get_tree().create_timer(delay_sec)
+	timer.timeout.connect(func():
+		if self == null or not is_instance_valid(self):
+			return
+		var retry_after_ms: int = int(get_meta("build_retry_after_ms")) if has_meta("build_retry_after_ms") else 0
+		if retry_after_ms > Time.get_ticks_msec():
+			return
+		site_retry_due.emit(self)
+	)
 
 func get_build_cost() -> Dictionary:
 	return build_cost.duplicate(true)
@@ -91,6 +137,7 @@ func mark_materials_delivered() -> void:
 	set_meta("materials_delivered", true)
 	if is_node_ready():
 		_update_visual()
+	site_changed.emit(self)
 
 func apply_work(amount: float) -> void:
 	if complete:
@@ -101,7 +148,9 @@ func apply_work(amount: float) -> void:
 		job_queued = false
 		_on_completed()
 		_build_complete_visual()
+		site_completed.emit(self)
 	_update_visual()
+	site_changed.emit(self)
 
 func _update_visual() -> void:
 	var ratio: float = 0.0
@@ -138,6 +187,13 @@ func _on_completed() -> void:
 		add_to_group("cover_structures")
 	if trap_damage > 0:
 		add_to_group("trap_structures")
+	if command_aura_bonus > 0.0 or command_aura_defense_bonus > 0.0 or command_aura_move_bonus > 0.0:
+		add_to_group("command_structures")
+	if farm_growth_bonus > 0.0 or farm_yield_bonus > 0.0:
+		add_to_group("farm_support_structures")
+
+func _exit_tree() -> void:
+	site_removed.emit(self)
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)

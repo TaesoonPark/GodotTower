@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"Granary"
+display_name = "Granary"
+category = "Production"
+required_work = 80.0
+footprint_size = Vector2(80, 80)
+build_cost = {
+&"Wood": 3,
+&"Stone": 2
+}
+direct_place_color = Color(0.42, 0.34, 0.24, 1)
+blueprint_color = Color(0.42, 0.34, 0.24, 0.72)
+required_research = &"AgronomyII"
+farm_yield_bonus = 0.16
+farm_support_range = 230.0
+max_health = 280.0
+repair_work = 9.0

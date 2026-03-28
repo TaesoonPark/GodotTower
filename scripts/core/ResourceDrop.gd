@@ -1,6 +1,10 @@
 extends Node2D
 class_name ResourceDrop
 
+signal drop_changed(drop: Node)
+signal drop_emptied(drop: Node)
+signal drop_removed(drop: Node)
+
 @export var resource_type: StringName = &"Wood"
 @export var amount: int = 0
 
@@ -18,18 +22,22 @@ func setup_drop(t: StringName, v: int) -> void:
 	amount = max(0, v)
 	if is_node_ready():
 		_refresh()
+	drop_changed.emit(self)
 
 func is_empty() -> bool:
 	return amount <= 0
 
 func set_job_queued(v: bool) -> void:
 	job_queued = v
+	drop_changed.emit(self)
 
 func take_all() -> int:
 	var out := amount
 	amount = 0
 	job_queued = false
 	_refresh()
+	drop_emptied.emit(self)
+	drop_changed.emit(self)
 	return out
 
 func take_amount(v: int) -> int:
@@ -40,7 +48,9 @@ func take_amount(v: int) -> int:
 	if amount <= 0:
 		amount = 0
 		job_queued = false
+		drop_emptied.emit(self)
 	_refresh()
+	drop_changed.emit(self)
 	return out
 
 func _refresh() -> void:
@@ -51,6 +61,9 @@ func _refresh() -> void:
 	if label_node != null:
 		label_node.text = "%s x%d" % [String(resource_type), amount]
 	visible = amount > 0
+
+func _exit_tree() -> void:
+	drop_removed.emit(self)
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)

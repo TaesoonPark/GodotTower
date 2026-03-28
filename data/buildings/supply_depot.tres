@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"SupplyDepot"
+display_name = "Supply Depot"
+category = "Production"
+required_work = 72.0
+footprint_size = Vector2(80, 40)
+build_cost = {
+&"Wood": 2,
+&"Stone": 1,
+&"Steel": 1
+}
+direct_place_color = Color(0.36, 0.3, 0.21, 1)
+blueprint_color = Color(0.36, 0.3, 0.21, 0.72)
+required_research = &"ScavengingI"
+command_aura_move_bonus = 0.05
+command_aura_range = 180.0
+max_health = 250.0
+repair_work = 8.0

@@ -1,0 +1,27 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"WatchTower"
+display_name = "Watch Tower"
+category = "Defense"
+required_work = 95.0
+footprint_size = Vector2(80, 80)
+build_cost = {
+&"Stone": 3,
+&"Wood": 2,
+&"Steel": 1
+}
+direct_place_color = Color(0.36, 0.34, 0.28, 1)
+blueprint_color = Color(0.36, 0.34, 0.28, 0.72)
+required_research = &"DefenseTheoryI"
+blocks_movement = true
+cover_bonus = 1.4
+command_aura_bonus = 0.08
+command_aura_defense_bonus = 1.1
+command_aura_move_bonus = 0.03
+command_aura_range = 220.0
+max_health = 360.0
+repair_work = 12.0

@@ -1,0 +1,24 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"Greenhouse"
+display_name = "Greenhouse"
+category = "Production"
+required_work = 95.0
+footprint_size = Vector2(80, 80)
+build_cost = {
+&"Steel": 3,
+&"Wood": 2,
+&"Stone": 2
+}
+direct_place_color = Color(0.24, 0.44, 0.33, 1)
+blueprint_color = Color(0.24, 0.44, 0.33, 0.72)
+required_research = &"AgronomyIII"
+farm_growth_bonus = 0.12
+farm_yield_bonus = 0.2
+farm_support_range = 260.0
+max_health = 300.0
+repair_work = 12.0

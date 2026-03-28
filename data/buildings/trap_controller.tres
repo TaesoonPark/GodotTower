@@ -1,0 +1,22 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"TrapController"
+display_name = "Trap Controller"
+category = "Defense"
+required_work = 70.0
+footprint_size = Vector2(40, 40)
+build_cost = {
+&"Steel": 2,
+&"Wood": 1
+}
+direct_place_color = Color(0.29, 0.29, 0.34, 1)
+blueprint_color = Color(0.29, 0.29, 0.34, 0.72)
+required_research = &"TrapMechanicsI"
+command_aura_defense_bonus = 0.4
+command_aura_range = 170.0
+max_health = 220.0
+repair_work = 8.0

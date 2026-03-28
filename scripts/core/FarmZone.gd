@@ -1,6 +1,9 @@
 extends Node2D
 class_name FarmZone
 
+signal zone_changed(zone: Node)
+signal farm_job_needed(zone: Node)
+
 @export var min_zone_size: float = 32.0
 @export var tile_size: float = 40.0
 
@@ -8,6 +11,9 @@ var zone_size: Vector2 = Vector2(120, 80)
 var crop_type: StringName = &""
 var crop_catalog: Dictionary = {}
 var growth_time_multiplier: float = 1.0
+var zone_fertility: float = 1.0
+var yield_multiplier: float = 1.0
+var fertility_resilience: float = 1.0
 var _plots: Dictionary = {}
 var _plot_markers: Dictionary = {}
 var _plot_marker_root: Node2D = null
@@ -26,14 +32,18 @@ func setup_from_rect(rect: Rect2) -> void:
 	_rebuild_plots()
 	if is_node_ready():
 		_refresh_shape()
+	zone_changed.emit(self)
 
 func _ready() -> void:
 	add_to_group("farm_zones")
+	if zone_fertility <= 0.0:
+		zone_fertility = randf_range(0.85, 1.15)
 	_ensure_plot_marker_root()
 	if _plots.is_empty():
 		_rebuild_plots()
 	_refresh_shape()
 	_refresh_plot_markers()
+	zone_changed.emit(self)
 
 func contains_point(world_point: Vector2) -> bool:
 	var local: Vector2 = to_local(world_point)
@@ -46,6 +56,7 @@ func set_crop_type(next_crop: StringName) -> void:
 		plot["job_queued"] = false
 		_plots[tile] = plot
 	_refresh_label()
+	_emit_zone_updates()
 
 func get_crop_type() -> StringName:
 	return crop_type
@@ -56,6 +67,12 @@ func set_crop_catalog(next_catalog: Dictionary) -> void:
 
 func set_growth_time_multiplier(value: float) -> void:
 	growth_time_multiplier = maxf(0.1, value)
+
+func set_yield_multiplier(value: float) -> void:
+	yield_multiplier = clampf(value, 0.7, 2.0)
+
+func set_fertility_resilience(value: float) -> void:
+	fertility_resilience = clampf(value, 0.7, 1.8)
 
 func get_crop_options() -> Array:
 	var out: Array = []
@@ -91,9 +108,16 @@ func get_crop_display_name() -> String:
 
 func tick_growth(delta: float) -> void:
 	var changed: bool = false
+	var empty_count: int = 0
+	var growing_count: int = 0
+	var support_growth: float = _nearby_farm_support_growth_bonus()
 	for tile in _plots.keys():
 		var plot: Dictionary = _plots[tile]
 		var state: StringName = StringName(plot.get("state", &"Empty"))
+		if state == &"Empty":
+			empty_count += 1
+		elif state == &"Growing":
+			growing_count += 1
 		if state != &"Growing":
 			continue
 		var elapsed: float = float(plot.get("elapsed", 0.0)) + delta
@@ -102,12 +126,22 @@ func tick_growth(delta: float) -> void:
 		var growth_seconds: float = 180.0
 		if crop_catalog.has(growth_crop):
 			growth_seconds = float(crop_catalog[growth_crop].growth_seconds)
-		if elapsed >= growth_seconds * growth_time_multiplier:
+		var rotation_mult: float = float(plot.get("rotation_mult", 1.0))
+		var effective_growth: float = growth_seconds * growth_time_multiplier * rotation_mult / maxf(0.2, zone_fertility + support_growth)
+		if elapsed >= effective_growth:
 			plot["state"] = &"Mature"
 			changed = true
 		_plots[tile] = plot
+	var total_plots: float = float(maxi(1, _plots.size()))
+	var idle_ratio: float = float(empty_count) / total_plots
+	var stress_ratio: float = float(growing_count) / total_plots
+	if idle_ratio >= 0.55:
+		zone_fertility = minf(1.3, zone_fertility + delta * 0.01 * fertility_resilience)
+	elif stress_ratio >= 0.7:
+		zone_fertility = maxf(0.7, zone_fertility - delta * 0.008 / maxf(0.5, fertility_resilience))
 	if changed:
 		_refresh_plot_markers()
+		_emit_zone_updates()
 	_refresh_label()
 
 func request_jobs(job_system: Node) -> void:
@@ -124,6 +158,7 @@ func request_jobs(job_system: Node) -> void:
 		job_system.queue_farm_plant_job(self, tile, crop_id, duration)
 	else:
 		clear_plot_job(tile)
+	_emit_zone_updates()
 
 func claim_next_job() -> Dictionary:
 	var crop_def: Resource = get_crop_def()
@@ -176,6 +211,7 @@ func clear_plot_job(tile: Vector2i) -> void:
 	var plot: Dictionary = _plots[tile]
 	plot["job_queued"] = false
 	_plots[tile] = plot
+	_emit_zone_updates()
 
 func plant_crop(tile: Vector2i, planted_crop: StringName) -> bool:
 	if not _plots.has(tile):
@@ -188,11 +224,21 @@ func plant_crop(tile: Vector2i, planted_crop: StringName) -> bool:
 		return false
 	plot["state"] = &"Growing"
 	plot["elapsed"] = 0.0
+	var last_crop: StringName = StringName(plot.get("last_crop", &""))
+	var consecutive: int = int(plot.get("consecutive_crop", 0))
+	if planted_crop == last_crop:
+		consecutive += 1
+	else:
+		consecutive = 0
+	plot["consecutive_crop"] = consecutive
+	plot["last_crop"] = planted_crop
+	plot["rotation_mult"] = clampf(0.92 + float(consecutive) * 0.07, 0.85, 1.35)
 	plot["crop"] = planted_crop
 	plot["job_queued"] = false
 	_plots[tile] = plot
 	_refresh_label()
 	_refresh_plot_markers()
+	_emit_zone_updates()
 	return true
 
 func harvest_crop(tile: Vector2i) -> Dictionary:
@@ -212,13 +258,62 @@ func harvest_crop(tile: Vector2i) -> Dictionary:
 	_plots[tile] = plot
 	_refresh_label()
 	_refresh_plot_markers()
+	_emit_zone_updates()
 	if crop_catalog.has(harvested_crop):
 		var crop_def: Resource = crop_catalog[harvested_crop]
+		var support_yield_bonus: float = _nearby_farm_support_yield_bonus()
+		var fertility_yield_mult: float = clampf(0.85 + (zone_fertility - 0.8) * 0.9, 0.75, 1.25)
+		var final_amount: int = maxi(1, int(round(float(crop_def.yield_amount) * fertility_yield_mult * yield_multiplier * (1.0 + support_yield_bonus))))
 		return {
 			"resource_type": StringName(crop_def.yield_resource_type),
-			"amount": int(crop_def.yield_amount)
+			"amount": final_amount
 		}
 	return {"resource_type": &"FoodRaw", "amount": 1}
+
+func has_pending_job() -> bool:
+	for tile in _plots.keys():
+		var plot: Dictionary = _plots[tile]
+		if bool(plot.get("job_queued", false)):
+			continue
+		var state: StringName = StringName(plot.get("state", &"Empty"))
+		if state == &"Mature":
+			return true
+		if state == &"Empty" and crop_type != &"":
+			return true
+	return false
+
+func _emit_zone_updates() -> void:
+	zone_changed.emit(self)
+	if has_pending_job():
+		farm_job_needed.emit(self)
+
+func _nearby_farm_support_growth_bonus() -> float:
+	var bonus: float = 0.0
+	for node in get_tree().get_nodes_in_group("farm_support_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var value: float = float(node.get_meta("farm_growth_bonus")) if node.has_meta("farm_growth_bonus") else 0.0
+		if value <= 0.0:
+			continue
+		var support_range: float = float(node.get_meta("farm_support_range")) if node.has_meta("farm_support_range") else 160.0
+		if global_position.distance_to(node.global_position) > support_range:
+			continue
+		bonus += value
+	return clampf(bonus, 0.0, 0.6)
+
+func _nearby_farm_support_yield_bonus() -> float:
+	var bonus: float = 0.0
+	for node in get_tree().get_nodes_in_group("farm_support_structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var value: float = float(node.get_meta("farm_yield_bonus")) if node.has_meta("farm_yield_bonus") else 0.0
+		if value <= 0.0:
+			continue
+		var support_range: float = float(node.get_meta("farm_support_range")) if node.has_meta("farm_support_range") else 160.0
+		if global_position.distance_to(node.global_position) > support_range:
+			continue
+		bonus += value
+	return clampf(bonus, 0.0, 0.7)
 
 func get_plot_world(tile: Vector2i) -> Vector2:
 	return Vector2(float(tile.x) * tile_size, float(tile.y) * tile_size)
@@ -255,7 +350,7 @@ func _refresh_label() -> void:
 			grow_count += 1
 		else:
 			empty_count += 1
-	label.text = "Farm (%s)\nE:%d G:%d M:%d" % [get_crop_display_name(), empty_count, grow_count, mature_count]
+	label.text = "Farm (%s)\nE:%d G:%d M:%d F:%.2f" % [get_crop_display_name(), empty_count, grow_count, mature_count, zone_fertility]
 	label.position = Vector2(-zone_size.x * 0.5 + 8.0, -zone_size.y * 0.5 - 36.0)
 
 func _rebuild_plots() -> void:
@@ -281,7 +376,10 @@ func _rebuild_plots() -> void:
 				"state": &"Empty",
 				"crop": &"",
 				"elapsed": 0.0,
-				"job_queued": false
+				"job_queued": false,
+				"last_crop": &"",
+				"consecutive_crop": 0,
+				"rotation_mult": 1.0
 			}
 	_refresh_plot_markers()
 

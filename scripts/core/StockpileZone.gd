@@ -1,6 +1,8 @@
 extends Node2D
 class_name StockpileZone
 
+signal stockpile_changed(zone: Node)
+
 @export var min_zone_size: float = 32.0
 @export var resource_keys: Array[StringName] = [
 	&"Wood", &"Stone", &"Steel", &"FoodRaw", &"Meal", &"Bed",
@@ -20,12 +22,15 @@ var filter_mode: int = FilterMode.ALL
 var filter_types: Array[StringName] = []
 var zone_priority: int = 0
 var resource_limits: Dictionary = {}
+var preset_id: StringName = &"All"
 
 @onready var fill_polygon: Polygon2D = $Fill
 @onready var outline: Line2D = $Outline
 @onready var label: Label = $Label
 var _stack_root: Node2D = null
 var _stack_slots: Array[Dictionary] = []
+var _stack_texture_cache: Dictionary = {}
+var _last_stack_signature: String = ""
 
 func setup_from_rect(rect: Rect2) -> void:
 	var safe_rect := rect.abs()
@@ -36,6 +41,7 @@ func setup_from_rect(rect: Rect2) -> void:
 	global_position = safe_rect.get_center()
 	if is_node_ready():
 		_refresh_shape()
+	stockpile_changed.emit(self)
 
 func _ready() -> void:
 	add_to_group("stockpile_zones")
@@ -80,6 +86,7 @@ func add_resource(resource_type: StringName, amount: int) -> int:
 		stored[resource_type] = 0
 	stored[resource_type] += accepted
 	_update_label()
+	stockpile_changed.emit(self)
 	return accepted
 
 func remove_resource(resource_type: StringName, amount: int) -> int:
@@ -93,6 +100,7 @@ func remove_resource(resource_type: StringName, amount: int) -> int:
 	if int(stored[resource_type]) <= 0:
 		stored.erase(resource_type)
 	_update_label()
+	stockpile_changed.emit(self)
 	return removed
 
 func get_stored_amount(resource_type: StringName) -> int:
@@ -142,14 +150,17 @@ func get_zone_priority() -> int:
 func set_zone_priority(value: int) -> void:
 	zone_priority = clampi(value, -10, 10)
 	_update_label()
+	stockpile_changed.emit(self)
 
 func set_resource_limit(resource_type: StringName, limit: int) -> void:
 	resource_limits[resource_type] = max(-1, limit)
 	_update_label()
+	stockpile_changed.emit(self)
 
 func set_filter_mode(new_mode: int) -> void:
 	filter_mode = clampi(new_mode, FilterMode.ALL, FilterMode.DENY_LIST)
 	_update_label()
+	stockpile_changed.emit(self)
 
 func set_filter_item(resource_type: StringName, enabled: bool) -> void:
 	if enabled:
@@ -158,6 +169,7 @@ func set_filter_item(resource_type: StringName, enabled: bool) -> void:
 	else:
 		filter_types = filter_types.filter(func(v: StringName): return v != resource_type)
 	_update_label()
+	stockpile_changed.emit(self)
 
 func get_filter_snapshot() -> Dictionary:
 	var map: Dictionary = {}
@@ -169,13 +181,57 @@ func get_filter_snapshot() -> Dictionary:
 		"mode": filter_mode,
 		"items": map,
 		"limits": limits,
-		"priority": zone_priority
+		"priority": zone_priority,
+		"preset_id": preset_id
 	}
+
+func apply_preset(next_preset: StringName) -> void:
+	preset_id = next_preset
+	filter_types.clear()
+	filter_mode = FilterMode.ALL
+	match next_preset:
+		&"Food":
+			filter_mode = FilterMode.ALLOW_ONLY
+			filter_types = [&"FoodRaw", &"Meal"]
+			zone_priority = 4
+		&"War":
+			filter_mode = FilterMode.ALLOW_ONLY
+			filter_types = [
+				&"CombatTop", &"CombatBottom", &"CombatHat",
+				&"Sword", &"Bow", &"Steel", &"Wood"
+			]
+			zone_priority = 2
+		&"Build":
+			filter_mode = FilterMode.ALLOW_ONLY
+			filter_types = [&"Wood", &"Stone", &"Steel", &"Bed"]
+			zone_priority = 3
+		&"Industry":
+			filter_mode = FilterMode.ALLOW_ONLY
+			filter_types = [&"Steel", &"Stone", &"Wood", &"Weapon", &"Sword", &"Bow"]
+			zone_priority = 1
+		&"Emergency":
+			filter_mode = FilterMode.ALLOW_ONLY
+			filter_types = [&"Meal", &"FoodRaw", &"CombatTop", &"CombatBottom", &"CombatHat", &"Bow", &"Sword"]
+			zone_priority = 6
+		&"Harvest":
+			filter_mode = FilterMode.ALLOW_ONLY
+			filter_types = [&"FoodRaw", &"Meal"]
+			zone_priority = 3
+		_:
+			preset_id = &"All"
+			filter_mode = FilterMode.ALL
+			zone_priority = 0
+	_update_label()
+	stockpile_changed.emit(self)
 
 func _update_label() -> void:
 	var label_node: Label = label if label != null else get_node_or_null("Label")
 	if label_node != null:
 		label_node.text = "Stockpile"
+	var sig: String = _stack_signature()
+	if sig == _last_stack_signature:
+		return
+	_last_stack_signature = sig
 	_rebuild_stack_visuals()
 
 func _ensure_stack_root() -> void:
@@ -275,6 +331,23 @@ func _resource_short_name(resource_type: StringName) -> String:
 			return String(resource_type)
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
+	var key: String = "%d|%d|%.3f|%.3f|%.3f|%.3f" % [w, h, color.r, color.g, color.b, color.a]
+	if _stack_texture_cache.has(key):
+		return _stack_texture_cache[key]
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)
 	image.fill(color)
-	return ImageTexture.create_from_image(image)
+	var tex: Texture2D = ImageTexture.create_from_image(image)
+	_stack_texture_cache[key] = tex
+	return tex
+
+func _stack_signature() -> String:
+	var base_sig: String = "w%d|h%d" % [int(round(zone_size.x)), int(round(zone_size.y))]
+	if stored.is_empty():
+		return base_sig
+	var keys: Array = stored.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	var parts: Array[String] = []
+	for key_any in keys:
+		var key: StringName = StringName(key_any)
+		parts.append("%s:%d" % [String(key), int(stored.get(key, 0))])
+	return "%s|%s" % [base_sig, "|".join(parts)]

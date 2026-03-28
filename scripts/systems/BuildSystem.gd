@@ -5,12 +5,20 @@ const BUILDING_SITE_SCENE: PackedScene = preload("res://scenes/world/BuildingSit
 const STOCKPILE_ZONE_SCENE: PackedScene = preload("res://scenes/world/StockpileZone.tscn")
 const FARM_ZONE_SCENE: PackedScene = preload("res://scenes/world/FarmZone.tscn")
 
+signal build_site_added(site: Node)
+signal build_site_removed(site: Node)
+signal structure_added(structure: Node)
+signal stockpile_zone_added(zone: Node)
+signal farm_zone_added(zone: Node)
+
 var _world_root: Node2D = null
 var _sites: Array = []
 var _zones: Array = []
 var _building_defs: Dictionary = {}
 var _selected_building_id: StringName = &""
 var grid_size: float = 40.0
+var _cached_structures: Array = []
+var _structures_cache_dirty: bool = true
 
 func configure(world_root: Node2D, building_defs: Array = []) -> void:
 	_world_root = world_root
@@ -76,6 +84,8 @@ func _place_blueprint(def: Resource, world_pos: Vector2) -> void:
 	if site.has_method("setup_building"):
 		site.setup_building(def, false)
 	_sites.append(site)
+	_structures_cache_dirty = true
+	build_site_added.emit(site)
 
 func cancel_build_site(site: Node) -> bool:
 	if site == null or not is_instance_valid(site):
@@ -83,6 +93,8 @@ func cancel_build_site(site: Node) -> bool:
 	_sites.erase(site)
 	if site.has_method("set_job_queued"):
 		site.set_job_queued(false)
+	_structures_cache_dirty = true
+	build_site_removed.emit(site)
 	site.queue_free()
 	return true
 
@@ -102,6 +114,8 @@ func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	label.position = Vector2(-def.footprint_size.x * 0.48, -def.footprint_size.y * 0.9)
 	placed.add_child(label)
 	_world_root.add_child(placed)
+	_structures_cache_dirty = true
+	structure_added.emit(placed)
 
 func _apply_structure_metas(node: Node2D, def: Resource) -> void:
 	node.set_meta("building_id", def.id)
@@ -113,7 +127,16 @@ func _apply_structure_metas(node: Node2D, def: Resource) -> void:
 	node.set_meta("trap_damage", int(def.trap_damage))
 	node.set_meta("trap_cooldown_sec", float(def.trap_cooldown_sec))
 	node.set_meta("trap_charges", int(def.trap_charges))
+	node.set_meta("trap_max_charges", int(def.trap_charges))
 	node.set_meta("trap_cooldown_left", 0.0)
+	node.set_meta("trap_maint_job_queued", false)
+	node.set_meta("command_aura_bonus", float(def.command_aura_bonus))
+	node.set_meta("command_aura_defense_bonus", float(def.command_aura_defense_bonus))
+	node.set_meta("command_aura_move_bonus", float(def.command_aura_move_bonus))
+	node.set_meta("command_aura_range", float(def.command_aura_range))
+	node.set_meta("farm_growth_bonus", float(def.farm_growth_bonus))
+	node.set_meta("farm_yield_bonus", float(def.farm_yield_bonus))
+	node.set_meta("farm_support_range", float(def.farm_support_range))
 	var max_health: float = maxf(10.0, float(def.max_health))
 	node.set_meta("structure_max_health", max_health)
 	node.set_meta("structure_health", max_health)
@@ -127,16 +150,28 @@ func _apply_structure_metas(node: Node2D, def: Resource) -> void:
 		node.add_to_group("cover_structures")
 	if int(def.trap_damage) > 0:
 		node.add_to_group("trap_structures")
+	if float(def.command_aura_bonus) > 0.0 or float(def.command_aura_defense_bonus) > 0.0 or float(def.command_aura_move_bonus) > 0.0:
+		node.add_to_group("command_structures")
+	if float(def.farm_growth_bonus) > 0.0 or float(def.farm_yield_bonus) > 0.0:
+		node.add_to_group("farm_support_structures")
 
 func request_build_jobs(job_system: Node) -> void:
-	_sites = _sites.filter(func(s): return _is_active_site(s))
+	for i in range(_sites.size() - 1, -1, -1):
+		if _is_active_site(_sites[i]):
+			continue
+		_sites.remove_at(i)
+	var now_ms: int = Time.get_ticks_msec()
 	for site in _sites:
 		if site.complete:
 			continue
 		if site.job_queued:
 			continue
-		job_system.queue_build_job(site)
-		site.set_job_queued(true)
+		var retry_after_ms: int = int(site.get_meta("build_retry_after_ms")) if site.has_meta("build_retry_after_ms") else 0
+		if retry_after_ms > now_ms:
+			continue
+		var queued: bool = bool(job_system.queue_build_job(site))
+		if queued:
+			site.set_job_queued(true)
 
 func place_stockpile_zone(area_rect: Rect2) -> bool:
 	if _world_root == null:
@@ -149,6 +184,7 @@ func place_stockpile_zone(area_rect: Rect2) -> bool:
 	if zone.has_method("setup_from_rect"):
 		zone.setup_from_rect(safe_rect)
 	_zones.append(zone)
+	stockpile_zone_added.emit(zone)
 	return true
 
 func place_farm_zone(area_rect: Rect2) -> bool:
@@ -162,6 +198,7 @@ func place_farm_zone(area_rect: Rect2) -> bool:
 	if zone.has_method("setup_from_rect"):
 		zone.setup_from_rect(safe_rect)
 	_zones.append(zone)
+	farm_zone_added.emit(zone)
 	return true
 
 func _has_site_near(pos: Vector2, radius: float) -> bool:
@@ -194,7 +231,10 @@ func _is_footprint_occupied(center: Vector2, footprint_size: Vector2) -> bool:
 		var site_rect := Rect2(site.global_position - site_footprint * 0.5, site_footprint)
 		if candidate_rect.intersects(site_rect):
 			return true
-	for structure in get_tree().get_nodes_in_group("structures"):
+	if _structures_cache_dirty:
+		_structures_cache_dirty = false
+		_cached_structures = get_tree().get_nodes_in_group("structures")
+	for structure in _cached_structures:
 		if structure == null or not is_instance_valid(structure):
 			continue
 		var structure_footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(grid_size, grid_size)

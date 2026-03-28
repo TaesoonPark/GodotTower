@@ -4,11 +4,117 @@ class_name JobSystem
 const HAUL_QUEUE_TIMEOUT_MS: int = 5000
 const HAUL_ASSIGN_TIMEOUT_MS: int = 12000
 const WORK_ADJACENT_OFFSET: float = 40.0
+const MAX_ASSIGN_PER_TICK: int = 8
+const MAX_JOB_SCAN_PER_COLONIST: int = 48
 
 var _jobs: Array[Dictionary] = []
 var _craft_queues: Dictionary = {}
 var _reserved_craft_slot_ids: Dictionary = {}
 var _reserved_drop_ids: Dictionary = {}
+var _paused_craft_workstations: Dictionary = {}
+var _haul_urgency_multiplier: float = 1.0
+var _combat_assign_cursor: int = 0
+var _assign_scan_cursor_by_colonist: Dictionary = {}
+var _pathing_occupancy: Node = null
+var _cached_blocking_structures: Array = []
+var _cached_build_sites: Array = []
+var _cached_colonists: Array = []
+var _spatial_cache_dirty: bool = true
+
+var _dirty_haul: bool = true
+var _dirty_combat: bool = true
+var _dirty_assign: bool = true
+var _dirty_craft: bool = true
+var _dirty_research: bool = true
+var _dirty_designation: bool = true
+var _dirty_repair: bool = true
+var _raid_mode_active: bool = false
+var _rallied_colonist_ids: Dictionary = {}
+
+func mark_spatial_dirty() -> void:
+	_spatial_cache_dirty = true
+
+func mark_haul_dirty() -> void:
+	_dirty_haul = true
+	_dirty_assign = true
+
+func mark_combat_dirty() -> void:
+	_dirty_combat = true
+	_dirty_assign = true
+
+func mark_assign_dirty() -> void:
+	_dirty_assign = true
+
+func mark_craft_dirty() -> void:
+	_dirty_craft = true
+	_dirty_assign = true
+
+func mark_research_dirty() -> void:
+	_dirty_research = true
+	_dirty_assign = true
+
+func mark_designation_dirty() -> void:
+	_dirty_designation = true
+	_dirty_assign = true
+
+func mark_repair_dirty() -> void:
+	_dirty_repair = true
+	_dirty_assign = true
+
+func enter_raid_mode() -> void:
+	_raid_mode_active = true
+
+func exit_raid_mode() -> void:
+	if not _raid_mode_active:
+		return
+	_raid_mode_active = false
+	_rallied_colonist_ids.clear()
+
+func process_dirty(
+	colonists: Array,
+	enemies: Array,
+	drops: Array,
+	haul_targets: Array,
+	current_stock: Dictionary,
+	target_stock: Dictionary,
+	rally_pos: Vector2,
+	rally_radius: float,
+	max_combatants: int,
+	recipe_lookup: Dictionary,
+	workstation_slots: Dictionary,
+	can_start_callback: Callable = Callable(),
+	on_start_callback: Callable = Callable(),
+	research_target: Vector2 = Vector2.INF,
+	research_project_id: StringName = &"",
+	repairables: Array = [],
+	traps: Array = [],
+	gatherables: Array = [],
+	huntables: Array = [],
+	raid_active_mode: bool = false
+) -> void:
+	if _dirty_designation:
+		request_designated_gather_jobs(gatherables)
+		request_designated_hunt_jobs(huntables)
+		_dirty_designation = false
+	if _dirty_haul:
+		request_haul_jobs(drops, haul_targets, current_stock, target_stock)
+		_dirty_haul = false
+	if _dirty_repair:
+		request_repair_jobs(repairables)
+		request_trap_maintenance_jobs(traps)
+		_dirty_repair = false
+	if _dirty_craft:
+		request_craft_jobs(recipe_lookup, workstation_slots, colonists, can_start_callback, on_start_callback)
+		_dirty_craft = false
+	if _dirty_research:
+		request_research_jobs(colonists, research_target, research_project_id, 6.0)
+		_dirty_research = false
+	if _dirty_combat:
+		request_combat_jobs(colonists, enemies, rally_pos, rally_radius, max_combatants)
+		_dirty_combat = false
+	if _dirty_assign:
+		assign_jobs(colonists)
+		_dirty_assign = false
 
 func queue_move_job(colonist: Node, target: Vector2) -> void:
 	var job: Dictionary = {
@@ -18,6 +124,7 @@ func queue_move_job(colonist: Node, target: Vector2) -> void:
 		"assigned_to": colonist.get_instance_id()
 	}
 	_jobs.append(job)
+	_dirty_assign = true
 
 func issue_immediate_move(colonist: Node, target: Vector2) -> void:
 	_remove_jobs_for_colonist(colonist.get_instance_id())
@@ -29,11 +136,14 @@ func issue_immediate_move(colonist: Node, target: Vector2) -> void:
 		"base_priority": 100,
 		"assigned_to": colonist.get_instance_id()
 	})
+	_dirty_assign = true
 
-func queue_build_job(site: Node) -> void:
+func queue_build_job(site: Node) -> bool:
 	var work_target: Vector2 = site.global_position
 	if site is Node2D:
 		work_target = _find_adjacent_work_position(site)
+	if work_target == Vector2.INF:
+		return false
 	var job: Dictionary = {
 		"type": &"BuildSite",
 		"target": work_target,
@@ -43,6 +153,8 @@ func queue_build_job(site: Node) -> void:
 		"assigned_to": 0
 	}
 	_jobs.append(job)
+	_dirty_assign = true
+	return true
 
 func queue_repair_job(structure: Node, work_duration: float = 8.0) -> void:
 	if structure == null or not is_instance_valid(structure):
@@ -59,6 +171,7 @@ func queue_repair_job(structure: Node, work_duration: float = 8.0) -> void:
 		"base_priority": 10,
 		"assigned_to": 0
 	})
+	_dirty_assign = true
 
 func queue_demolish_job(structure: Node, work_duration: float = 4.0, replace_building_id: StringName = &"") -> void:
 	if structure == null or not is_instance_valid(structure):
@@ -76,6 +189,24 @@ func queue_demolish_job(structure: Node, work_duration: float = 4.0, replace_bui
 		"base_priority": 10,
 		"assigned_to": 0
 	})
+	_dirty_assign = true
+
+func queue_trap_maint_job(structure: Node, work_duration: float = 3.0) -> void:
+	if structure == null or not is_instance_valid(structure):
+		return
+	if bool(structure.get_meta("trap_maint_job_queued")):
+		return
+	structure.set_meta("trap_maint_job_queued", true)
+	var target_pos: Vector2 = structure.global_position if structure is Node2D else Vector2.ZERO
+	_jobs.append({
+		"type": &"MaintainTrap",
+		"target": target_pos,
+		"structure_id": structure.get_instance_id(),
+		"work_duration": maxf(0.2, work_duration),
+		"base_priority": 10,
+		"assigned_to": 0
+	})
+	_dirty_assign = true
 
 func queue_gather_job(gatherable: Node, assigned_to: int = 0) -> void:
 	if gatherable == null or not is_instance_valid(gatherable):
@@ -92,6 +223,7 @@ func queue_gather_job(gatherable: Node, assigned_to: int = 0) -> void:
 		"assigned_to": assigned_to
 	}
 	_jobs.append(job)
+	_dirty_assign = true
 
 func queue_hunt_job(huntable: Node, assigned_to: int = 0) -> void:
 	if huntable == null or not is_instance_valid(huntable):
@@ -108,6 +240,7 @@ func queue_hunt_job(huntable: Node, assigned_to: int = 0) -> void:
 		"assigned_to": assigned_to
 	}
 	_jobs.append(job)
+	_dirty_assign = true
 
 func queue_farm_plant_job(farm_zone: Node, tile: Vector2i, crop_type: StringName, work_duration: float = 2.0, assigned_to: int = 0) -> void:
 	if farm_zone == null or not is_instance_valid(farm_zone):
@@ -125,6 +258,7 @@ func queue_farm_plant_job(farm_zone: Node, tile: Vector2i, crop_type: StringName
 		"base_priority": 9,
 		"assigned_to": assigned_to
 	})
+	_dirty_assign = true
 
 func queue_farm_harvest_job(farm_zone: Node, tile: Vector2i, crop_type: StringName, work_duration: float = 2.0, assigned_to: int = 0) -> void:
 	if farm_zone == null or not is_instance_valid(farm_zone):
@@ -142,8 +276,9 @@ func queue_farm_harvest_job(farm_zone: Node, tile: Vector2i, crop_type: StringNa
 		"base_priority": 11,
 		"assigned_to": assigned_to
 	})
+	_dirty_assign = true
 
-func queue_combat_job(colonist: Node, enemy: Node, use_ranged: bool) -> void:
+func queue_combat_job(colonist: Node, enemy: Node, use_ranged: bool, forced_type: StringName = &"") -> void:
 	if colonist == null or not is_instance_valid(colonist):
 		return
 	if enemy == null or not is_instance_valid(enemy):
@@ -151,7 +286,9 @@ func queue_combat_job(colonist: Node, enemy: Node, use_ranged: bool) -> void:
 	var colonist_id: int = colonist.get_instance_id()
 	if _has_pending_combat_job(colonist_id):
 		return
-	var job_type: StringName = &"CombatRanged" if use_ranged else &"CombatMelee"
+	var job_type: StringName = forced_type
+	if job_type != &"CombatRanged" and job_type != &"CombatMelee":
+		job_type = &"CombatRanged" if use_ranged else &"CombatMelee"
 	_jobs.append({
 		"type": job_type,
 		"target": enemy.global_position,
@@ -159,6 +296,7 @@ func queue_combat_job(colonist: Node, enemy: Node, use_ranged: bool) -> void:
 		"base_priority": 13,
 		"assigned_to": colonist_id
 	})
+	_dirty_assign = true
 
 func queue_haul_job(drop_node: Node, zone_node: Node, assigned_to: int = 0, base_priority: int = 8, as_craft_supply: bool = false) -> void:
 	if drop_node == null or not is_instance_valid(drop_node):
@@ -191,6 +329,7 @@ func queue_haul_job(drop_node: Node, zone_node: Node, assigned_to: int = 0, base
 		"assigned_to": 0,
 		"reserved_at_ms": Time.get_ticks_msec()
 	}
+	_dirty_assign = true
 
 func enqueue_craft_recipe(recipe_id: StringName, workstation_id: StringName) -> void:
 	if recipe_id == &"" or workstation_id == &"":
@@ -229,6 +368,19 @@ func clear_craft_queue(workstation_id: StringName) -> void:
 	if workstation_id == &"" or not _craft_queues.has(workstation_id):
 		return
 	_craft_queues[workstation_id] = []
+
+func set_craft_queue_paused(workstation_id: StringName, paused: bool) -> void:
+	if workstation_id == &"":
+		return
+	_paused_craft_workstations[workstation_id] = paused
+
+func is_craft_queue_paused(workstation_id: StringName) -> bool:
+	if workstation_id == &"":
+		return false
+	return bool(_paused_craft_workstations.get(workstation_id, false))
+
+func set_haul_urgency_multiplier(value: float) -> void:
+	_haul_urgency_multiplier = clampf(value, 0.5, 3.0)
 
 func remove_craft_recipe_at(workstation_id: StringName, index: int) -> void:
 	if workstation_id == &"" or not _craft_queues.has(workstation_id):
@@ -295,7 +447,7 @@ func request_haul_jobs(drops: Array, stockpile_zones: Array, current_stock: Dict
 			continue
 		var need: int = int(target_stock.get(resource_type, 0))
 		var have: int = int(current_stock.get(resource_type, 0))
-		var urgency: float = maxf(0.0, float(need - have))
+		var urgency: float = maxf(0.0, float(need - have)) * _haul_urgency_multiplier
 		var as_craft_supply: bool = bool(drop_node.get_meta("craft_supply")) if drop_node.has_meta("craft_supply") else false
 		var base_priority: int = 12 if as_craft_supply else 8
 		queue_haul_job(drop_node, nearest_zone, 0, base_priority, as_craft_supply)
@@ -309,6 +461,8 @@ func request_craft_jobs(recipe_lookup: Dictionary, workstation_slots: Dictionary
 	ws_keys.sort_custom(func(a, b): return String(a) < String(b))
 	for ws_id_any in ws_keys:
 		var workstation_id: StringName = StringName(ws_id_any)
+		if is_craft_queue_paused(workstation_id):
+			continue
 		var queue: Array = _craft_queues[workstation_id]
 		if queue.is_empty():
 			continue
@@ -365,6 +519,7 @@ func request_craft_jobs(recipe_lookup: Dictionary, workstation_slots: Dictionary
 				"assigned_to": 0,
 				"reserved_at_ms": Time.get_ticks_msec()
 			}
+			_dirty_assign = true
 			queue.remove_at(0)
 			_craft_queues[workstation_id] = queue
 
@@ -394,6 +549,7 @@ func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: St
 			"base_priority": 9,
 			"assigned_to": colonist_id
 		})
+		_dirty_assign = true
 		return
 
 func request_repair_jobs(structures: Array) -> void:
@@ -409,14 +565,38 @@ func request_repair_jobs(structures: Array) -> void:
 		var work_duration: float = float(structure.get_meta("repair_work")) if structure.has_meta("repair_work") else 8.0
 		queue_repair_job(structure, work_duration)
 
-func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = Vector2.INF, rally_radius: float = 120.0) -> void:
+func request_trap_maintenance_jobs(structures: Array) -> void:
+	for structure in structures:
+		if structure == null or not is_instance_valid(structure):
+			continue
+		if int(structure.get_meta("trap_damage")) <= 0:
+			continue
+		var charges: int = int(structure.get_meta("trap_charges"))
+		var max_charges: int = int(structure.get_meta("trap_max_charges")) if structure.has_meta("trap_max_charges") else charges
+		if max_charges <= 0:
+			continue
+		if charges >= max_charges:
+			continue
+		queue_trap_maint_job(structure, 3.0)
+
+func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = Vector2.INF, rally_radius: float = 120.0, max_assignments: int = -1) -> void:
 	_cleanup_stale_combat_jobs()
 	if enemies.is_empty():
 		return
-	for colonist in colonists:
+	if colonists.is_empty():
+		return
+	var assigned_count: int = 0
+	var size: int = colonists.size()
+	var start_idx: int = posmod(_combat_assign_cursor, maxi(1, size))
+	for offset in range(size):
+		if max_assignments >= 0 and assigned_count >= max_assignments:
+			break
+		var idx: int = (start_idx + offset) % size
+		var colonist = colonists[idx]
 		if colonist == null or not is_instance_valid(colonist):
 			continue
-		if colonist.has_method("can_do_job") and not colonist.can_do_job(&"CombatMelee"):
+		var preferred_job_type: StringName = _resolve_preferred_combat_job_type(colonist)
+		if colonist.has_method("can_do_job") and not colonist.can_do_job(preferred_job_type):
 			continue
 		var colonist_id: int = colonist.get_instance_id()
 		if _has_pending_combat_job(colonist_id):
@@ -425,9 +605,12 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 			continue
 		if not colonist.current_job.is_empty():
 			continue
-		if rally_pos != Vector2.INF:
+		if rally_pos != Vector2.INF and not _rallied_colonist_ids.has(colonist_id):
 			var dist_to_rally: float = colonist.global_position.distance_to(rally_pos)
-			if dist_to_rally > maxf(20.0, rally_radius):
+			if dist_to_rally <= maxf(20.0, rally_radius):
+				_rallied_colonist_ids[colonist_id] = true
+			else:
+				_rallied_colonist_ids[colonist_id] = true
 				var dir: Vector2 = rally_pos - colonist.global_position
 				var normalized: Vector2 = dir.normalized() if dir.length() > 0.001 else Vector2.RIGHT
 				var move_target: Vector2 = rally_pos - normalized * minf(rally_radius * 0.55, 72.0)
@@ -437,47 +620,76 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 					"base_priority": 14,
 					"assigned_to": colonist_id
 				})
+				assigned_count += 1
 				continue
 		var nearest_enemy: Node = null
-		var best_dist: float = INF
+		var best_dist_sq: float = INF
 		for enemy in enemies:
 			if enemy == null or not is_instance_valid(enemy):
 				continue
 			if enemy.has_method("is_dead") and bool(enemy.is_dead()):
 				continue
-			var d: float = colonist.global_position.distance_to(enemy.global_position)
-			if d < best_dist:
-				best_dist = d
+			var dist_sq: float = colonist.global_position.distance_squared_to(enemy.global_position)
+			if dist_sq < best_dist_sq:
+				best_dist_sq = dist_sq
 				nearest_enemy = enemy
 		if nearest_enemy == null:
 			continue
-		var use_ranged: bool = false
-		if colonist.has_method("get_equipment_snapshot"):
-			var gear: Dictionary = colonist.get_equipment_snapshot()
-			use_ranged = StringName(gear.get(&"Weapon", &"")) == &"Bow"
-		queue_combat_job(colonist, nearest_enemy, use_ranged)
+		var use_ranged: bool = preferred_job_type == &"CombatRanged"
+		queue_combat_job(colonist, nearest_enemy, use_ranged, preferred_job_type)
+		assigned_count += 1
+	_combat_assign_cursor = (start_idx + assigned_count + 1) % maxi(1, size)
 
-func queue_need_jobs(colonist: Node, food_available: int) -> void:
+func _resolve_preferred_combat_job_type(colonist: Node) -> StringName:
+	if colonist == null or not is_instance_valid(colonist):
+		return &"CombatMelee"
+	if colonist.has_method("get_preferred_combat_job_type"):
+		var preferred: StringName = StringName(colonist.get_preferred_combat_job_type())
+		if preferred == &"CombatRanged" or preferred == &"CombatMelee":
+			return preferred
+	if colonist.has_method("get_equipment_snapshot"):
+		var gear: Dictionary = colonist.get_equipment_snapshot()
+		var weapon_id: StringName = StringName(gear.get(&"Weapon", &""))
+		if weapon_id == &"Bow":
+			return &"CombatRanged"
+		if weapon_id == &"Sword":
+			return &"CombatMelee"
+	if colonist.has_method("get_combat_profile"):
+		var profile: Dictionary = colonist.get_combat_profile()
+		if StringName(profile.get("weapon_mode", &"Melee")) == &"Ranged":
+			return &"CombatRanged"
+	return &"CombatMelee"
+
+func queue_need_jobs(colonist: Node, food_available: int) -> bool:
 	var colonist_id: int = colonist.get_instance_id()
+	var queued: bool = false
 	if colonist.hunger < 45.0 and food_available > 0:
 		if _has_pending_need_job(colonist_id, &"EatStub"):
-			return
+			return false
 		_jobs.append({
 			"type": &"EatStub",
 			"base_priority": 7,
 			"assigned_to": colonist_id
 		})
+		_dirty_assign = true
+		queued = true
 	elif colonist.rest < 35.0:
 		if _has_pending_need_job(colonist_id, &"IdleRecover"):
-			return
+			return false
 		_jobs.append({
 			"type": &"IdleRecover",
 			"base_priority": 6,
 			"assigned_to": colonist_id
 		})
+		_dirty_assign = true
+		queued = true
+	return queued
 
 func assign_jobs(colonists: Array) -> void:
+	var assigned_this_tick: int = 0
 	for colonist in colonists:
+		if assigned_this_tick >= MAX_ASSIGN_PER_TICK:
+			break
 		if colonist == null or not colonist.is_idle():
 			continue
 		var chosen_index: int = _pick_best_job_index(colonist)
@@ -498,11 +710,19 @@ func assign_jobs(colonists: Array) -> void:
 					"reserved_at_ms": Time.get_ticks_msec()
 				}
 		colonist.assign_job(job)
+		assigned_this_tick += 1
 
 func _pick_best_job_index(colonist: Node) -> int:
 	var best_idx: int = -1
 	var best_score: float = -INF
-	for i in range(_jobs.size()):
+	var job_count: int = _jobs.size()
+	if job_count <= 0:
+		return -1
+	var colonist_id: int = colonist.get_instance_id()
+	var scan_count: int = mini(job_count, MAX_JOB_SCAN_PER_COLONIST)
+	var start_idx: int = posmod(int(_assign_scan_cursor_by_colonist.get(colonist_id, 0)), job_count)
+	for n in range(scan_count):
+		var i: int = (start_idx + n) % job_count
 		var job: Dictionary = _jobs[i]
 		var assigned_to: int = int(job.get("assigned_to", 0))
 		if assigned_to != 0 and assigned_to != colonist.get_instance_id():
@@ -521,6 +741,10 @@ func _pick_best_job_index(colonist: Node) -> int:
 		if job_type == &"DemolishStructure" and colonist is Node2D:
 			var ddist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
 			score += clampf(180.0 - ddist, 0.0, 180.0) * 0.003
+			score += float(colonist.get_priority(&"Build")) * 10.0
+		if job_type == &"MaintainTrap" and colonist is Node2D:
+			var tdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
+			score += clampf(180.0 - tdist, 0.0, 180.0) * 0.003
 			score += float(colonist.get_priority(&"Build")) * 10.0
 		if job_type == &"Gather" and colonist is Node2D:
 			var gdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
@@ -550,6 +774,7 @@ func _pick_best_job_index(colonist: Node) -> int:
 		if score > best_score:
 			best_score = score
 			best_idx = i
+	_assign_scan_cursor_by_colonist[colonist_id] = (start_idx + scan_count) % maxi(1, job_count)
 	return best_idx
 
 func release_haul_reservation(drop_id: int) -> void:
@@ -728,74 +953,47 @@ func _has_any_active_or_pending_research_job(colonists: Array) -> bool:
 func _cleanup_stale_combat_jobs() -> void:
 	for i in range(_jobs.size() - 1, -1, -1):
 		var job: Dictionary = _jobs[i]
-		if StringName(job.get("type", &"")) != &"BuildSite":
-			continue
-		var site_id: int = int(job.get("site_id", 0))
-		if site_id == 0:
-			_jobs.remove_at(i)
-			continue
-		var site_obj: Object = instance_from_id(site_id)
-		if site_obj == null or not is_instance_valid(site_obj):
-			_jobs.remove_at(i)
-	for i in range(_jobs.size() - 1, -1, -1):
-		var job: Dictionary = _jobs[i]
-		var t: StringName = StringName(job.get("type", &""))
-		if t != &"CombatMelee" and t != &"CombatRanged":
-			continue
-		var target_id: int = int(job.get("target_id", 0))
-		if target_id == 0:
-			_jobs.remove_at(i)
-			continue
-		var obj: Object = instance_from_id(target_id)
-		if obj == null or not is_instance_valid(obj):
-			_jobs.remove_at(i)
-			continue
-		if obj.has_method("is_dead") and bool(obj.is_dead()):
-			_jobs.remove_at(i)
-	for i in range(_jobs.size() - 1, -1, -1):
-		var job: Dictionary = _jobs[i]
-		var t: StringName = StringName(job.get("type", &""))
-		if t != &"PlantCrop" and t != &"HarvestCrop":
-			continue
-		var zone_id: int = int(job.get("zone_id", 0))
-		if zone_id == 0:
-			_jobs.remove_at(i)
-			continue
-		var zone_obj: Object = instance_from_id(zone_id)
-		if zone_obj == null or not is_instance_valid(zone_obj):
-			_jobs.remove_at(i)
-	for i in range(_jobs.size() - 1, -1, -1):
-		var job: Dictionary = _jobs[i]
-		var t: StringName = StringName(job.get("type", &""))
-		if t != &"ResearchTask":
-			continue
-		var target: Vector2 = job.get("target", Vector2.INF)
-		if target == Vector2.INF:
-			_jobs.remove_at(i)
-	for i in range(_jobs.size() - 1, -1, -1):
-		var job: Dictionary = _jobs[i]
-		if StringName(job.get("type", &"")) != &"RepairStructure":
-			continue
-		var structure_id: int = int(job.get("structure_id", 0))
-		if structure_id == 0:
-			_jobs.remove_at(i)
-			continue
-		var obj: Object = instance_from_id(structure_id)
-		if obj == null or not is_instance_valid(obj):
-			_jobs.remove_at(i)
-			continue
-	for i in range(_jobs.size() - 1, -1, -1):
-		var job: Dictionary = _jobs[i]
-		if StringName(job.get("type", &"")) != &"DemolishStructure":
-			continue
-		var structure_id: int = int(job.get("structure_id", 0))
-		if structure_id == 0:
-			_jobs.remove_at(i)
-			continue
-		var obj: Object = instance_from_id(structure_id)
-		if obj == null or not is_instance_valid(obj):
-			_jobs.remove_at(i)
-			continue
+		var t_all: StringName = StringName(job.get("type", &""))
+		match t_all:
+			&"BuildSite":
+				var site_id: int = int(job.get("site_id", 0))
+				if site_id == 0:
+					_jobs.remove_at(i)
+					continue
+				var site_obj: Object = instance_from_id(site_id)
+				if site_obj == null or not is_instance_valid(site_obj):
+					_jobs.remove_at(i)
+			&"CombatMelee", &"CombatRanged":
+				var target_id: int = int(job.get("target_id", 0))
+				if target_id == 0:
+					_jobs.remove_at(i)
+					continue
+				var target_obj: Object = instance_from_id(target_id)
+				if target_obj == null or not is_instance_valid(target_obj):
+					_jobs.remove_at(i)
+					continue
+				if target_obj.has_method("is_dead") and bool(target_obj.is_dead()):
+					_jobs.remove_at(i)
+			&"PlantCrop", &"HarvestCrop":
+				var zone_id: int = int(job.get("zone_id", 0))
+				if zone_id == 0:
+					_jobs.remove_at(i)
+					continue
+				var zone_obj: Object = instance_from_id(zone_id)
+				if zone_obj == null or not is_instance_valid(zone_obj):
+					_jobs.remove_at(i)
+			&"ResearchTask":
+				var target: Vector2 = job.get("target", Vector2.INF)
+				if target == Vector2.INF:
+					_jobs.remove_at(i)
+			&"RepairStructure", &"DemolishStructure", &"MaintainTrap":
+				var structure_id: int = int(job.get("structure_id", 0))
+				if structure_id == 0:
+					_jobs.remove_at(i)
+					continue
+				var structure_obj: Object = instance_from_id(structure_id)
+				if structure_obj == null or not is_instance_valid(structure_obj):
+					_jobs.remove_at(i)
 
 func _cleanup_craft_slot_reservations(colonists: Array) -> void:
 	var active_slots: Dictionary = {}
@@ -844,7 +1042,23 @@ func _find_adjacent_work_position(site: Node2D) -> Vector2:
 		if _is_work_position_reserved(pos, site_id):
 			continue
 		return pos
-	return candidates[0]
+	for pos in candidates:
+		if _is_blocked_by_structure(pos):
+			continue
+		return pos
+	var ring2: Array[Vector2] = [
+		center + Vector2(WORK_ADJACENT_OFFSET * 2.0, 0.0),
+		center + Vector2(-WORK_ADJACENT_OFFSET * 2.0, 0.0),
+		center + Vector2(0.0, WORK_ADJACENT_OFFSET * 2.0),
+		center + Vector2(0.0, -WORK_ADJACENT_OFFSET * 2.0)
+	]
+	for pos in ring2:
+		if _is_blocked_by_structure(pos):
+			continue
+		if _is_work_position_reserved(pos, site_id):
+			continue
+		return pos
+	return Vector2.INF
 
 func _is_work_position_reserved(world_pos: Vector2, for_site_id: int) -> bool:
 	for job in _jobs:
@@ -858,7 +1072,8 @@ func _is_work_position_reserved(world_pos: Vector2, for_site_id: int) -> bool:
 			continue
 		if target.distance_to(world_pos) <= 8.0:
 			return true
-	for colonist in get_tree().get_nodes_in_group("colonists"):
+	var colonists: Array = _get_cached_colonists()
+	for colonist in colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
 		var active_job: Dictionary = colonist.get("current_job")
@@ -877,7 +1092,12 @@ func _is_work_position_reserved(world_pos: Vector2, for_site_id: int) -> bool:
 	return false
 
 func _is_blocked_by_structure(world_pos: Vector2) -> bool:
-	for node in get_tree().get_nodes_in_group("blocking_structures"):
+	if (_pathing_occupancy == null or not is_instance_valid(_pathing_occupancy)):
+		_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
+	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("is_blocked_for_friendly"):
+		return bool(_pathing_occupancy.is_blocked_for_friendly(world_pos))
+	_refresh_spatial_cache()
+	for node in _cached_blocking_structures:
 		if node == null or not is_instance_valid(node):
 			continue
 		if not bool(node.get_meta("blocks_movement")):
@@ -887,7 +1107,7 @@ func _is_blocked_by_structure(world_pos: Vector2) -> bool:
 		var dy: float = absf(world_pos.y - node.global_position.y)
 		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
 			return true
-	for site in get_tree().get_nodes_in_group("build_sites"):
+	for site in _cached_build_sites:
 		if site == null or not is_instance_valid(site):
 			continue
 		if bool(site.get("complete")):
@@ -898,3 +1118,15 @@ func _is_blocked_by_structure(world_pos: Vector2) -> bool:
 		if dx <= footprint.x * 0.5 and dy <= footprint.y * 0.5:
 			return true
 	return false
+
+func _refresh_spatial_cache() -> void:
+	if not _spatial_cache_dirty:
+		return
+	_spatial_cache_dirty = false
+	_cached_blocking_structures = get_tree().get_nodes_in_group("blocking_structures")
+	_cached_build_sites = get_tree().get_nodes_in_group("build_sites")
+	_cached_colonists = get_tree().get_nodes_in_group("colonists")
+
+func _get_cached_colonists() -> Array:
+	_refresh_spatial_cache()
+	return _cached_colonists

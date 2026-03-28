@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"SignalFire"
+display_name = "Signal Fire"
+category = "Defense"
+required_work = 55.0
+footprint_size = Vector2(40, 40)
+build_cost = {
+&"Wood": 2,
+&"Stone": 1
+}
+direct_place_color = Color(0.58, 0.35, 0.2, 1)
+blueprint_color = Color(0.58, 0.35, 0.2, 0.72)
+required_research = &"BattleDrillI"
+command_aura_bonus = 0.04
+command_aura_move_bonus = 0.05
+command_aura_range = 200.0
+max_health = 200.0
+repair_work = 7.0

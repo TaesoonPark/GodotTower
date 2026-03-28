@@ -1,0 +1,13 @@
+[gd_resource type="Resource" script_class="ResearchDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/ResearchDef.gd" id="1_research_def"]
+
+[resource]
+script = ExtResource("1_research_def")
+id = &"ScavengingII"
+display_name = "Scavenging II"
+required_points = 190.0
+prerequisite_research_id = &"ScavengingI"
+unlock_buildings = Array[StringName]([&"SupplyDepot"])
+bonus_type = &"EnemyDropBoost"
+bonus_value = 1.7

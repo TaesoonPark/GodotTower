@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"IrrigationPump"
+display_name = "Irrigation Pump"
+category = "Production"
+required_work = 75.0
+footprint_size = Vector2(80, 40)
+build_cost = {
+&"Steel": 2,
+&"Stone": 1,
+&"Wood": 1
+}
+direct_place_color = Color(0.25, 0.38, 0.46, 1)
+blueprint_color = Color(0.25, 0.38, 0.46, 0.72)
+required_research = &"SoilScienceI"
+farm_growth_bonus = 0.18
+farm_support_range = 220.0
+max_health = 250.0
+repair_work = 10.0

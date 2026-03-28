@@ -11,6 +11,8 @@ const RECIPE_DEF_DIR := "res://data/recipes"
 const WORKSTATION_DEF_DIR := "res://data/workstations"
 const CROP_DEF_DIR := "res://data/crops"
 const RESEARCH_DEF_DIR := "res://data/research"
+const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
+const DEFAULT_LOADOUT: ColonistLoadoutData = preload("res://data/colonists/default_loadout.tres")
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
 const WORLD_SIZE: Vector2 = Vector2(7680.0, 4320.0)
 const TILE_SIZE: float = 40.0
@@ -34,21 +36,21 @@ var selected_colonists: Array = []
 var camera_speed: float = 750.0
 var current_action: StringName = &"Interact"
 var resource_stock: Dictionary = {
-	&"Wood": 120,
-	&"Stone": 120,
-	&"Steel": 60,
-	&"FoodRaw": 40,
-	&"Meal": 20,
+	&"Wood": 0,
+	&"Stone": 0,
+	&"Steel": 0,
+	&"FoodRaw": 0,
+	&"Meal": 0,
 	&"Bed": 0,
 	&"GatherTop": 0,
 	&"GatherBottom": 0,
 	&"StrawHat": 0,
 	&"Weapon": 0,
-	&"CombatTop": 4,
-	&"CombatBottom": 4,
-	&"CombatHat": 4,
+	&"CombatTop": 0,
+	&"CombatBottom": 0,
+	&"CombatHat": 0,
 	&"Sword": 0,
-	&"Bow": 4
+	&"Bow": 0
 }
 var _free_build_allowance: Dictionary = {
 	&"Wall": 100,
@@ -71,6 +73,18 @@ var _active_research_points: float = 0.0
 var _research_running: bool = false
 var _farm_growth_multiplier: float = 1.0
 var _combat_accuracy_bonus_from_research: float = 0.0
+var _build_speed_bonus_from_research: float = 1.0
+var _repair_speed_bonus_from_research: float = 1.0
+var _haul_urgency_bonus_from_research: float = 1.0
+var _rest_recover_bonus_from_research: float = 1.0
+var _trap_damage_bonus_from_research: float = 1.0
+var _raid_reward_bonus_from_research: float = 1.0
+var _trap_range_bonus_from_research: float = 1.0
+var _enemy_drop_bonus_from_research: float = 1.0
+var _trap_cooldown_bonus_from_research: float = 1.0
+var _farm_yield_bonus_from_research: float = 1.0
+var _farm_resilience_bonus_from_research: float = 1.0
+var _enemy_night_slow_bonus_from_research: float = 1.0
 var selected_workstation_id: StringName = &""
 var selected_stockpile_zone: Node = null
 var selected_farm_zone: Node = null
@@ -103,10 +117,66 @@ var _raid_wave_kind: StringName = &"RaiderOnly"
 var _combat_tile_claims: Dictionary = {}
 var _combat_rally_point: Vector2 = WORLD_SIZE * 0.5
 var _rally_flag_node: Node2D = null
+var _auto_repair_threshold_ratio: float = 0.75
+var _defense_status_text: String = "-"
+var _day_night_cycle_seconds: float = 240.0
+var _pathing_occupancy: PathingOccupancy = null
+var _cached_alive_enemies: Array = []
+var _hud_dirty: bool = true
+var _cached_research_options: Array = []
+var _cached_research_options_sig: int = 0
+var _perf_report_next_ms: int = 0
+var _perf_samples: Array[float] = []
+var _perf_samples_head: int = 0
+var _perf_samples_count: int = 0
+const PERF_RING_SIZE: int = 900
+var _enemy_sim_interval_scale: float = 1.0
+var _friendly_pathing_budget_scale: float = 1.0
+var _perf_last_ticks_usec: int = 0
+var _combat_log_next_ms: int = 0
+var _combat_window: Dictionary = {}
+var _dispatch_queued: bool = false
+var _dispatch_jobs_dirty: bool = true
+var _dispatch_combat_dirty: bool = true
+var _dispatch_economy_dirty: bool = true
+var _dispatch_maintenance_dirty: bool = true
+var _dispatch_farm_dirty: bool = true
+var _dispatch_pathing_dirty: bool = true
+var _dispatch_traps_dirty: bool = true
+const TRAP_UPDATE_INTERVAL_SEC: float = 0.12
+var _trap_update_accum: float = 0.0
+var _trap_move_event_next_ms: int = 0
+const TRAP_MAX_PER_UPDATE: int = 42
+var _trap_update_cursor: int = 0
+var _active_jobs_next_ms: int = 0
+var _has_demolish_overlay: bool = false
+var _last_hud_time_tick: int = -1
+var _workstation_slots_dirty: bool = true
+var _cached_workstation_slots_map: Dictionary = {}
+var _structure_maintenance_dirty: bool = true
+var _cached_damaged_repairables: Array = []
+var _cached_maintainable_traps: Array = []
+var _need_job_refresh_next_ms_by_colonist: Dictionary = {}
+var _group_cache: Dictionary = {}
+var _group_cache_dirty: Dictionary = {}
 
 func _ready() -> void:
 	add_to_group("main_controller")
 	randomize()
+	_pathing_occupancy = PATHING_OCCUPANCY_SCRIPT.new()
+	_pathing_occupancy.name = "PathingOccupancy"
+	var systems_node: Node = get_node_or_null("Systems")
+	if systems_node != null:
+		systems_node.add_child(_pathing_occupancy)
+	else:
+		add_child(_pathing_occupancy)
+	_pathing_occupancy.add_to_group("pathing_occupancy")
+	_pathing_occupancy.setup(TILE_SIZE)
+	_init_group_cache()
+	var now_ms: int = Time.get_ticks_msec()
+	_perf_report_next_ms = now_ms + 5000
+	_perf_last_ticks_usec = Time.get_ticks_usec()
+	_reset_combat_window()
 	_configure_world_bounds()
 	_randomize_world_spawns()
 	var building_defs: Array = _load_building_defs()
@@ -130,23 +200,28 @@ func _ready() -> void:
 		if research_def != null:
 			research_lookup[research_def.id] = research_def
 	_spawn_initial_colonists()
+	_apply_starting_loadout(DEFAULT_LOADOUT)
 	_set_combat_rally_point(_snap_to_tile(WORLD_SIZE * 0.5))
 	_refresh_building_catalog()
 	if input_controller != null and input_controller.has_method("set_grid_size"):
 		input_controller.set_grid_size(TILE_SIZE)
 	input_controller.left_click.connect(_on_left_click)
 	input_controller.drag_selection.connect(_on_drag_selection)
+	input_controller.command_move.connect(_on_command_move)
 	hud.priority_changed.connect(_on_priority_changed)
 	hud.work_toggle_changed.connect(_on_work_toggle_changed)
 	hud.building_selected.connect(_on_building_selected)
 	hud.workstation_changed.connect(_on_workstation_changed)
 	hud.craft_recipe_queued.connect(_on_craft_recipe_queued)
+	hud.craft_recipe_front_queued.connect(_on_craft_recipe_front_queued)
 	hud.craft_queue_clear_requested.connect(_on_craft_queue_clear_requested)
 	hud.craft_queue_remove_requested.connect(_on_craft_queue_remove_requested)
+	hud.craft_queue_pause_toggled.connect(_on_craft_queue_pause_toggled)
 	hud.stockpile_filter_mode_changed.connect(_on_stockpile_filter_mode_changed)
 	hud.stockpile_filter_item_changed.connect(_on_stockpile_filter_item_changed)
 	hud.stockpile_priority_changed.connect(_on_stockpile_priority_changed)
 	hud.stockpile_limit_changed.connect(_on_stockpile_limit_changed)
+	hud.stockpile_preset_apply_requested.connect(_on_stockpile_preset_apply_requested)
 	hud.designation_toggle_requested.connect(_on_designation_toggle_requested)
 	hud.drag_gather_mode_requested.connect(func(): _on_action_changed(&"DragGather"))
 	hud.drag_stockpile_mode_requested.connect(func(): _on_action_changed(&"StockpileZone"))
@@ -161,10 +236,27 @@ func _ready() -> void:
 	hud.bed_auto_assign_requested.connect(_on_bed_auto_assign_requested)
 	hud.research_project_changed.connect(_on_research_project_changed)
 	hud.research_start_requested.connect(_on_research_start_requested)
+	if build_system != null and is_instance_valid(build_system):
+		if build_system.has_signal("build_site_added"):
+			build_system.connect("build_site_added", Callable(self, "_on_build_site_added"))
+		if build_system.has_signal("build_site_removed"):
+			build_system.connect("build_site_removed", Callable(self, "_on_build_site_removed"))
+		if build_system.has_signal("structure_added"):
+			build_system.connect("structure_added", Callable(self, "_on_structure_added"))
+		if build_system.has_signal("stockpile_zone_added"):
+			build_system.connect("stockpile_zone_added", Callable(self, "_on_stockpile_zone_added"))
+		if build_system.has_signal("farm_zone_added"):
+			build_system.connect("farm_zone_added", Callable(self, "_on_farm_zone_added"))
 	hud.set_workstation_catalog(workstation_defs)
 	hud.set_selected_workstation(selected_workstation_id)
 	hud.set_recipe_catalog(_filter_recipes_for_workstation(selected_workstation_id))
-	hud.set_research_catalog(_get_research_catalog(), _active_research_id)
+	hud.set_research_catalog(
+		_get_research_catalog(),
+		_active_research_id,
+		_get_research_lock_map(),
+		_get_research_prereq_map(),
+		_get_research_tree_rows()
+	)
 	hud.set_selected_count(0)
 	hud.set_needs_preview(null)
 	hud.set_priority_preview(null)
@@ -173,6 +265,7 @@ func _ready() -> void:
 	hud.set_work_toggles({})
 	hud.set_craft_queue_preview([])
 	hud.set_stockpile_filter_state(false, 0, {}, 0, {})
+	hud.set_stockpile_presets(_get_stockpile_preset_options(), &"")
 	hud.set_selected_status_visible(false)
 	hud.set_craft_panel_visible(false)
 	hud.set_resource_stock(resource_stock)
@@ -187,68 +280,277 @@ func _ready() -> void:
 	hud.set_equipment_preview(null)
 	_apply_time_scale()
 	_clamp_camera()
+	_wire_existing_world_signals()
+	_cached_alive_enemies = _get_alive_raiders()
+	_refresh_demolish_overlay_state()
+	_maybe_start_auto_raid_benchmark()
+	_queue_event_dispatch()
+
+func _init_group_cache() -> void:
+	var hot_groups: Array[StringName] = [
+		&"stockpile_zones",
+		&"resource_drops",
+		&"gatherables",
+		&"huntables",
+		&"structures",
+		&"farm_zones",
+		&"raiders",
+		&"trap_structures",
+		&"repairable_structures",
+		&"build_sites"
+	]
+	for group_name in hot_groups:
+		_group_cache_dirty[group_name] = true
+	if get_tree() != null:
+		if not get_tree().is_connected("node_added", Callable(self, "_on_tree_node_added")):
+			get_tree().connect("node_added", Callable(self, "_on_tree_node_added"))
+		if not get_tree().is_connected("node_removed", Callable(self, "_on_tree_node_removed")):
+			get_tree().connect("node_removed", Callable(self, "_on_tree_node_removed"))
+
+func _on_tree_node_added(_node: Node) -> void:
+	_mark_group_cache_for_node(_node)
+	if _node == null:
+		return
+	if _node.is_in_group("blocking_structures") or _node.is_in_group("build_sites") or _node.is_in_group("structures"):
+		_mark_pathing_dirty()
+
+func _on_tree_node_removed(_node: Node) -> void:
+	_mark_group_cache_for_node(_node)
+	if _node == null:
+		return
+	if _node.is_in_group("blocking_structures") or _node.is_in_group("build_sites") or _node.is_in_group("structures"):
+		_mark_pathing_dirty()
+
+func _mark_group_cache_dirty(group_name: StringName) -> void:
+	_group_cache_dirty[group_name] = true
+
+func _mark_all_group_cache_dirty() -> void:
+	for group_name_any in _group_cache_dirty.keys():
+		_group_cache_dirty[group_name_any] = true
+
+func _mark_group_cache_for_node(node: Node) -> void:
+	if node == null:
+		return
+	for group_name_any in _group_cache_dirty.keys():
+		var group_name: StringName = StringName(group_name_any)
+		if node.is_in_group(group_name):
+			_group_cache_dirty[group_name] = true
+
+func _get_group_nodes_cached(group_name: StringName) -> Array:
+	if bool(_group_cache_dirty.get(group_name, true)):
+		_group_cache[group_name] = get_tree().get_nodes_in_group(StringName(group_name))
+		_group_cache_dirty[group_name] = false
+	return _group_cache.get(group_name, [])
 
 func _process(delta: float) -> void:
+	_record_frame_profile(delta)
 	if input_controller != null and input_controller.dragging:
 		queue_redraw()
-	elif _has_demolish_queued_structure():
+	elif _has_demolish_overlay:
 		queue_redraw()
 	_process_camera(_get_camera_delta(delta))
 	if not _game_paused:
 		_elapsed_game_seconds += delta
-	_prune_colonists()
+	var time_tick: int = int(floor(_elapsed_game_seconds * 10.0))
+	if time_tick != _last_hud_time_tick:
+		_last_hud_time_tick = time_tick
+		_hud_dirty = true
 	_update_raid_state(delta)
-	need_system.process_needs(delta, colonists)
-	for colonist in colonists:
-		if colonist == null or not is_instance_valid(colonist):
-			continue
-		colonist.update_job_completion(delta)
-		var food_available: int = int(resource_stock.get(&"Meal", 0)) + int(resource_stock.get(&"FoodRaw", 0))
-		job_system.queue_need_jobs(colonist, food_available)
-	_apply_passive_item_bonuses()
-	_update_farm_zones(delta)
-	_update_defense_traps(delta)
-	var rally_pos: Vector2 = _combat_rally_point if _outfit_mode == &"Combat" else Vector2.INF
-	job_system.request_combat_jobs(colonists, _get_alive_raiders(), rally_pos, TILE_SIZE * 3.0)
-	_request_designated_resource_jobs()
-	_update_workstation_supply_requests()
-	var haul_targets: Array = get_tree().get_nodes_in_group("stockpile_zones")
-	for depot in _workstation_depots.values():
-		if depot != null and is_instance_valid(depot):
-			haul_targets.append(depot)
-	job_system.request_haul_jobs(
-		get_tree().get_nodes_in_group("resource_drops"),
-		haul_targets,
-		resource_stock,
-		target_stock
-	)
-	build_system.request_build_jobs(job_system)
-	_refresh_structure_integrity()
-	job_system.request_repair_jobs(_get_damaged_repairable_structures())
-	job_system.request_craft_jobs(
-		recipe_lookup,
-		_build_workstation_slots_map(),
-		colonists,
-		Callable(self, "_can_start_recipe_at_workstation"),
-		Callable(self, "_on_recipe_started_at_workstation")
-	)
-	job_system.request_research_jobs(
-		colonists,
-		_find_research_bench_pos(),
-		_active_research_id if _research_running else &"",
-		6.0
-	)
-	job_system.assign_jobs(colonists)
-	_apply_combat_tile_occupancy()
-	_reconcile_stockpile_totals_with_resource_stock()
-	hud.set_craft_queue_preview(job_system.get_craft_queue(selected_workstation_id))
-	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
-	hud.set_raid_state(_raid_state, _raid_warning_timer, _raid_wave_kind)
-	hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
-	_refresh_hud()
+	if _raid_state == &"Active":
+		_trap_update_accum += delta
+		if _trap_update_accum >= TRAP_UPDATE_INTERVAL_SEC:
+			_dispatch_traps_dirty = true
+			_queue_event_dispatch()
+	if _has_pending_dispatch():
+		_dispatch_event_updates()
+
+func _queue_event_dispatch() -> void:
+	if _dispatch_queued:
+		return
+	_dispatch_queued = true
+	call_deferred("_dispatch_event_updates")
+
+func _has_pending_dispatch() -> bool:
+	return _dispatch_pathing_dirty \
+		or _dispatch_combat_dirty \
+		or _dispatch_traps_dirty \
+		or _dispatch_farm_dirty \
+		or _dispatch_maintenance_dirty \
+		or _dispatch_economy_dirty \
+		or _dispatch_jobs_dirty \
+		or _hud_dirty
+
+func _mark_pathing_dirty() -> void:
+	_dispatch_pathing_dirty = true
+	_workstation_slots_dirty = true
+	_structure_maintenance_dirty = true
+	_mark_all_group_cache_dirty()
+	_queue_event_dispatch()
+
+func _mark_jobs_dirty() -> void:
+	_dispatch_jobs_dirty = true
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_assign_dirty"):
+		job_system.mark_assign_dirty()
+	_queue_event_dispatch()
+
+func _mark_combat_dirty() -> void:
+	_dispatch_combat_dirty = true
+	_dispatch_traps_dirty = true
+	_mark_group_cache_dirty(&"raiders")
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_combat_dirty"):
+		job_system.mark_combat_dirty()
+	_queue_event_dispatch()
+
+func _mark_economy_dirty() -> void:
+	_dispatch_economy_dirty = true
+	_structure_maintenance_dirty = true
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_haul_dirty"):
+		job_system.mark_haul_dirty()
+	_queue_event_dispatch()
+
+func _mark_maintenance_dirty() -> void:
+	_dispatch_maintenance_dirty = true
+	_structure_maintenance_dirty = true
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_repair_dirty"):
+		job_system.mark_repair_dirty()
+	_queue_event_dispatch()
+
+func _mark_farm_dirty() -> void:
+	_dispatch_farm_dirty = true
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_designation_dirty"):
+		job_system.mark_designation_dirty()
+	_queue_event_dispatch()
+
+func _dispatch_event_updates() -> void:
+	_dispatch_queued = false
+	if not _has_pending_dispatch():
+		return
+	var dispatch_start_us: int = Time.get_ticks_usec()
+	var dt_pathing_us: int = 0
+	var dt_combat_us: int = 0
+	var dt_traps_us: int = 0
+	var dt_farm_us: int = 0
+	var dt_maint_us: int = 0
+	var dt_econ_us: int = 0
+	var dt_jobs_us: int = 0
+	var dt_hud_us: int = 0
+	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _dispatch_pathing_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		_pathing_occupancy.notify_world_changed()
+		_dispatch_pathing_dirty = false
+		if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_spatial_dirty"):
+			job_system.mark_spatial_dirty()
+		dt_pathing_us = Time.get_ticks_usec() - t_us
+	if _dispatch_combat_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		_cached_alive_enemies = _get_alive_raiders()
+		_enemy_sim_interval_scale = _compute_enemy_sim_interval_scale(_cached_alive_enemies.size())
+		_apply_enemy_sim_budget(_cached_alive_enemies, _enemy_sim_interval_scale)
+		_friendly_pathing_budget_scale = _compute_friendly_pathing_budget_scale(_cached_alive_enemies.size())
+		_apply_friendly_pathing_budget(_friendly_pathing_budget_scale)
+		_apply_day_night_to_enemies(_cached_alive_enemies)
+		_dispatch_traps_dirty = true
+		_dispatch_combat_dirty = false
+		dt_combat_us = Time.get_ticks_usec() - t_us
+	if _dispatch_traps_dirty and _raid_state == &"Active":
+		var t_us: int = Time.get_ticks_usec()
+		var trap_delta: float = maxf(0.02, _trap_update_accum)
+		_trap_update_accum = 0.0
+		# Emergency guard: when frame budget collapses, skip trap simulation first.
+		if Engine.get_frames_per_second() >= 45.0:
+			_update_defense_traps(trap_delta, _cached_alive_enemies)
+		_dispatch_traps_dirty = false
+		dt_traps_us = Time.get_ticks_usec() - t_us
+	if _dispatch_farm_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		_update_farm_zones(0.2)
+		_dispatch_farm_dirty = false
+		dt_farm_us = Time.get_ticks_usec() - t_us
+	if _dispatch_maintenance_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		_refresh_structure_integrity()
+		_apply_passive_item_bonuses()
+		_dispatch_maintenance_dirty = false
+		dt_maint_us = Time.get_ticks_usec() - t_us
+	if _dispatch_economy_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		_reconcile_stockpile_totals_with_resource_stock()
+		_dispatch_economy_dirty = false
+		dt_econ_us = Time.get_ticks_usec() - t_us
+	if _dispatch_jobs_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		var now_jobs_ms: int = Time.get_ticks_msec()
+		var throttled: bool = _raid_state == &"Active" and now_jobs_ms < _active_jobs_next_ms
+		if not throttled:
+			var enemies: Array = _cached_alive_enemies
+			var rally_pos: Vector2 = _combat_rally_point if _outfit_mode == &"Combat" else Vector2.INF
+			var max_combatants: int = mini(maxi(2, enemies.size() * 2), maxi(2, colonists.size()))
+			if _raid_state != &"Active" and _outfit_mode != &"Combat":
+				enemies = _get_workmode_threat_enemies(enemies)
+				max_combatants = mini(maxi(1, enemies.size()), 2)
+			elif _raid_state == &"Active":
+				max_combatants = mini(12, mini(maxi(2, enemies.size() * 2), maxi(2, colonists.size())))
+				_active_jobs_next_ms = now_jobs_ms + 180
+			job_system.set_haul_urgency_multiplier(_haul_urgency_multiplier_by_colony_state())
+			var haul_targets: Array = _get_group_nodes_cached(&"stockpile_zones").duplicate()
+			for depot in _workstation_depots.values():
+				if depot != null and is_instance_valid(depot):
+					haul_targets.append(depot)
+			if _raid_state != &"Active":
+				_update_workstation_supply_requests()
+			if build_system != null and is_instance_valid(build_system):
+				build_system.request_build_jobs(job_system)
+			job_system.process_dirty(
+				colonists,
+				enemies,
+				_get_group_nodes_cached(&"resource_drops"),
+				haul_targets,
+				resource_stock,
+				target_stock,
+				rally_pos,
+				TILE_SIZE * 3.0,
+				max_combatants,
+				recipe_lookup,
+				_get_cached_workstation_slots_map(),
+				Callable(self, "_can_start_recipe_at_workstation"),
+				Callable(self, "_on_recipe_started_at_workstation"),
+				_find_research_bench_pos(),
+				_active_research_id if _research_running else &"",
+				_get_damaged_repairable_structures(),
+				_get_maintainable_traps(),
+				_get_group_nodes_cached(&"gatherables"),
+				_get_group_nodes_cached(&"huntables"),
+				_raid_state == &"Active"
+			)
+			_dispatch_jobs_dirty = false
+		dt_jobs_us = Time.get_ticks_usec() - t_us
+	if _hud_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		hud.set_craft_queue_preview(job_system.get_craft_queue(selected_workstation_id))
+		hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
+		hud.set_raid_state(_raid_state, _raid_warning_timer, _raid_wave_kind)
+		hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
+		hud.set_defense_status(_defense_status_text)
+		_refresh_hud()
+		_hud_dirty = false
+		dt_hud_us = Time.get_ticks_usec() - t_us
+	var dt_total_us: int = Time.get_ticks_usec() - dispatch_start_us
+	if _raid_state == &"Active" and dt_total_us >= 40000:
+		print("[Perf][Hitch][Dispatch] total=%.2f path=%.2f combat=%.2f traps=%.2f farm=%.2f maint=%.2f econ=%.2f jobs=%.2f hud=%.2f enemies=%d" % [
+			float(dt_total_us) / 1000.0,
+			float(dt_pathing_us) / 1000.0,
+			float(dt_combat_us) / 1000.0,
+			float(dt_traps_us) / 1000.0,
+			float(dt_farm_us) / 1000.0,
+			float(dt_maint_us) / 1000.0,
+			float(dt_econ_us) / 1000.0,
+			float(dt_jobs_us) / 1000.0,
+			float(dt_hud_us) / 1000.0,
+			_cached_alive_enemies.size()
+		])
 
 func _has_demolish_queued_structure() -> bool:
-	for node in get_tree().get_nodes_in_group("structures"):
+	for node in _get_group_nodes_cached(&"structures"):
 		if node == null or not is_instance_valid(node):
 			continue
 		if bool(node.get_meta("demolish_job_queued")):
@@ -290,7 +592,7 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 			KEY_ESCAPE:
 				_clear_pending_placement()
-				hud.set_active_action(&"Interact")
+				_on_action_changed(&"Interact")
 				return
 	input_controller.process_unhandled_input(event, world_root)
 	if event is InputEventMouseMotion and input_controller.dragging:
@@ -354,6 +656,29 @@ func _spawn_initial_colonists() -> void:
 		c.priorities.hunt = 6
 		c.priorities.haul = 5
 		colonists.append(c)
+
+func _apply_starting_loadout(loadout: ColonistLoadoutData) -> void:
+	var count: int = colonists.size()
+	var slot_map: Dictionary = {
+		&"weapon": loadout.weapon,
+		&"top": loadout.top,
+		&"bottom": loadout.bottom,
+		&"hat": loadout.hat
+	}
+	for slot_key in slot_map:
+		var item_id: StringName = slot_map[slot_key]
+		if item_id == &"":
+			continue
+		if not resource_stock.has(item_id):
+			resource_stock[item_id] = 0
+		resource_stock[item_id] = int(resource_stock[item_id]) + count
+	for item_id in loadout.starting_inventory:
+		var qty: int = int(loadout.starting_inventory[item_id])
+		if qty <= 0:
+			continue
+		if not resource_stock.has(item_id):
+			resource_stock[item_id] = 0
+		resource_stock[item_id] = int(resource_stock[item_id]) + qty
 
 func _on_left_click(world_pos: Vector2) -> void:
 	if current_action == &"SetRallyFlag":
@@ -455,35 +780,6 @@ func _on_left_click(world_pos: Vector2) -> void:
 		return
 	hud.set_craft_panel_visible(false)
 
-	var clicked_zone: Node = _find_stockpile_zone_near(world_pos, 40.0)
-	if clicked_zone != null:
-		selected_designation_target = null
-		hud.set_designation_panel_visible(false)
-		_set_selected([])
-		selected_stockpile_zone = clicked_zone
-		_clear_selected_object()
-		_refresh_stockpile_filter_ui()
-		hud.set_active_action(&"Stockpile")
-		return
-	else:
-		selected_stockpile_zone = null
-
-	var clicked_farm: Node = _find_farm_zone_near(world_pos, 40.0)
-	if clicked_farm != null:
-		selected_designation_target = null
-		hud.set_designation_panel_visible(false)
-		_set_selected([])
-		selected_farm_zone = clicked_farm
-		_configure_farm_zone_catalog(selected_farm_zone)
-		_selected_object_kind = &"FarmZone"
-		_selected_object_zone = clicked_farm
-		_selected_object_resource = &""
-		_refresh_hud()
-		hud.set_active_action(&"FarmZoneSelected")
-		return
-	else:
-		selected_farm_zone = null
-
 	if pending_install_item != &"":
 		if _try_install_pending_item(world_pos):
 			_clear_pending_placement()
@@ -529,6 +825,35 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_refresh_hud()
 		hud.set_active_action(&"StructureSelected")
 		return
+
+	var clicked_zone: Node = _find_stockpile_zone_near(world_pos, 40.0)
+	if clicked_zone != null:
+		selected_designation_target = null
+		hud.set_designation_panel_visible(false)
+		_set_selected([])
+		selected_stockpile_zone = clicked_zone
+		_clear_selected_object()
+		_refresh_stockpile_filter_ui()
+		hud.set_active_action(&"Stockpile")
+		return
+	else:
+		selected_stockpile_zone = null
+
+	var clicked_farm: Node = _find_farm_zone_near(world_pos, 40.0)
+	if clicked_farm != null:
+		selected_designation_target = null
+		hud.set_designation_panel_visible(false)
+		_set_selected([])
+		selected_farm_zone = clicked_farm
+		_configure_farm_zone_catalog(selected_farm_zone)
+		_selected_object_kind = &"FarmZone"
+		_selected_object_zone = clicked_farm
+		_selected_object_resource = &""
+		_refresh_hud()
+		hud.set_active_action(&"FarmZoneSelected")
+		return
+	else:
+		selected_farm_zone = null
 
 	_set_selected([])
 	_clear_selected_object()
@@ -592,7 +917,31 @@ func _set_selected(new_selection: Array) -> void:
 	selected_colonists = new_selection
 	for c in selected_colonists:
 		c.set_selected(true)
+	_hud_dirty = true
 	_refresh_hud()
+
+func _maybe_start_auto_raid_benchmark() -> void:
+	var enabled: bool = OS.get_environment("AUTO_RAID_BENCH") == "1"
+	if not enabled:
+		var args: PackedStringArray = OS.get_cmdline_args()
+		for arg in args:
+			if arg == "--auto_raid_bench":
+				enabled = true
+				break
+	if not enabled:
+		return
+	var timer: SceneTreeTimer = get_tree().create_timer(2.0)
+	timer.timeout.connect(func():
+		if _raid_state == &"Idle" or _raid_state == &"Resolved":
+			_start_raid_warning()
+	)
+
+func _on_command_move(world_pos: Vector2) -> void:
+	if selected_colonists.is_empty():
+		return
+	_issue_selected_move_command(world_pos)
+	_mark_jobs_dirty()
+	_mark_combat_dirty()
 
 func _find_colonist_near(world_pos: Vector2, radius: float) -> Node:
 	for colonist in colonists:
@@ -607,6 +956,7 @@ func _refresh_hud() -> void:
 	var stockpile_focus: Node = selected_stockpile_zone if selected_stockpile_zone != null and is_instance_valid(selected_stockpile_zone) else null
 	var farm_focus: Node = selected_farm_zone if selected_farm_zone != null and is_instance_valid(selected_farm_zone) else null
 	var object_focus: bool = _selected_object_kind != &"" and _selected_object_zone != null and is_instance_valid(_selected_object_zone)
+	hud.set_research_panel_visible(object_focus and _selected_object_kind == &"ResearchBench")
 	hud.set_selected_status_visible(focus != null or stockpile_focus != null or farm_focus != null or object_focus)
 	hud.set_needs_preview(focus)
 	hud.set_priority_preview(focus)
@@ -638,16 +988,7 @@ func _refresh_hud() -> void:
 		)
 	elif object_focus:
 		if _selected_object_kind == &"ResearchBench":
-			var options: Array = []
-			var keys: Array = research_lookup.keys()
-			keys.sort_custom(func(a, b): return String(a) < String(b))
-			for key_any in keys:
-				var key: StringName = StringName(key_any)
-				var def: Resource = research_lookup[key]
-				options.append({
-					"id": key,
-					"label": "%s (%.0f)" % [String(def.display_name), float(def.required_points)]
-				})
+			var options: Array = _get_cached_research_options()
 			var progress_text: String = "없음"
 			if _active_research_id != &"":
 				progress_text = "%s %.0f / %.0f" % [
@@ -723,15 +1064,34 @@ func _on_priority_changed(job_type: StringName, value: int) -> void:
 				c.priorities.hunt = value
 			&"Combat":
 				c.priorities.combat = value
+	job_system.mark_assign_dirty()
+	_mark_jobs_dirty()
 
 func _on_work_toggle_changed(work_type: StringName, enabled: bool) -> void:
 	for c in selected_colonists:
 		c.set_work_enabled(work_type, enabled)
+	job_system.mark_assign_dirty()
+	_mark_jobs_dirty()
 
 func _on_colonist_status_changed(_colonist: Node) -> void:
+	if _colonist != null and is_instance_valid(_colonist):
+		var cid: int = _colonist.get_instance_id()
+		var now_ms: int = Time.get_ticks_msec()
+		var next_ms: int = int(_need_job_refresh_next_ms_by_colonist.get(cid, 0))
+		if now_ms >= next_ms:
+			_need_job_refresh_next_ms_by_colonist[cid] = now_ms + 700
+			var food_available: int = int(resource_stock.get(&"Meal", 0)) + int(resource_stock.get(&"FoodRaw", 0))
+			if bool(job_system.queue_need_jobs(_colonist, food_available)):
+				_mark_jobs_dirty()
+			if _raid_state == &"Active":
+				var current: Dictionary = _colonist.current_job if "current_job" in _colonist else {}
+				var job_type: StringName = StringName(current.get("type", &""))
+				if current.is_empty() or (job_type != &"CombatMelee" and job_type != &"CombatRanged"):
+					_mark_combat_dirty()
+					_mark_jobs_dirty()
 	if selected_colonists.is_empty():
 		return
-	_refresh_hud()
+	_hud_dirty = true
 
 func _on_action_changed(action: StringName) -> void:
 	current_action = action
@@ -779,6 +1139,7 @@ func _on_workstation_changed(workstation_id: StringName) -> void:
 	selected_workstation_id = workstation_id
 	hud.set_recipe_catalog(_filter_recipes_for_workstation(workstation_id))
 	hud.set_craft_queue_preview(job_system.get_craft_queue(workstation_id))
+	hud.set_craft_queue_paused_state(job_system.is_craft_queue_paused(workstation_id))
 	var ws_name: String = _get_workstation_display_name(workstation_id)
 	hud.set_craft_panel_visible(true, ws_name)
 
@@ -787,6 +1148,8 @@ func _on_stockpile_filter_mode_changed(mode: int) -> void:
 		return
 	if selected_stockpile_zone.has_method("set_filter_mode"):
 		selected_stockpile_zone.set_filter_mode(mode)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
 	_refresh_stockpile_filter_ui()
 
 func _on_stockpile_filter_item_changed(resource_type: StringName, enabled: bool) -> void:
@@ -794,6 +1157,8 @@ func _on_stockpile_filter_item_changed(resource_type: StringName, enabled: bool)
 		return
 	if selected_stockpile_zone.has_method("set_filter_item"):
 		selected_stockpile_zone.set_filter_item(resource_type, enabled)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
 	_refresh_stockpile_filter_ui()
 
 func _on_stockpile_priority_changed(value: int) -> void:
@@ -801,6 +1166,8 @@ func _on_stockpile_priority_changed(value: int) -> void:
 		return
 	if selected_stockpile_zone.has_method("set_zone_priority"):
 		selected_stockpile_zone.set_zone_priority(value)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
 	_refresh_stockpile_filter_ui()
 
 func _on_stockpile_limit_changed(resource_type: StringName, limit: int) -> void:
@@ -808,6 +1175,17 @@ func _on_stockpile_limit_changed(resource_type: StringName, limit: int) -> void:
 		return
 	if selected_stockpile_zone.has_method("set_resource_limit"):
 		selected_stockpile_zone.set_resource_limit(resource_type, limit)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
+	_refresh_stockpile_filter_ui()
+
+func _on_stockpile_preset_apply_requested(preset_id: StringName) -> void:
+	if selected_stockpile_zone == null or not is_instance_valid(selected_stockpile_zone):
+		return
+	if selected_stockpile_zone.has_method("apply_preset"):
+		selected_stockpile_zone.apply_preset(preset_id)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
 	_refresh_stockpile_filter_ui()
 
 func _find_gatherable_near(world_pos: Vector2, radius: float) -> Node:
@@ -861,6 +1239,7 @@ func _find_structure_by_building_near(world_pos: Vector2, building_id: StringNam
 func _find_build_site_near(world_pos: Vector2, radius: float, required_building_id: StringName = &"") -> Node:
 	var best: Node = null
 	var best_dist: float = radius
+	var inside_best_dist: float = INF
 	for site in get_tree().get_nodes_in_group("build_sites"):
 		if site == null or not is_instance_valid(site):
 			continue
@@ -869,7 +1248,15 @@ func _find_build_site_near(world_pos: Vector2, radius: float, required_building_
 		var site_building_id: StringName = StringName(site.get("building_id"))
 		if required_building_id != &"" and site_building_id != required_building_id:
 			continue
+		var footprint: Vector2 = site.get("footprint_size") if site.get("footprint_size") != null else Vector2(TILE_SIZE, TILE_SIZE)
+		var half: Vector2 = footprint * 0.5
+		var local: Vector2 = world_pos - site.global_position
+		var inside: bool = absf(local.x) <= half.x and absf(local.y) <= half.y
 		var d: float = site.global_position.distance_to(world_pos)
+		if inside and d < inside_best_dist:
+			inside_best_dist = d
+			best = site
+			continue
 		if d > best_dist:
 			continue
 		best_dist = d
@@ -885,6 +1272,90 @@ func _cancel_build_site(site: Node) -> void:
 	if site.has_method("set_job_queued"):
 		site.set_job_queued(false)
 	site.queue_free()
+
+func _on_build_site_added(site: Node) -> void:
+	if site == null or not is_instance_valid(site):
+		return
+	if site.has_signal("site_changed") and not site.is_connected("site_changed", Callable(self, "_on_build_site_state_changed")):
+		site.connect("site_changed", Callable(self, "_on_build_site_state_changed"))
+	if site.has_signal("site_completed") and not site.is_connected("site_completed", Callable(self, "_on_build_site_completed")):
+		site.connect("site_completed", Callable(self, "_on_build_site_completed"))
+	if site.has_signal("site_removed") and not site.is_connected("site_removed", Callable(self, "_on_build_site_removed")):
+		site.connect("site_removed", Callable(self, "_on_build_site_removed"))
+	if site.has_signal("site_retry_due") and not site.is_connected("site_retry_due", Callable(self, "_on_build_site_retry_due")):
+		site.connect("site_retry_due", Callable(self, "_on_build_site_retry_due"))
+	_mark_pathing_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
+
+func _on_build_site_removed(_site: Node) -> void:
+	_mark_pathing_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
+
+func _on_build_site_state_changed(_site: Node) -> void:
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
+
+func _on_build_site_completed(_site: Node) -> void:
+	_mark_pathing_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_mark_combat_dirty()
+	_hud_dirty = true
+
+func _on_build_site_retry_due(_site: Node) -> void:
+	_mark_jobs_dirty()
+
+func _on_structure_added(_structure: Node) -> void:
+	_mark_pathing_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_mark_combat_dirty()
+	_hud_dirty = true
+
+func _on_stockpile_zone_added(zone: Node) -> void:
+	if zone != null and is_instance_valid(zone) and zone.has_signal("stockpile_changed") and not zone.is_connected("stockpile_changed", Callable(self, "_on_stockpile_zone_changed")):
+		zone.connect("stockpile_changed", Callable(self, "_on_stockpile_zone_changed"))
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
+	_hud_dirty = true
+
+func _on_farm_zone_added(zone: Node) -> void:
+	if zone != null and is_instance_valid(zone):
+		if zone.has_signal("zone_changed") and not zone.is_connected("zone_changed", Callable(self, "_on_farm_zone_changed")):
+			zone.connect("zone_changed", Callable(self, "_on_farm_zone_changed"))
+		if zone.has_signal("farm_job_needed") and not zone.is_connected("farm_job_needed", Callable(self, "_on_farm_zone_job_needed")):
+			zone.connect("farm_job_needed", Callable(self, "_on_farm_zone_job_needed"))
+	_mark_farm_dirty()
+	_mark_jobs_dirty()
+	_hud_dirty = true
+
+func _on_stockpile_zone_changed(_zone: Node) -> void:
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
+
+func _on_farm_zone_changed(_zone: Node) -> void:
+	_mark_farm_dirty()
+	_hud_dirty = true
+
+func _on_farm_zone_job_needed(_zone: Node) -> void:
+	_mark_jobs_dirty()
+
+func _on_enemy_moved(_enemy: Node, _tile: Vector2i) -> void:
+	var now_ms: int = Time.get_ticks_msec()
+	if now_ms < _trap_move_event_next_ms:
+		return
+	_trap_move_event_next_ms = now_ms + int(round(TRAP_UPDATE_INTERVAL_SEC * 1000.0))
+	if _raid_state != &"Active":
+		_mark_combat_dirty()
+	_dispatch_traps_dirty = true
+	_queue_event_dispatch()
 
 func _find_demolishable_structure_near(world_pos: Vector2, radius: float) -> Node:
 	var best: Node = null
@@ -924,6 +1395,10 @@ func _queue_demolish_structure(structure: Node, replace_building_id: StringName 
 		required_work = float(structure.get_meta("required_work"))
 	var demolish_work: float = maxf(0.5, required_work / 3.0)
 	job_system.queue_demolish_job(structure, demolish_work, replace_building_id)
+	_refresh_demolish_overlay_state()
+	job_system.mark_repair_dirty()
+	_mark_jobs_dirty()
+	_mark_pathing_dirty()
 
 func _draw_demolish_queued_outlines() -> void:
 	for node in get_tree().get_nodes_in_group("structures"):
@@ -959,6 +1434,10 @@ func _on_resource_delivered(resource_type: StringName, amount: int, zone: Node) 
 	if remain > 0:
 		_spawn_resource_drop(resource_type, remain, zone.global_position)
 	hud.set_resource_stock(resource_stock)
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
 
 func _on_craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id: int = 0) -> void:
 	for k in products.keys():
@@ -967,8 +1446,16 @@ func _on_craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id
 			continue
 		_spawn_resource_drop(StringName(k), amount, world_pos)
 	job_system.notify_craft_job_finished(craft_slot_id)
+	job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
 
 func _on_structure_demolished(world_pos: Vector2, replace_building_id: StringName) -> void:
+	_refresh_demolish_overlay_state()
+	_mark_pathing_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
 	if replace_building_id == &"":
 		return
 	_try_place_building_by_id(world_pos, replace_building_id)
@@ -990,23 +1477,46 @@ func _on_research_progressed(project_id: StringName, points: float) -> void:
 	_active_research_id = &""
 	_research_running = false
 	_refresh_building_catalog()
-	hud.set_research_catalog(_get_research_catalog(), _active_research_id)
+	hud.set_research_catalog(
+		_get_research_catalog(),
+		_active_research_id,
+		_get_research_lock_map(),
+		_get_research_prereq_map(),
+		_get_research_tree_rows()
+	)
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_mark_farm_dirty()
+	_mark_pathing_dirty()
+	_hud_dirty = true
 
 func _on_research_project_changed(project_id: StringName) -> void:
 	if project_id == &"":
 		return
 	if project_id == _active_research_id:
 		return
+	if not _can_select_research_project(project_id):
+		_hud_dirty = true
+		return
 	_active_research_id = project_id
 	_active_research_points = 0.0
 	_research_running = false
+	job_system.mark_research_dirty()
+	_mark_jobs_dirty()
+	_hud_dirty = true
 
 func _on_research_start_requested() -> void:
 	if _active_research_id == &"":
 		return
 	if bool(_research_completed.get(_active_research_id, false)):
 		return
+	if not _can_select_research_project(_active_research_id):
+		_hud_dirty = true
+		return
 	_research_running = true
+	job_system.mark_research_dirty()
+	_mark_jobs_dirty()
+	_hud_dirty = true
 
 func _on_craft_recipe_queued(recipe_id: StringName, workstation_id: StringName) -> void:
 	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
@@ -1014,10 +1524,24 @@ func _on_craft_recipe_queued(recipe_id: StringName, workstation_id: StringName) 
 		return
 	selected_workstation_id = ws_id
 	job_system.enqueue_craft_recipe(recipe_id, ws_id)
+	job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
+	hud.set_craft_queue_preview(job_system.get_craft_queue(ws_id))
+
+func _on_craft_recipe_front_queued(recipe_id: StringName, workstation_id: StringName) -> void:
+	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
+	if ws_id == &"":
+		return
+	selected_workstation_id = ws_id
+	job_system.enqueue_craft_recipe_front(recipe_id, ws_id)
+	job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
 	hud.set_craft_queue_preview(job_system.get_craft_queue(ws_id))
 
 func _on_craft_queue_clear_requested() -> void:
 	job_system.clear_craft_queue(selected_workstation_id)
+	job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
 	hud.set_craft_queue_preview(job_system.get_craft_queue(selected_workstation_id))
 
 func _on_craft_queue_remove_requested(workstation_id: StringName, index: int) -> void:
@@ -1026,22 +1550,46 @@ func _on_craft_queue_remove_requested(workstation_id: StringName, index: int) ->
 		return
 	selected_workstation_id = ws_id
 	job_system.remove_craft_recipe_at(ws_id, index)
+	job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
 	hud.set_craft_queue_preview(job_system.get_craft_queue(ws_id))
+
+func _on_craft_queue_pause_toggled(workstation_id: StringName, paused: bool) -> void:
+	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
+	if ws_id == &"":
+		return
+	selected_workstation_id = ws_id
+	job_system.set_craft_queue_paused(ws_id, paused)
+	job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
+	hud.set_craft_queue_paused_state(job_system.is_craft_queue_paused(ws_id))
 
 func _on_haul_job_released(drop_id: int) -> void:
 	job_system.release_haul_reservation(drop_id)
+	job_system.mark_haul_dirty()
+	_mark_jobs_dirty()
 
 func _on_colonist_ate_food() -> void:
 	if _consume_resource_stock(&"Meal", 1):
 		hud.set_resource_stock(resource_stock)
+		_mark_economy_dirty()
+		_mark_jobs_dirty()
 		return
 	if _consume_resource_stock(&"FoodRaw", 1):
 		hud.set_resource_stock(resource_stock)
+		_mark_economy_dirty()
+		_mark_jobs_dirty()
 
 func _try_place_selected_building(world_pos: Vector2, as_blueprint: bool) -> void:
 	var placed: bool = build_system.place_building(world_pos, as_blueprint)
 	if placed and not as_blueprint:
 		hud.set_resource_stock(resource_stock)
+	if placed:
+		_mark_pathing_dirty()
+		_mark_jobs_dirty()
+		_mark_maintenance_dirty()
+		_mark_economy_dirty()
+		_hud_dirty = true
 
 func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> void:
 	if building_id == &"Stockpile":
@@ -1054,6 +1602,8 @@ func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> v
 			resource_stock = snapshot
 		else:
 			_consume_stockpile_by_delta(snapshot, resource_stock)
+			_mark_economy_dirty()
+			_mark_jobs_dirty()
 		hud.set_resource_stock(resource_stock)
 		return
 	build_system.set_selected_building(building_id)
@@ -1222,7 +1772,7 @@ func _spawn_supply_drop_for_workstation(resource_type: StringName, amount: int) 
 func _find_best_stockpile_with_resource(resource_type: StringName) -> Node:
 	var best_zone: Node = null
 	var best_amount: int = 0
-	for zone in get_tree().get_nodes_in_group("stockpile_zones"):
+	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if zone == null or not is_instance_valid(zone):
 			continue
 		if not zone.has_method("get_stored_amount"):
@@ -1239,7 +1789,7 @@ func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int
 	if remain <= 0:
 		return 0
 	var removed_total: int = 0
-	for zone in get_tree().get_nodes_in_group("stockpile_zones"):
+	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if remain <= 0:
 			break
 		if zone == null or not is_instance_valid(zone):
@@ -1254,6 +1804,8 @@ func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int
 	if removed_total > 0:
 		resource_stock[resource_type] = maxi(0, int(resource_stock.get(resource_type, 0)) - removed_total)
 		hud.set_resource_stock(resource_stock)
+		_mark_economy_dirty()
+		_mark_jobs_dirty()
 	return removed_total
 
 func _consume_stockpile_by_delta(before_stock: Dictionary, after_stock: Dictionary) -> void:
@@ -1271,13 +1823,15 @@ func _consume_resource_stock(resource_type: StringName, amount: int) -> bool:
 		return false
 	resource_stock[resource_type] = have - amount
 	_consume_from_stockpiles(resource_type, amount)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
 	return true
 
 func _consume_from_stockpiles(resource_type: StringName, amount: int) -> void:
 	var remain: int = amount
 	if remain <= 0:
 		return
-	for zone in get_tree().get_nodes_in_group("stockpile_zones"):
+	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if remain <= 0:
 			break
 		if zone == null or not is_instance_valid(zone):
@@ -1286,9 +1840,11 @@ func _consume_from_stockpiles(resource_type: StringName, amount: int) -> void:
 			continue
 		var removed: int = int(zone.remove_resource(resource_type, remain))
 		remain -= maxi(0, removed)
+	if amount > 0:
+		_mark_economy_dirty()
 
 func _reconcile_stockpile_totals_with_resource_stock() -> void:
-	var zones: Array = get_tree().get_nodes_in_group("stockpile_zones")
+	var zones: Array = _get_group_nodes_cached(&"stockpile_zones")
 	if zones.is_empty():
 		return
 	for key_any in resource_stock.keys():
@@ -1356,6 +1912,8 @@ func _on_bed_assignee_changed(colonist_id: int) -> void:
 			child.text = "Bed (%s)" % owner_name
 			break
 	_apply_passive_item_bonuses()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
 
 func _on_bed_auto_assign_requested() -> void:
 	if selected_bed_node == null or not is_instance_valid(selected_bed_node):
@@ -1410,6 +1968,8 @@ func _on_context_action_requested(action_id: StringName) -> void:
 					if selected_colonists[0].has_method("cancel_current_job"):
 						selected_colonists[0].cancel_current_job()
 				job_system.queue_gather_job(gather_obj, assigned_to)
+				job_system.mark_designation_dirty()
+				_mark_jobs_dirty()
 		&"Workstation":
 			if _context_workstation_id != &"":
 				_activate_workstation(_context_workstation_id)
@@ -1418,6 +1978,7 @@ func _on_context_action_requested(action_id: StringName) -> void:
 					var work_pos: Vector2 = _find_workstation_pos(ws.linked_building_id)
 					if work_pos != Vector2.INF:
 						_issue_selected_move_command(work_pos)
+				_mark_jobs_dirty()
 	_context_gather_target_id = 0
 	_context_workstation_id = &""
 
@@ -1433,6 +1994,8 @@ func _on_designation_toggle_requested() -> void:
 			job_system.queue_gather_job(selected_designation_target)
 		elif selected_designation_target.is_in_group("huntables"):
 			job_system.queue_hunt_job(selected_designation_target)
+	job_system.mark_designation_dirty()
+	_mark_jobs_dirty()
 	_refresh_designation_ui()
 
 func _on_outfit_mode_changed(mode: StringName) -> void:
@@ -1441,9 +2004,18 @@ func _on_outfit_mode_changed(mode: StringName) -> void:
 	_outfit_mode = mode
 	hud.set_outfit_mode(_outfit_mode)
 	_apply_passive_item_bonuses()
+	_mark_combat_dirty()
+	_mark_maintenance_dirty()
 
 func _on_colonist_died(_colonist: Node) -> void:
 	_prune_colonists()
+	_mark_jobs_dirty()
+	_mark_combat_dirty()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
+
+func _refresh_demolish_overlay_state() -> void:
+	_has_demolish_overlay = _has_demolish_queued_structure()
 
 func _prune_colonists() -> void:
 	var alive: Array = []
@@ -1471,7 +2043,7 @@ func _update_raid_state(delta: float) -> void:
 			if _raid_warning_timer <= 0.0:
 				_start_raid_wave()
 		&"Active":
-			var raiders_alive: int = _get_alive_raiders().size()
+			var raiders_alive: int = _cached_alive_enemies.size()
 			if raiders_alive <= 0:
 				_resolve_raid(true)
 			elif colonists.is_empty():
@@ -1480,12 +2052,16 @@ func _update_raid_state(delta: float) -> void:
 func _start_raid_warning() -> void:
 	_raid_state = &"Warning"
 	_raid_warning_timer = 18.0
-	_raid_wave_size = maxi(2, 2 + int(floor(_elapsed_game_seconds / 120.0)))
+	_raid_wave_size = mini(20, maxi(2, 2 + int(floor(_elapsed_game_seconds / 120.0))))
 	_raid_wave_kind = _pick_raid_wave_kind()
+	_mark_combat_dirty()
+	_hud_dirty = true
 
 func _start_raid_wave() -> void:
 	_raid_state = &"Active"
 	_raid_warning_timer = 0.0
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("enter_raid_mode"):
+		job_system.enter_raid_mode()
 	match _raid_wave_kind:
 		&"ZombieHorde":
 			_spawn_zombies(_raid_wave_size + 1)
@@ -1496,11 +2072,21 @@ func _start_raid_wave() -> void:
 			_spawn_raiders(raider_count)
 		_:
 			_spawn_raiders(_raid_wave_size)
+	_cancel_noncombat_jobs_for_active_raid()
+	_mark_combat_dirty()
+	_mark_jobs_dirty()
+	_hud_dirty = true
 
 func _resolve_raid(_colony_survived: bool) -> void:
 	_raid_state = &"Resolved"
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("exit_raid_mode"):
+		job_system.exit_raid_mode()
 	if _colony_survived:
 		_grant_raid_reward()
+	_mark_combat_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_hud_dirty = true
 
 func _on_raid_test_warning_requested() -> void:
 	if _raid_state == &"Warning" or _raid_state == &"Active":
@@ -1509,19 +2095,34 @@ func _on_raid_test_warning_requested() -> void:
 		return
 	_start_raid_warning()
 
+func _cancel_noncombat_jobs_for_active_raid() -> void:
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if not colonist.has_method("cancel_current_job"):
+			continue
+		var current: Dictionary = colonist.current_job if "current_job" in colonist else {}
+		if current.is_empty():
+			continue
+		var job_type: StringName = StringName(current.get("type", &""))
+		if job_type == &"CombatMelee" or job_type == &"CombatRanged":
+			continue
+		colonist.cancel_current_job()
+
 func _spawn_raiders(count: int) -> void:
 	if count <= 0:
 		return
 	var center: Vector2 = WORLD_SIZE * 0.5
 	for _i in range(count):
 		var raider: Node2D = RAIDER_SCENE.instantiate()
-		raider.global_position = _snap_to_tile(_random_edge_spawn(140.0))
+		raider.global_position = _resolve_enemy_spawn_position(_random_edge_spawn(140.0))
 		if raider.has_method("set_tile_size"):
 			raider.set_tile_size(TILE_SIZE)
 		if raider.has_method("look_at"):
 			raider.look_at(center)
 		if raider.has_signal("died"):
 			raider.died.connect(_on_raider_died)
+		_connect_enemy_signals(raider)
 		units_root.add_child(raider)
 
 func _spawn_zombies(count: int) -> void:
@@ -1529,9 +2130,12 @@ func _spawn_zombies(count: int) -> void:
 		return
 	for _i in range(count):
 		var zombie: Node2D = ZOMBIE_SCENE.instantiate()
-		zombie.global_position = _snap_to_tile(_random_edge_spawn(120.0))
+		zombie.global_position = _resolve_enemy_spawn_position(_random_edge_spawn(120.0))
 		if zombie.has_method("set_tile_size"):
 			zombie.set_tile_size(TILE_SIZE)
+		if zombie.has_signal("died"):
+			zombie.died.connect(_on_zombie_died)
+		_connect_enemy_signals(zombie)
 		units_root.add_child(zombie)
 
 func _pick_raid_wave_kind() -> StringName:
@@ -1550,24 +2154,68 @@ func _pick_raid_wave_kind() -> StringName:
 	return &"Mixed"
 
 func _grant_raid_reward() -> void:
-	var bonus_scale: int = maxi(1, _raid_wave_size)
-	var food_amount: int = 2 + bonus_scale
-	var wood_amount: int = 1 + int(floor(bonus_scale * 0.5))
+	var bonus_scale: int = maxi(1, _raid_wave_size + int(floor(_elapsed_game_seconds / 240.0)))
+	var wave_mul: float = 1.0
+	match _raid_wave_kind:
+		&"ZombieHorde":
+			wave_mul = 1.15
+		&"Mixed":
+			wave_mul = 1.25
+		_:
+			wave_mul = 1.0
+	var reward_mul: float = maxf(1.0, _raid_reward_bonus_from_research)
+	var food_amount: int = int(round((2 + bonus_scale) * wave_mul * reward_mul))
+	var wood_amount: int = int(round((1 + int(floor(bonus_scale * 0.5))) * wave_mul * reward_mul))
+	var steel_amount: int = int(round(maxf(1.0, bonus_scale * 0.2 * wave_mul * reward_mul)))
 	_spawn_resource_drop(&"FoodRaw", food_amount, _snap_to_tile(WORLD_SIZE * 0.5 + Vector2(60.0, -40.0)))
 	_spawn_resource_drop(&"Wood", wood_amount, _snap_to_tile(WORLD_SIZE * 0.5 + Vector2(-50.0, -36.0)))
+	_spawn_resource_drop(&"Steel", steel_amount, _snap_to_tile(WORLD_SIZE * 0.5 + Vector2(8.0, -44.0)))
 
 func _on_raider_died(_raider: Node) -> void:
-	if _raid_state == &"Active" and _get_alive_raiders().is_empty():
-		_resolve_raid(true)
+	if _raider != null and is_instance_valid(_raider):
+		_spawn_resource_drop(&"Wood", randi_range(1, 3), _raider.global_position)
+		_spawn_resource_drop(&"FoodRaw", randi_range(0, 2), _raider.global_position + Vector2(8.0, 0.0))
+		var rare_mul: float = maxf(1.0, _enemy_drop_bonus_from_research)
+		if randf() < minf(0.45, 0.18 * rare_mul):
+			_spawn_resource_drop(&"Steel", 1, _raider.global_position + Vector2(-8.0, -4.0))
+		if randf() < minf(0.25, 0.07 * rare_mul):
+			_spawn_resource_drop(&"Bow", 1, _raider.global_position + Vector2(0.0, -10.0))
+	_mark_combat_dirty()
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
+
+func _on_zombie_died(_zombie: Node) -> void:
+	if _zombie != null and is_instance_valid(_zombie):
+		_spawn_resource_drop(&"FoodRaw", randi_range(1, 3), _zombie.global_position)
+		_spawn_resource_drop(&"Stone", randi_range(0, 2), _zombie.global_position + Vector2(-6.0, 0.0))
+		var rare_mul: float = maxf(1.0, _enemy_drop_bonus_from_research)
+		if randf() < minf(0.35, 0.11 * rare_mul):
+			_spawn_resource_drop(&"Steel", 1, _zombie.global_position + Vector2(6.0, -4.0))
+	_mark_combat_dirty()
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
 
 func _get_alive_raiders() -> Array:
 	var out: Array = []
-	for node in get_tree().get_nodes_in_group("raiders"):
+	for node in _get_group_nodes_cached(&"raiders"):
 		if node == null or not is_instance_valid(node):
 			continue
 		if node.has_method("is_dead") and bool(node.is_dead()):
 			continue
 		out.append(node)
+	return out
+
+func _get_workmode_threat_enemies(enemies: Array) -> Array:
+	var out: Array = []
+	var center: Vector2 = WORLD_SIZE * 0.5
+	var threat_radius: float = 520.0
+	for enemy in enemies:
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		if enemy.global_position.distance_to(center) <= threat_radius:
+			out.append(enemy)
 	return out
 
 func _random_edge_spawn(margin: float) -> Vector2:
@@ -1581,6 +2229,33 @@ func _random_edge_spawn(margin: float) -> Vector2:
 			return Vector2(randf_range(margin, WORLD_SIZE.x - margin), WORLD_SIZE.y - margin)
 		_:
 			return Vector2(margin, randf_range(margin, WORLD_SIZE.y - margin))
+
+func _resolve_enemy_spawn_position(raw_pos: Vector2) -> Vector2:
+	var start: Vector2 = _snap_to_tile(raw_pos)
+	if _pathing_occupancy == null or not is_instance_valid(_pathing_occupancy):
+		return start
+	if not _pathing_occupancy.is_blocked_for_enemy(start):
+		return start
+	var center: Vector2 = _snap_to_tile(WORLD_SIZE * 0.5)
+	var to_center: Vector2 = start.direction_to(center)
+	if to_center == Vector2.ZERO:
+		to_center = Vector2.DOWN
+	# Cheap inward sampling to avoid expensive spawn-time scans.
+	for step in range(1, 28):
+		var inward_probe: Vector2 = _snap_to_tile(start + to_center * TILE_SIZE * float(step))
+		if not _pathing_occupancy.is_blocked_for_enemy(inward_probe):
+			return inward_probe
+	# Fallback: sample random points across the map to avoid spawn-locks.
+	for _i in range(48):
+		var probe_any: Vector2 = _snap_to_tile(Vector2(
+			randf_range(TILE_SIZE, WORLD_SIZE.x - TILE_SIZE),
+			randf_range(TILE_SIZE, WORLD_SIZE.y - TILE_SIZE)
+		))
+		if not _pathing_occupancy.is_blocked_for_enemy(probe_any):
+			return probe_any
+	if not _pathing_occupancy.is_blocked_for_enemy(center):
+		return center
+	return start
 
 func _apply_passive_item_bonuses() -> void:
 	var alive_ids: Dictionary = {}
@@ -1598,7 +2273,7 @@ func _apply_passive_item_bonuses() -> void:
 		_sync_equipped_map(_equipped_hat_ids, int(resource_stock.get(&"StrawHat", 0)), alive_ids)
 	_rebuild_weapon_assignments(alive_ids)
 	var assigned_bed_map: Dictionary = {}
-	for node in get_tree().get_nodes_in_group("structures"):
+	for node in _get_group_nodes_cached(&"structures"):
 		if node != null and is_instance_valid(node) and node.has_meta("building_id"):
 			if node.get_meta("building_id") == &"InstalledBed":
 				var owner_id: int = int(node.get_meta("assigned_colonist_id"))
@@ -1653,11 +2328,26 @@ func _apply_passive_item_bonuses() -> void:
 				"accuracy_bonus": accuracy_bonus,
 				"weapon_mode": (&"Ranged" if weapon_id == &"Bow" else &"Melee")
 			})
+		if colonist.has_method("set_external_accuracy_bonus"):
+			colonist.set_external_accuracy_bonus(_day_night_combat_accuracy_bonus())
+		if colonist.has_method("set_external_move_speed_multiplier"):
+			colonist.set_external_move_speed_multiplier(_day_night_move_multiplier())
 		if colonist.has_method("set_gather_speed_multiplier"):
 			colonist.set_gather_speed_multiplier(1.2 if has_any_apparel else 1.0)
+		if colonist.has_method("set_build_work_speed_multiplier"):
+			colonist.set_build_work_speed_multiplier(_build_speed_bonus_from_research)
+		if colonist.has_method("set_repair_work_speed_multiplier"):
+			colonist.set_repair_work_speed_multiplier(_repair_speed_bonus_from_research)
 		if colonist.has_method("set_rest_recover_multiplier"):
 			var rest_mult: float = 1.5 if assigned_bed_map.has(colonist.get_instance_id()) else 1.0
-			colonist.set_rest_recover_multiplier(rest_mult)
+			if _is_night_time() and assigned_bed_map.has(colonist.get_instance_id()):
+				rest_mult *= 1.12
+			colonist.set_rest_recover_multiplier(rest_mult * _rest_recover_bonus_from_research)
+		if colonist.has_method("set_need_decay_multiplier"):
+			var need_decay_mult: float = 0.94 if _is_night_time() else 1.02
+			if _outfit_mode == &"Combat":
+				need_decay_mult *= 1.06
+			colonist.set_need_decay_multiplier(need_decay_mult)
 
 func _sync_equipped_map(equipped_map: Dictionary, max_count: int, alive_ids: Dictionary) -> void:
 	for cid in equipped_map.keys():
@@ -1731,7 +2421,7 @@ func _clear_selected_object() -> void:
 	_selected_object_zone = null
 
 func _find_stockpile_item_at(world_pos: Vector2) -> Dictionary:
-	for zone in get_tree().get_nodes_in_group("stockpile_zones"):
+	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if zone == null or not is_instance_valid(zone):
 			continue
 		if not zone.has_method("get_resource_at_point"):
@@ -1764,6 +2454,8 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		hud.set_resource_stock(resource_stock)
 		hud.set_active_action(&"InstallBed")
 		hud.set_selected_status_visible(false)
+		_mark_economy_dirty()
+		_mark_jobs_dirty()
 	elif String(action_id).begins_with("SetFarmCrop:"):
 		var target_zone: Node = null
 		if selected_farm_zone != null and is_instance_valid(selected_farm_zone):
@@ -1790,6 +2482,8 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		_selected_object_kind = &"FarmZone"
 		_selected_object_zone = target_zone
 		_refresh_hud()
+		_mark_farm_dirty()
+		_mark_jobs_dirty()
 	elif action_id == &"StartResearch":
 		if _selected_object_kind != &"ResearchBench":
 			return
@@ -1813,6 +2507,9 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 			return
 		_queue_demolish_structure(_selected_object_zone)
 		_refresh_hud()
+		_mark_jobs_dirty()
+		_mark_pathing_dirty()
+		_mark_maintenance_dirty()
 	elif action_id == &"CancelBuildSite":
 		if _selected_object_kind != &"BuildSite":
 			return
@@ -1821,9 +2518,16 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		_cancel_build_site(_selected_object_zone)
 		_clear_selected_object()
 		_refresh_hud()
+		_mark_jobs_dirty()
+		_mark_pathing_dirty()
+		_mark_maintenance_dirty()
 
 func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	var world_pos: Vector2 = world_root.get_global_mouse_position()
+	if pending_building_id != &"" or pending_install_item != &"" or current_action == &"StockpileZone" or current_action == &"FarmZone" or current_action == &"SetRallyFlag" or current_action == &"DragGather":
+		_clear_pending_placement()
+		_on_action_changed(&"Interact")
+		return
 	if not selected_colonists.is_empty():
 		var gatherable: Node = _find_gatherable_near(world_pos, 48.0)
 		if gatherable != null:
@@ -1848,6 +2552,8 @@ func _issue_selected_move_command(target_pos: Vector2) -> void:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
 		job_system.issue_immediate_move(colonist, snapped_target)
+	job_system.mark_assign_dirty()
+	_mark_jobs_dirty()
 
 func _spawn_resource_drop(resource_type: StringName, amount: int, world_pos: Vector2) -> Node:
 	if amount <= 0:
@@ -1857,7 +2563,53 @@ func _spawn_resource_drop(resource_type: StringName, amount: int, world_pos: Vec
 	world_root.add_child(drop)
 	if drop.has_method("setup_drop"):
 		drop.setup_drop(resource_type, amount)
+	_connect_resource_drop_signals(drop)
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
 	return drop
+
+func _wire_existing_world_signals() -> void:
+	for site in _get_group_nodes_cached(&"build_sites"):
+		_on_build_site_added(site)
+	for zone in _get_group_nodes_cached(&"stockpile_zones"):
+		_on_stockpile_zone_added(zone)
+	for zone in _get_group_nodes_cached(&"farm_zones"):
+		_on_farm_zone_added(zone)
+	for drop in _get_group_nodes_cached(&"resource_drops"):
+		_connect_resource_drop_signals(drop)
+	for enemy in _get_group_nodes_cached(&"raiders"):
+		_connect_enemy_signals(enemy)
+
+func _connect_resource_drop_signals(drop: Node) -> void:
+	if drop == null or not is_instance_valid(drop):
+		return
+	if drop.has_signal("drop_changed") and not drop.is_connected("drop_changed", Callable(self, "_on_resource_drop_changed")):
+		drop.connect("drop_changed", Callable(self, "_on_resource_drop_changed"))
+	if drop.has_signal("drop_emptied") and not drop.is_connected("drop_emptied", Callable(self, "_on_resource_drop_emptied")):
+		drop.connect("drop_emptied", Callable(self, "_on_resource_drop_emptied"))
+	if drop.has_signal("drop_removed") and not drop.is_connected("drop_removed", Callable(self, "_on_resource_drop_removed")):
+		drop.connect("drop_removed", Callable(self, "_on_resource_drop_removed"))
+
+func _on_resource_drop_changed(_drop: Node) -> void:
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+
+func _on_resource_drop_emptied(_drop: Node) -> void:
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
+
+func _on_resource_drop_removed(_drop: Node) -> void:
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
+
+func _connect_enemy_signals(enemy: Node) -> void:
+	if enemy == null or not is_instance_valid(enemy):
+		return
+	if enemy.has_signal("moved") and not enemy.is_connected("moved", Callable(self, "_on_enemy_moved")):
+		enemy.connect("moved", Callable(self, "_on_enemy_moved"))
 
 func _build_workstation_position_map() -> Dictionary:
 	var out: Dictionary = {}
@@ -1870,7 +2622,7 @@ func _build_workstation_slots_map() -> Dictionary:
 	var out: Dictionary = {}
 	for ws_id_any in workstation_lookup.keys():
 		out[StringName(ws_id_any)] = []
-	for node in get_tree().get_nodes_in_group("structures"):
+	for node in _get_group_nodes_cached(&"structures"):
 		if node == null or not is_instance_valid(node):
 			continue
 		if not node.has_meta("building_id"):
@@ -1888,6 +2640,12 @@ func _build_workstation_slots_map() -> Dictionary:
 			})
 			out[ws_id] = slots
 	return out
+
+func _get_cached_workstation_slots_map() -> Dictionary:
+	if _workstation_slots_dirty:
+		_cached_workstation_slots_map = _build_workstation_slots_map()
+		_workstation_slots_dirty = false
+	return _cached_workstation_slots_map
 
 func _filter_recipes_for_workstation(workstation_id: StringName) -> Array:
 	var out: Array = []
@@ -1940,6 +2698,105 @@ func _get_research_catalog() -> Array:
 		defs.append(research_lookup[key])
 	return defs
 
+func _get_research_prereq_map() -> Dictionary:
+	var out: Dictionary = {}
+	for key_any in research_lookup.keys():
+		var rid: StringName = StringName(key_any)
+		var req: StringName = &""
+		var def: Resource = research_lookup.get(rid, null)
+		if def != null:
+			req = StringName(def.get("prerequisite_research_id"))
+			if req != &"" and not research_lookup.has(req):
+				req = &""
+		out[rid] = req
+	return out
+
+func _get_research_lock_map() -> Dictionary:
+	var prereq_map: Dictionary = _get_research_prereq_map()
+	var out: Dictionary = {}
+	for key_any in research_lookup.keys():
+		var rid: StringName = StringName(key_any)
+		var req: StringName = StringName(prereq_map.get(rid, &""))
+		var unlocked: bool = req == &"" or bool(_research_completed.get(req, false))
+		out[rid] = unlocked
+	return out
+
+func _can_select_research_project(project_id: StringName) -> bool:
+	if project_id == &"":
+		return false
+	var lock_map: Dictionary = _get_research_lock_map()
+	return bool(lock_map.get(project_id, true))
+
+func _get_research_tree_rows() -> Array[Dictionary]:
+	var rows: Array[Dictionary] = []
+	var prereq_map: Dictionary = _get_research_prereq_map()
+	var lock_map: Dictionary = _get_research_lock_map()
+	var children: Dictionary = {}
+	for key_any in research_lookup.keys():
+		var rid: StringName = StringName(key_any)
+		var req: StringName = StringName(prereq_map.get(rid, &""))
+		if req == &"":
+			continue
+		if not children.has(req):
+			children[req] = []
+		var arr: Array = children[req]
+		arr.append(rid)
+		children[req] = arr
+	var roots: Array[StringName] = []
+	for key_any in research_lookup.keys():
+		var rid: StringName = StringName(key_any)
+		var req: StringName = StringName(prereq_map.get(rid, &""))
+		if req == &"":
+			roots.append(rid)
+	roots.sort_custom(func(a, b): return String(a) < String(b))
+	var visited: Dictionary = {}
+	for root in roots:
+		_append_research_tree_rows(root, 0, children, prereq_map, lock_map, visited, rows)
+	for key_any in research_lookup.keys():
+		var rid: StringName = StringName(key_any)
+		if visited.has(rid):
+			continue
+		_append_research_tree_rows(rid, 0, children, prereq_map, lock_map, visited, rows)
+	return rows
+
+func _append_research_tree_rows(
+	research_id: StringName,
+	depth: int,
+	children: Dictionary,
+	prereq_map: Dictionary,
+	lock_map: Dictionary,
+	visited: Dictionary,
+	rows: Array[Dictionary]
+) -> void:
+	if visited.has(research_id):
+		return
+	visited[research_id] = true
+	var def: Resource = research_lookup.get(research_id, null)
+	var display_name: String = String(research_id)
+	if def != null:
+		display_name = String(def.display_name)
+	var req: StringName = StringName(prereq_map.get(research_id, &""))
+	var state: StringName = &"locked"
+	if bool(_research_completed.get(research_id, false)):
+		state = &"done"
+	elif research_id == _active_research_id and _research_running:
+		state = &"active"
+	elif bool(lock_map.get(research_id, true)):
+		state = &"ready"
+	rows.append({
+		"id": research_id,
+		"name": display_name,
+		"depth": depth,
+		"state": state,
+		"prereq": req
+	})
+	if not children.has(research_id):
+		return
+	var next_nodes: Array = children[research_id]
+	next_nodes.sort_custom(func(a, b): return String(a) < String(b))
+	for child_any in next_nodes:
+		_append_research_tree_rows(StringName(child_any), depth + 1, children, prereq_map, lock_map, visited, rows)
+
 func _active_research_required_points() -> float:
 	if _active_research_id == &"":
 		return 0.0
@@ -1958,6 +2815,30 @@ func _apply_research_bonus(research_id: StringName) -> void:
 			_farm_growth_multiplier = clampf(bonus_value, 0.3, 1.0)
 		&"CombatAccuracy":
 			_combat_accuracy_bonus_from_research = maxf(_combat_accuracy_bonus_from_research, bonus_value)
+		&"BuildWorkSpeed":
+			_build_speed_bonus_from_research = maxf(_build_speed_bonus_from_research, bonus_value)
+		&"RepairWorkSpeed":
+			_repair_speed_bonus_from_research = maxf(_repair_speed_bonus_from_research, bonus_value)
+		&"HaulUrgencyBoost":
+			_haul_urgency_bonus_from_research = maxf(_haul_urgency_bonus_from_research, bonus_value)
+		&"RestRecoverBoost":
+			_rest_recover_bonus_from_research = maxf(_rest_recover_bonus_from_research, bonus_value)
+		&"TrapDamageBoost":
+			_trap_damage_bonus_from_research = maxf(_trap_damage_bonus_from_research, bonus_value)
+		&"RaidRewardBoost":
+			_raid_reward_bonus_from_research = maxf(_raid_reward_bonus_from_research, bonus_value)
+		&"TrapRangeBoost":
+			_trap_range_bonus_from_research = maxf(_trap_range_bonus_from_research, bonus_value)
+		&"EnemyDropBoost":
+			_enemy_drop_bonus_from_research = maxf(_enemy_drop_bonus_from_research, bonus_value)
+		&"TrapCooldownBoost":
+			_trap_cooldown_bonus_from_research = maxf(_trap_cooldown_bonus_from_research, bonus_value)
+		&"FarmYieldBoost":
+			_farm_yield_bonus_from_research = maxf(_farm_yield_bonus_from_research, bonus_value)
+		&"FarmResilienceBoost":
+			_farm_resilience_bonus_from_research = maxf(_farm_resilience_bonus_from_research, bonus_value)
+		&"EnemyNightSlow":
+			_enemy_night_slow_bonus_from_research = maxf(_enemy_night_slow_bonus_from_research, bonus_value)
 		_:
 			pass
 
@@ -1965,7 +2846,7 @@ func _find_research_bench_pos() -> Vector2:
 	var pos: Vector2 = _find_workstation_pos(&"ResearchBench")
 	if pos != Vector2.INF:
 		return pos
-	for node in get_tree().get_nodes_in_group("structures"):
+	for node in _get_group_nodes_cached(&"structures"):
 		if node == null or not is_instance_valid(node):
 			continue
 		if not node.has_meta("building_id"):
@@ -1979,7 +2860,7 @@ func _select_stockpile_zone_near(world_pos: Vector2) -> void:
 	_refresh_stockpile_filter_ui()
 
 func _find_stockpile_zone_near(world_pos: Vector2, radius: float) -> Node:
-	for zone in get_tree().get_nodes_in_group("stockpile_zones"):
+	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if zone == null or not is_instance_valid(zone):
 			continue
 		if zone.global_position.distance_to(world_pos) <= radius:
@@ -1987,7 +2868,7 @@ func _find_stockpile_zone_near(world_pos: Vector2, radius: float) -> Node:
 	return null
 
 func _find_farm_zone_near(world_pos: Vector2, radius: float) -> Node:
-	for zone in get_tree().get_nodes_in_group("farm_zones"):
+	for zone in _get_group_nodes_cached(&"farm_zones"):
 		if zone == null or not is_instance_valid(zone):
 			continue
 		if zone.has_method("contains_point") and bool(zone.contains_point(world_pos)):
@@ -1999,7 +2880,7 @@ func _find_farm_zone_near(world_pos: Vector2, radius: float) -> Node:
 func _update_farm_zones(delta: float) -> void:
 	if _game_paused:
 		return
-	for zone in get_tree().get_nodes_in_group("farm_zones"):
+	for zone in _get_group_nodes_cached(&"farm_zones"):
 		if zone == null or not is_instance_valid(zone):
 			continue
 		_configure_farm_zone_catalog(zone)
@@ -2015,47 +2896,284 @@ func _configure_farm_zone_catalog(zone: Node) -> void:
 		zone.set_crop_catalog(crop_lookup)
 	if zone.has_method("set_growth_time_multiplier"):
 		zone.set_growth_time_multiplier(_farm_growth_multiplier)
+	if zone.has_method("set_yield_multiplier"):
+		zone.set_yield_multiplier(_farm_yield_bonus_from_research)
+	if zone.has_method("set_fertility_resilience"):
+		zone.set_fertility_resilience(_farm_resilience_bonus_from_research)
 
-func _update_defense_traps(delta: float) -> void:
+func _update_defense_traps(delta: float, enemies: Array = []) -> void:
 	if _game_paused:
 		return
-	var raiders: Array = _get_alive_raiders()
-	for trap in get_tree().get_nodes_in_group("trap_structures"):
+	var raiders: Array = enemies
+	if raiders.is_empty():
+		raiders = _get_alive_raiders()
+	var traps_changed: bool = false
+	var trap_cell_size: float = TILE_SIZE * 4.0
+	var enemy_buckets: Dictionary = {}
+	for raider in raiders:
+		if raider == null or not is_instance_valid(raider):
+			continue
+		var bucket: Vector2i = Vector2i(
+			int(floor(raider.global_position.x / trap_cell_size)),
+			int(floor(raider.global_position.y / trap_cell_size))
+		)
+		var key: int = _pack_tile_key(bucket)
+		if not enemy_buckets.has(key):
+			enemy_buckets[key] = []
+		var bucket_enemies: Array = enemy_buckets[key]
+		bucket_enemies.append(raider)
+		enemy_buckets[key] = bucket_enemies
+	var trap_nodes: Array = _get_group_nodes_cached(&"trap_structures")
+	if trap_nodes.is_empty():
+		return
+	var trap_count: int = trap_nodes.size()
+	var max_to_process: int = mini(TRAP_MAX_PER_UPDATE, trap_count)
+	var start_idx: int = posmod(_trap_update_cursor, trap_count)
+	for i in range(max_to_process):
+		var trap = trap_nodes[(start_idx + i) % trap_count]
 		if trap == null or not is_instance_valid(trap):
 			continue
 		var trap_damage: int = int(trap.get_meta("trap_damage")) if trap.has_meta("trap_damage") else 0
 		if trap_damage <= 0:
 			continue
+		trap_damage = int(round(float(trap_damage) * _trap_damage_bonus_from_research))
+		var charges: int = int(trap.get_meta("trap_charges")) if trap.has_meta("trap_charges") else 0
+		if charges <= 0:
+			continue
 		var cooldown_left: float = float(trap.get_meta("trap_cooldown_left")) if trap.has_meta("trap_cooldown_left") else 0.0
 		if cooldown_left > 0.0:
 			cooldown_left = maxf(0.0, cooldown_left - delta)
 			trap.set_meta("trap_cooldown_left", cooldown_left)
+			traps_changed = true
 		if cooldown_left > 0.0:
 			continue
 		var target: Node = null
-		var best_dist: float = 36.0
-		for raider in raiders:
-			if raider == null or not is_instance_valid(raider):
-				continue
-			var dist: float = trap.global_position.distance_to(raider.global_position)
-			if dist <= best_dist:
-				best_dist = dist
-				target = raider
+		var best_dist_sq: float = pow(36.0 * maxf(1.0, _trap_range_bonus_from_research), 2.0)
+		var range_tiles: int = maxi(1, int(ceil(sqrt(best_dist_sq) / trap_cell_size)))
+		var trap_bucket: Vector2i = Vector2i(
+			int(floor(trap.global_position.x / trap_cell_size)),
+			int(floor(trap.global_position.y / trap_cell_size))
+		)
+		for by in range(trap_bucket.y - range_tiles, trap_bucket.y + range_tiles + 1):
+			for bx in range(trap_bucket.x - range_tiles, trap_bucket.x + range_tiles + 1):
+				var local_key: int = _pack_tile_key(Vector2i(bx, by))
+				if not enemy_buckets.has(local_key):
+					continue
+				var bucket_enemies: Array = enemy_buckets[local_key]
+				for raider in bucket_enemies:
+					if raider == null or not is_instance_valid(raider):
+						continue
+					var dist_sq: float = trap.global_position.distance_squared_to(raider.global_position)
+					if dist_sq <= best_dist_sq:
+						best_dist_sq = dist_sq
+						target = raider
 		if target == null:
 			continue
 		if target.has_method("apply_combat_damage"):
 			target.apply_combat_damage(trap_damage)
 		var cooldown: float = float(trap.get_meta("trap_cooldown_sec")) if trap.has_meta("trap_cooldown_sec") else 3.0
-		trap.set_meta("trap_cooldown_left", maxf(0.3, cooldown))
-		var charges: int = int(trap.get_meta("trap_charges")) if trap.has_meta("trap_charges") else 0
-		if charges > 0:
-			charges -= 1
-			trap.set_meta("trap_charges", charges)
-			if charges <= 0:
-				trap.queue_free()
+		trap.set_meta("trap_cooldown_left", maxf(0.3, cooldown / maxf(1.0, _trap_cooldown_bonus_from_research)))
+		charges -= 1
+		trap.set_meta("trap_charges", charges)
+		traps_changed = true
+	if traps_changed:
+		_structure_maintenance_dirty = true
+		_hud_dirty = true
+	_trap_update_cursor = (start_idx + max_to_process) % trap_count
+
+func _pack_tile_key(tile: Vector2i) -> int:
+	var packed_x: int = (tile.x + 32768) & 0xFFFF
+	var packed_y: int = (tile.y + 32768) & 0xFFFF
+	return (packed_x << 16) | packed_y
+
+func _get_cached_research_options() -> Array:
+	var sig: int = int(research_lookup.size() * 97 + _research_completed.size() * 31 + (String(_active_research_id).hash() % 997))
+	if sig == _cached_research_options_sig and not _cached_research_options.is_empty():
+		return _cached_research_options
+	var options: Array = []
+	var keys: Array = research_lookup.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	var lock_map: Dictionary = _get_research_lock_map()
+	var prereq_map: Dictionary = _get_research_prereq_map()
+	for key_any in keys:
+		var key: StringName = StringName(key_any)
+		var def: Resource = research_lookup[key]
+		var unlocked: bool = bool(lock_map.get(key, true))
+		var req: StringName = StringName(prereq_map.get(key, &""))
+		var label: String = "%s (%.0f)%s" % [String(def.display_name), float(def.required_points), "" if unlocked else " [잠김]"]
+		if not unlocked and req != &"":
+			label += " <- %s" % String(req)
+		options.append({
+			"id": key,
+			"label": label
+		})
+	_cached_research_options = options
+	_cached_research_options_sig = sig
+	return _cached_research_options
+
+func _record_frame_profile(delta: float) -> void:
+	var now_usec: int = Time.get_ticks_usec()
+	var now_ms: int = Time.get_ticks_msec()
+	_report_combat_window_if_due(now_ms)
+	if _perf_last_ticks_usec <= 0:
+		_perf_last_ticks_usec = now_usec
+		return
+	var dt_real: float = float(now_usec - _perf_last_ticks_usec) / 1000000.0
+	_perf_last_ticks_usec = now_usec
+	if dt_real <= 0.0 or dt_real < 0.0015:
+		return
+	if _perf_samples.size() < PERF_RING_SIZE:
+		_perf_samples.append(dt_real)
+		_perf_samples_count = _perf_samples.size()
+	else:
+		_perf_samples[_perf_samples_head] = dt_real
+		_perf_samples_head = (_perf_samples_head + 1) % PERF_RING_SIZE
+		_perf_samples_count = PERF_RING_SIZE
+	if now_ms < _perf_report_next_ms:
+		return
+	if _perf_samples_count <= 0:
+		_perf_report_next_ms = now_ms + 5000
+		return
+	var sorted_samples: Array = _perf_samples.duplicate()
+	sorted_samples.sort()
+	var sum: float = 0.0
+	for v_any in sorted_samples:
+		sum += float(v_any)
+	var sample_count: int = sorted_samples.size()
+	var avg_dt: float = sum / float(sample_count)
+	var p95_index: int = int(floor(float(sample_count - 1) * 0.95))
+	var p95_dt: float = float(sorted_samples[clampi(p95_index, 0, sample_count - 1)])
+	var p99_index: int = int(floor(float(sample_count - 1) * 0.99))
+	var p99_dt: float = float(sorted_samples[clampi(p99_index, 0, sample_count - 1)])
+	var fast_index: int = int(floor(float(sample_count - 1) * 0.02))
+	var fast_dt: float = float(sorted_samples[clampi(fast_index, 0, sample_count - 1)])
+	var max_dt: float = float(sorted_samples[sample_count - 1])
+	var hitch_33: int = 0
+	var hitch_100: int = 0
+	var hitch_250: int = 0
+	for sample_any in sorted_samples:
+		var sample: float = float(sample_any)
+		if sample >= (1.0 / 30.0):
+			hitch_33 += 1
+		if sample >= 0.1:
+			hitch_100 += 1
+		if sample >= 0.25:
+			hitch_250 += 1
+	var avg_fps: float = 1.0 / maxf(0.0001, avg_dt)
+	var p95_fps: float = 1.0 / maxf(0.0001, p95_dt)
+	var p99_fps: float = 1.0 / maxf(0.0001, p99_dt)
+	var max_fps: float = 1.0 / maxf(0.0001, fast_dt)
+	var render_fps: float = Engine.get_frames_per_second()
+	print("[Perf][Wave] render_fps=%.1f avg_fps=%.1f p95_fps=%.1f p99_fps=%.1f peak_fps=%.1f max_dt_ms=%.1f hitch33=%d hitch100=%d hitch250=%d samples=%d raid=%s" % [
+		render_fps, avg_fps, p95_fps, p99_fps, max_fps, max_dt * 1000.0, hitch_33, hitch_100, hitch_250, sample_count, String(_raid_state)
+	])
+	_perf_report_next_ms = now_ms + 5000
+
+func _reset_combat_window() -> void:
+	_combat_window = {
+		"colonist_attempts": 0,
+		"colonist_hits": 0,
+		"colonist_damage": 0,
+		"colonist_kills": 0,
+		"colonist_ranged_attempts": 0,
+		"colonist_ranged_hits": 0,
+		"enemy_attempts": 0,
+		"enemy_hits": 0,
+		"enemy_damage": 0,
+		"enemy_kills": 0
+	}
+
+func report_combat_event(source_side: StringName, hit: bool, damage: int, kill: bool, attack_mode: StringName = &"") -> void:
+	if _combat_window.is_empty():
+		_reset_combat_window()
+	if source_side == &"Colonist":
+		_combat_window["colonist_attempts"] = int(_combat_window.get("colonist_attempts", 0)) + 1
+		if attack_mode == &"CombatRanged" or attack_mode == &"Ranged":
+			_combat_window["colonist_ranged_attempts"] = int(_combat_window.get("colonist_ranged_attempts", 0)) + 1
+		if hit:
+			_combat_window["colonist_hits"] = int(_combat_window.get("colonist_hits", 0)) + 1
+			_combat_window["colonist_damage"] = int(_combat_window.get("colonist_damage", 0)) + maxi(0, damage)
+			if attack_mode == &"CombatRanged" or attack_mode == &"Ranged":
+				_combat_window["colonist_ranged_hits"] = int(_combat_window.get("colonist_ranged_hits", 0)) + 1
+		if kill:
+			_combat_window["colonist_kills"] = int(_combat_window.get("colonist_kills", 0)) + 1
+		return
+	if source_side == &"Enemy":
+		_combat_window["enemy_attempts"] = int(_combat_window.get("enemy_attempts", 0)) + 1
+		if hit:
+			_combat_window["enemy_hits"] = int(_combat_window.get("enemy_hits", 0)) + 1
+			_combat_window["enemy_damage"] = int(_combat_window.get("enemy_damage", 0)) + maxi(0, damage)
+		if kill:
+			_combat_window["enemy_kills"] = int(_combat_window.get("enemy_kills", 0)) + 1
+
+func _report_combat_window_if_due(now_ms: int) -> void:
+	if _raid_state != &"Active":
+		_combat_log_next_ms = 0
+		_reset_combat_window()
+		return
+	if _combat_log_next_ms <= 0:
+		_combat_log_next_ms = now_ms + 5000
+		return
+	if now_ms < _combat_log_next_ms:
+		return
+	print("[Combat][Window] raid=%s enemies=%d colonists=%d c_att=%d c_hit=%d c_dmg=%d c_kill=%d c_rng_att=%d c_rng_hit=%d e_att=%d e_hit=%d e_dmg=%d e_kill=%d" % [
+		String(_raid_state),
+		_cached_alive_enemies.size(),
+		colonists.size(),
+		int(_combat_window.get("colonist_attempts", 0)),
+		int(_combat_window.get("colonist_hits", 0)),
+		int(_combat_window.get("colonist_damage", 0)),
+		int(_combat_window.get("colonist_kills", 0)),
+		int(_combat_window.get("colonist_ranged_attempts", 0)),
+		int(_combat_window.get("colonist_ranged_hits", 0)),
+		int(_combat_window.get("enemy_attempts", 0)),
+		int(_combat_window.get("enemy_hits", 0)),
+		int(_combat_window.get("enemy_damage", 0)),
+		int(_combat_window.get("enemy_kills", 0))
+	])
+	_reset_combat_window()
+	_combat_log_next_ms = now_ms + 5000
+
+func _compute_enemy_sim_interval_scale(enemy_count: int) -> float:
+	if _raid_state != &"Active":
+		return 1.0
+	if enemy_count <= 16:
+		return 1.0
+	if enemy_count <= 32:
+		return 1.25
+	if enemy_count <= 56:
+		return 1.55
+	if enemy_count <= 84:
+		return 1.9
+	return 2.3
+
+func _compute_friendly_pathing_budget_scale(enemy_count: int) -> float:
+	if _raid_state != &"Active":
+		return 1.0
+	if enemy_count <= 0:
+		return 1.0
+	if enemy_count <= 8:
+		return 2.5
+	if enemy_count <= 16:
+		return 3.0
+	return 3.5
+
+func _apply_enemy_sim_budget(enemies: Array, interval_scale: float) -> void:
+	for enemy in enemies:
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		if enemy.has_method("set_sim_interval_scale"):
+			enemy.set_sim_interval_scale(interval_scale)
+
+func _apply_friendly_pathing_budget(scale: float) -> void:
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if colonist.has_method("set_pathing_budget_scale"):
+			colonist.set_pathing_budget_scale(scale)
 
 func _refresh_structure_integrity() -> void:
-	for node in get_tree().get_nodes_in_group("repairable_structures"):
+	for node in _get_group_nodes_cached(&"repairable_structures"):
 		if node == null or not is_instance_valid(node):
 			continue
 		var max_hp: float = float(node.get_meta("structure_max_health")) if node.has_meta("structure_max_health") else 0.0
@@ -2071,25 +3189,94 @@ func _refresh_structure_integrity() -> void:
 				break
 
 func _get_damaged_repairable_structures() -> Array:
-	var out: Array = []
-	for node in get_tree().get_nodes_in_group("repairable_structures"):
+	_refresh_structure_maintenance_cache()
+	return _cached_damaged_repairables
+
+func _get_maintainable_traps() -> Array:
+	_refresh_structure_maintenance_cache()
+	return _cached_maintainable_traps
+
+func _refresh_structure_maintenance_cache() -> void:
+	if not _structure_maintenance_dirty:
+		return
+	_structure_maintenance_dirty = false
+	_cached_damaged_repairables.clear()
+	_cached_maintainable_traps.clear()
+	for node in _get_group_nodes_cached(&"repairable_structures"):
 		if node == null or not is_instance_valid(node):
 			continue
 		var max_hp: float = float(node.get_meta("structure_max_health")) if node.has_meta("structure_max_health") else 0.0
 		if max_hp <= 0.0:
 			continue
 		var hp: float = float(node.get_meta("structure_health")) if node.has_meta("structure_health") else max_hp
-		if hp >= max_hp - 0.5:
+		var threshold_ratio: float = _auto_repair_threshold_ratio
+		if node.has_meta("building_id"):
+			var building_id: StringName = StringName(node.get_meta("building_id"))
+			if building_id == &"Wall" or building_id == &"Gate":
+				threshold_ratio = minf(0.9, threshold_ratio + 0.08)
+		if _is_night_time():
+			threshold_ratio *= 0.85
+		var threshold_hp: float = max_hp * threshold_ratio
+		if hp < threshold_hp:
+			_cached_damaged_repairables.append(node)
+	var pending_count: int = 0
+	var depleted_count: int = 0
+	var missing_charge_total: int = 0
+	for trap in _get_group_nodes_cached(&"trap_structures"):
+		if trap == null or not is_instance_valid(trap):
 			continue
-		out.append(node)
-	return out
+		var max_charges: int = int(trap.get_meta("trap_max_charges")) if trap.has_meta("trap_max_charges") else int(trap.get_meta("trap_charges"))
+		if max_charges <= 0:
+			continue
+		var charges: int = int(trap.get_meta("trap_charges"))
+		missing_charge_total += maxi(0, max_charges - charges)
+		if charges <= 0:
+			depleted_count += 1
+		if charges >= max_charges:
+			continue
+		_cached_maintainable_traps.append(trap)
+		if bool(trap.get_meta("trap_maint_job_queued")):
+			pending_count += 1
+	var estimated_batches: int = maxi(1, int(ceil(float(missing_charge_total) / 2.0)))
+	var maintain_affordable: bool = int(resource_stock.get(&"Wood", 0)) >= estimated_batches and int(resource_stock.get(&"Steel", 0)) >= estimated_batches
+	var maint_state: String = "가능" if maintain_affordable else "재료부족"
+	_defense_status_text = "수리:%d / 함정정비:%d / 소진함정:%d / 필요(W:%d,S:%d) %s" % [_cached_damaged_repairables.size(), pending_count, depleted_count, estimated_batches, estimated_batches, maint_state]
+
+func _haul_urgency_multiplier_by_colony_state() -> float:
+	var avg_hunger: float = 100.0
+	var avg_rest: float = 100.0
+	var alive: int = 0
+	for c in colonists:
+		if c == null or not is_instance_valid(c):
+			continue
+		avg_hunger += c.hunger
+		avg_rest += c.rest
+		alive += 1
+	if alive > 0:
+		avg_hunger = avg_hunger / float(alive + 1)
+		avg_rest = avg_rest / float(alive + 1)
+	var hunger_boost: float = 1.0
+	if avg_hunger < 45.0:
+		hunger_boost = 1.5
+	elif avg_hunger < 65.0:
+		hunger_boost = 1.2
+	var rest_boost: float = 1.0
+	if avg_rest < 40.0:
+		rest_boost = 1.22
+	var shortage_boost: float = 1.0
+	var core_materials: int = int(resource_stock.get(&"Wood", 0)) + int(resource_stock.get(&"Stone", 0))
+	if core_materials < 30:
+		shortage_boost = 1.18
+	return _haul_urgency_bonus_from_research * hunger_boost * rest_boost * shortage_boost
 
 func _refresh_stockpile_filter_ui() -> void:
 	if selected_stockpile_zone == null or not is_instance_valid(selected_stockpile_zone):
 		hud.set_stockpile_filter_state(false, 0, {}, 0, {})
+		hud.set_stockpile_presets(_get_stockpile_preset_options(), &"")
 		return
 	if not selected_stockpile_zone.has_method("get_filter_snapshot"):
 		hud.set_stockpile_filter_state(false, 0, {}, 0, {})
+		hud.set_stockpile_presets(_get_stockpile_preset_options(), &"")
 		return
 	var snapshot: Dictionary = selected_stockpile_zone.get_filter_snapshot()
 	hud.set_stockpile_filter_state(
@@ -2099,6 +3286,27 @@ func _refresh_stockpile_filter_ui() -> void:
 		int(snapshot.get("priority", 0)),
 		snapshot.get("limits", {})
 	)
+	var selected_preset: StringName = StringName(snapshot.get("preset_id", &""))
+	hud.set_stockpile_presets(_get_stockpile_preset_options(), selected_preset)
+
+func _get_stockpile_preset_options() -> Array:
+	return [
+		{"id": &"All", "label": "전체"},
+		{"id": &"Food", "label": "식량"},
+		{"id": &"War", "label": "전투 물자"},
+		{"id": &"Build", "label": "건설 자재"},
+		{"id": &"Industry", "label": "산업 물자"},
+		{"id": &"Emergency", "label": "응급 보급"},
+		{"id": &"Harvest", "label": "농산물"}
+	]
+
+func try_consume_trap_maintenance_cost(batch_count: int = 1) -> bool:
+	var need: int = maxi(1, batch_count)
+	if int(resource_stock.get(&"Wood", 0)) < need:
+		return false
+	if int(resource_stock.get(&"Steel", 0)) < need:
+		return false
+	return _consume_resource_stock(&"Wood", need) and _consume_resource_stock(&"Steel", need)
 
 func _process_camera(delta: float) -> void:
 	var key_vec: Vector2 = Vector2.ZERO
@@ -2184,6 +3392,39 @@ func _set_game_speed(scale: float) -> void:
 func _apply_time_scale() -> void:
 	Engine.time_scale = 0.0 if _game_paused else _speed_scale
 	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
+
+func _is_night_time() -> bool:
+	var phase: float = fmod(_elapsed_game_seconds, _day_night_cycle_seconds)
+	return phase >= (_day_night_cycle_seconds * 0.5)
+
+func _day_night_lerp() -> float:
+	if _day_night_cycle_seconds <= 0.01:
+		return 1.0
+	var phase: float = fmod(_elapsed_game_seconds, _day_night_cycle_seconds) / _day_night_cycle_seconds
+	return 0.5 + 0.5 * cos(phase * TAU)
+
+func _day_night_move_multiplier() -> float:
+	return lerpf(0.9, 1.06, _day_night_lerp())
+
+func _day_night_combat_accuracy_bonus() -> float:
+	return lerpf(-0.03, 0.025, _day_night_lerp())
+
+func _apply_day_night_to_enemies(enemies: Array = []) -> void:
+	var t: float = _day_night_lerp()
+	var move_mul: float = lerpf(0.95, 1.05, t)
+	if _is_night_time():
+		move_mul /= maxf(1.0, _enemy_night_slow_bonus_from_research)
+	var acc_bonus: float = lerpf(-0.02, 0.02, t)
+	var target_enemies: Array = enemies
+	if target_enemies.is_empty():
+		target_enemies = _get_alive_raiders()
+	for enemy in target_enemies:
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		if enemy.has_method("set_external_move_speed_multiplier"):
+			enemy.set_external_move_speed_multiplier(move_mul)
+		if enemy.has_method("set_external_accuracy_bonus"):
+			enemy.set_external_accuracy_bonus(acc_bonus)
 
 func _configure_world_bounds() -> void:
 	var p0: Vector2 = Vector2.ZERO
@@ -2396,6 +3637,7 @@ func _activate_workstation(workstation_id: StringName) -> void:
 	selected_workstation_id = workstation_id
 	hud.set_selected_workstation(workstation_id)
 	hud.set_recipe_catalog(_filter_recipes_for_workstation(workstation_id))
+	hud.set_craft_queue_paused_state(job_system.is_craft_queue_paused(workstation_id))
 	hud.set_craft_panel_visible(true, _get_workstation_display_name(workstation_id))
 
 func _get_workstation_display_name(workstation_id: StringName) -> String:
@@ -2476,7 +3718,10 @@ func _find_free_combat_tile(preferred: Vector2i, max_radius: int = 2) -> Vector2
 				return candidate
 	return preferred
 
-func _apply_combat_tile_occupancy() -> void:
+func _apply_combat_tile_occupancy(enemies: Array = []) -> void:
+	# Skipped for performance: hard occupancy snaps were removed and
+	# this pass became an avoidable O(units) loop during raids.
+	return
 	_combat_tile_claims.clear()
 	var raid_active: bool = _raid_state == &"Active"
 	var combat_units: Array[Node2D] = []
@@ -2485,7 +3730,10 @@ func _apply_combat_tile_occupancy() -> void:
 			combat_units.append(c)
 	# Units can overlap in normal state; enforce one-unit-per-tile only in combat.
 	if raid_active:
-		for r in _get_alive_raiders():
+		var enemy_list: Array = enemies
+		if enemy_list.is_empty():
+			enemy_list = _get_alive_raiders()
+		for r in enemy_list:
 			if r != null and is_instance_valid(r):
 				combat_units.append(r)
 	if combat_units.is_empty():
@@ -2494,4 +3742,5 @@ func _apply_combat_tile_occupancy() -> void:
 		var preferred_tile: Vector2i = _world_to_tile(unit.global_position)
 		var assigned_tile: Vector2i = _find_free_combat_tile(preferred_tile, 2)
 		_combat_tile_claims[assigned_tile] = unit.get_instance_id()
-		unit.global_position = _tile_to_world(assigned_tile)
+	# Do not forcibly snap unit positions. Hard snapping can cause wall clipping and jitter
+	# when units are enclosed; claims are kept for lightweight occupancy bookkeeping only.

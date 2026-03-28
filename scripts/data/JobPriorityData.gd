@@ -18,7 +18,7 @@ func get_priority(job_type: StringName) -> int:
 			return gather
 		&"Hunt":
 			return hunt
-		&"Build", &"BuildSite", &"RepairStructure", &"DemolishStructure":
+		&"Build", &"BuildSite", &"RepairStructure", &"DemolishStructure", &"MaintainTrap":
 			return build
 		&"Craft", &"CraftRecipe", &"ResearchTask":
 			return craft

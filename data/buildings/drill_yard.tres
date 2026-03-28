@@ -1,0 +1,23 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"DrillYard"
+display_name = "Drill Yard"
+category = "Production"
+required_work = 70.0
+footprint_size = Vector2(80, 40)
+build_cost = {
+&"Wood": 2,
+&"Steel": 1
+}
+direct_place_color = Color(0.34, 0.3, 0.26, 1)
+blueprint_color = Color(0.34, 0.3, 0.26, 0.72)
+required_research = &"DisciplineI"
+command_aura_defense_bonus = 0.5
+command_aura_move_bonus = 0.06
+command_aura_range = 170.0
+max_health = 240.0
+repair_work = 8.0

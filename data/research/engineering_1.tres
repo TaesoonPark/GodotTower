@@ -4,9 +4,9 @@
 
 [resource]
 script = ExtResource("1_research_def")
-id = &"DefenseTheoryI"
-display_name = "Defense Theory I"
-required_points = 120.0
-unlock_buildings = Array[StringName]([&"Barricade", &"SpikeTrap", &"CommandPost", &"WatchTower"])
-bonus_type = &"RepairWorkSpeed"
+id = &"EngineeringI"
+display_name = "Engineering I"
+required_points = 130.0
+unlock_buildings = Array[StringName]([])
+bonus_type = &"BuildWorkSpeed"
 bonus_value = 1.2

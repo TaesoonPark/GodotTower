@@ -4,9 +4,9 @@
 
 [resource]
 script = ExtResource("1_research_def")
-id = &"BattleDrillI"
-display_name = "Battle Drill I"
-required_points = 140.0
-unlock_buildings = Array[StringName]([&"SignalFire"])
-bonus_type = &"CombatAccuracy"
-bonus_value = 0.06
+id = &"TrapMechanicsI"
+display_name = "Trap Mechanics I"
+required_points = 155.0
+unlock_buildings = Array[StringName]([&"TrapController"])
+bonus_type = &"TrapCooldownBoost"
+bonus_value = 1.22
