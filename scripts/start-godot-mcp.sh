@@ -18,6 +18,7 @@ resolve_godot_path() {
   local candidates=(
     "/Applications/Godot.app/Contents/MacOS/Godot"
     "${HOME}/Applications/Godot.app/Contents/MacOS/Godot"
+    "${HOME}/Downloads/Godot.app/Contents/MacOS/Godot"
     "/usr/bin/godot"
     "/usr/bin/godot4"
     "/usr/local/bin/godot"
