@@ -6,3 +6,8 @@
 .cursor/
 *.bak
 *.new
+.venv-gui/
+.godot-runtime/
+artifacts/gui-playtest/
+artifacts/
+tools/godot-linux/

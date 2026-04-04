@@ -23,6 +23,24 @@ godot --path .
 
 또는 Godot 에디터에서 프로젝트를 열어 실행하세요.
 
+자동 플레이테스트:
+
+```bash
+bash scripts/run-playtest.sh
+```
+
+실제 GUI 클릭/드래그 플레이테스트:
+
+```bash
+bash scripts/run-gui-playtest.sh
+```
+
+자동 셀프체크 루프:
+
+```bash
+bash scripts/self-check.sh
+```
+
 ## 기본 해상도
 
 - `1920 x 1080 (FHD)`
@@ -54,8 +72,11 @@ godot --path .
 - `scripts/systems` : 입력/욕구/작업/건축 시스템
 - `scripts/data` + `data` : 커스텀 Resource 스키마와 인스턴스
 
-## MCP 연결
+## MCP / 플레이테스트
 
-Cursor 외 IDE를 포함한 MCP 공통 설정은 아래 문서 참고:
+기존 프로젝트 내부 MCP 플러그인 의존성은 제거했습니다.
+이제 MCP는 외부 서버 방식으로 연결합니다.
 
-- `docs/MCP_SETUP.md`
+설정 및 플레이테스트 절차:
+
+- `docs/GODOT_MCP_PLAYTEST.md`

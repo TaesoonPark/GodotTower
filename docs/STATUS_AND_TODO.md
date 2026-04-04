@@ -51,7 +51,7 @@
   - 새 명령 즉시 실행
 
 ### 4) 런타임 검증
-- MCP `run_project` + `get_debug_output` 기준 치명 오류 없음
+- 외부 Godot MCP의 `run_project` + `get_debug_output` 기준 치명 오류 없음
 
 ## 현재 TODO (우선순위)
 

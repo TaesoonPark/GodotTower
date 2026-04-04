@@ -1,5 +1,14 @@
 # Work History
 
+## 2026-04-04
+
+### MCP Cleanup and External Runtime Standardization
+- 프로젝트 내부 Godot MCP 플러그인/오토로드 참조를 제거했다.
+- Cursor 설정을 존재하지 않던 WSL 스크립트 대신 `scripts/start-godot-mcp.sh`로 교체했다.
+- 기본 `GODOT_PATH`를 현재 시스템에서 실제 존재하는 WSL 경로로 정리했다.
+- 기존 MCP/GoPeak 문서를 제거하고 `docs/GODOT_MCP_PLAYTEST.md`로 단일화했다.
+- 방향: 프로젝트 내부 플러그인이 아니라 외부 MCP 서버(`@coding-solo/godot-mcp`)가 실행/로그/플레이테스트를 담당하도록 표준화.
+
 ## 2026-03-26
 
 ### Stockpile Filter (Allow/Deny)

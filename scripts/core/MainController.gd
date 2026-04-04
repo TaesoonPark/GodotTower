@@ -130,6 +130,8 @@ var _perf_samples: Array[float] = []
 var _perf_samples_head: int = 0
 var _perf_samples_count: int = 0
 const PERF_RING_SIZE: int = 900
+const GUI_PLAYTEST_HINTS_ENV := "GUI_PLAYTEST_HINTS"
+const GUI_PLAYTEST_BUILDING_ENV := "GUI_PLAYTEST_BUILDING_ID"
 var _enemy_sim_interval_scale: float = 1.0
 var _friendly_pathing_budget_scale: float = 1.0
 var _perf_last_ticks_usec: int = 0
@@ -284,7 +286,68 @@ func _ready() -> void:
 	_cached_alive_enemies = _get_alive_raiders()
 	_refresh_demolish_overlay_state()
 	_maybe_start_auto_raid_benchmark()
+	if _is_gui_playtest_hints_enabled():
+		call_deferred("_emit_gui_playtest_hints")
 	_queue_event_dispatch()
+
+func _is_gui_playtest_hints_enabled() -> bool:
+	return OS.get_environment(GUI_PLAYTEST_HINTS_ENV) == "1"
+
+func _get_gui_playtest_building_id() -> StringName:
+	var raw: String = OS.get_environment(GUI_PLAYTEST_BUILDING_ENV).strip_edges()
+	if raw.is_empty():
+		return &"Campfire"
+	return StringName(raw)
+
+func _emit_gui_playtest_hints() -> void:
+	if hud == null or not is_instance_valid(hud):
+		return
+	var building_id: StringName = _get_gui_playtest_building_id()
+	if hud.has_method("get_building_button_rect"):
+		var rect: Rect2 = hud.get_building_button_rect(building_id)
+		if rect.size != Vector2.ZERO:
+			print("GUI_HINT_BUILD_BUTTON %s %d %d %d %d" % [
+				String(building_id),
+				int(round(rect.position.x)),
+				int(round(rect.position.y)),
+				int(round(rect.size.x)),
+				int(round(rect.size.y))
+			])
+	var target_world: Vector2 = _find_gui_playtest_build_target(building_id)
+	var target_screen: Vector2 = _world_to_screen_point(target_world)
+	print("GUI_HINT_BUILD_TARGET %s %d %d" % [
+		String(building_id),
+		int(round(target_screen.x)),
+		int(round(target_screen.y))
+	])
+
+func _find_gui_playtest_build_target(building_id: StringName) -> Vector2:
+	var def: Resource = build_system._building_defs.get(building_id, null) if build_system != null and is_instance_valid(build_system) else null
+	var center: Vector2 = _snap_to_tile(WORLD_SIZE * 0.5)
+	if def == null:
+		return center + Vector2(200.0, 0.0)
+	var ring_steps: Array[Vector2] = [
+		Vector2(160.0, 0.0),
+		Vector2(200.0, 0.0),
+		Vector2(160.0, 80.0),
+		Vector2(200.0, 80.0),
+		Vector2(120.0, -80.0),
+		Vector2(240.0, -40.0),
+		Vector2(240.0, 120.0)
+	]
+	for offset in ring_steps:
+		var probe: Vector2 = _snap_to_tile(center + offset)
+		if build_system != null and is_instance_valid(build_system) and build_system.has_method("_is_footprint_occupied"):
+			if bool(build_system._is_footprint_occupied(probe, def.footprint_size)):
+				continue
+		return probe
+	return _snap_to_tile(center + Vector2(240.0, 0.0))
+
+func _world_to_screen_point(world_pos: Vector2) -> Vector2:
+	var viewport_size: Vector2 = get_viewport_rect().size
+	var zoom: Vector2 = camera.zoom if camera != null else Vector2.ONE
+	var cam_pos: Vector2 = camera.global_position if camera != null else Vector2.ZERO
+	return (world_pos - cam_pos) / zoom + viewport_size * 0.5
 
 func _init_group_cache() -> void:
 	var hot_groups: Array[StringName] = [
@@ -1288,6 +1351,8 @@ func _on_build_site_added(site: Node) -> void:
 	_mark_jobs_dirty()
 	_mark_maintenance_dirty()
 	_hud_dirty = true
+	if _is_gui_playtest_hints_enabled() and site != null and is_instance_valid(site):
+		print("GUI_EVENT_BUILD_SITE_ADDED %s" % String(site.get("building_id")))
 
 func _on_build_site_removed(_site: Node) -> void:
 	_mark_pathing_dirty()
@@ -1306,6 +1371,8 @@ func _on_build_site_completed(_site: Node) -> void:
 	_mark_maintenance_dirty()
 	_mark_combat_dirty()
 	_hud_dirty = true
+	if _is_gui_playtest_hints_enabled() and _site != null and is_instance_valid(_site):
+		print("GUI_EVENT_BUILD_COMPLETED %s" % String(_site.get("building_id")))
 
 func _on_build_site_retry_due(_site: Node) -> void:
 	_mark_jobs_dirty()
@@ -2058,6 +2125,10 @@ func _start_raid_warning() -> void:
 	_hud_dirty = true
 
 func _start_raid_wave() -> void:
+	if _raid_wave_size <= 0:
+		_raid_wave_size = mini(20, maxi(2, 2 + int(floor(_elapsed_game_seconds / 120.0))))
+	if _raid_wave_kind == &"":
+		_raid_wave_kind = _pick_raid_wave_kind()
 	_raid_state = &"Active"
 	_raid_warning_timer = 0.0
 	if job_system != null and is_instance_valid(job_system) and job_system.has_method("enter_raid_mode"):
@@ -2072,6 +2143,10 @@ func _start_raid_wave() -> void:
 			_spawn_raiders(raider_count)
 		_:
 			_spawn_raiders(_raid_wave_size)
+	# Refresh enemy cache immediately so the next process tick does not
+	# resolve the raid before deferred combat dispatch sees spawned enemies.
+	_mark_group_cache_dirty(&"raiders")
+	_cached_alive_enemies = _get_alive_raiders()
 	_cancel_noncombat_jobs_for_active_raid()
 	_mark_combat_dirty()
 	_mark_jobs_dirty()

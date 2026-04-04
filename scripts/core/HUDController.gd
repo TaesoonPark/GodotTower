@@ -759,6 +759,12 @@ func _compact_cost_text(cost: Dictionary) -> String:
 		parts.append("%s:%d" % [String(k), int(cost[k])])
 	return ", ".join(parts)
 
+func get_building_button_rect(building_id: StringName) -> Rect2:
+	var button: Button = _building_button_map.get(building_id, null)
+	if button == null or not is_instance_valid(button):
+		return Rect2()
+	return button.get_global_rect()
+
 func set_work_toggles(toggle_map: Dictionary) -> void:
 	var safe_map := {
 		&"Haul": true,
