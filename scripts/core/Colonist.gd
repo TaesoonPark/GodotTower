@@ -182,6 +182,7 @@ func _compute_local_obstacle_signature() -> int:
 	return sig
 
 func _process_movement(delta: float) -> void:
+	var move_delta: float = minf(delta, 0.05)
 	var is_build_job: bool = StringName(current_job.get("type", &"")) == &"BuildSite"
 	if _build_retarget_cooldown > 0.0:
 		_build_retarget_cooldown = maxf(0.0, _build_retarget_cooldown - delta)
@@ -211,22 +212,24 @@ func _process_movement(delta: float) -> void:
 			global_position,
 			goal,
 			stats.move_speed * speed_mul,
-			delta,
+			move_delta,
 			_is_blocked_callable
 		)
 	var blocked: bool = bool(result.get("blocked", false))
 	var next_pos: Vector2 = result.get("position", global_position)
 	if is_build_job:
-		if _handle_buildsite_stall(goal, blocked, next_pos, delta):
+		if _handle_buildsite_stall(goal, blocked, next_pos, move_delta):
 			return
 	else:
 		_reset_build_stall_watch()
 	if blocked:
-		_move_stuck_elapsed += delta
+		_move_stuck_elapsed += move_delta
 		if _move_stuck_elapsed >= MOVE_STUCK_REPATH_SEC:
 			if is_build_job and _build_retarget_cooldown <= 0.0 and _try_retarget_build_site_work_position():
 				_build_retarget_fail_streak = 0
 				_build_retarget_cooldown = 0.35
+			else:
+				_clear_path_cache()
 			_move_stuck_elapsed = 0.0
 		return
 	global_position = next_pos

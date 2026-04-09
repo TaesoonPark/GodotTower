@@ -146,7 +146,9 @@ var _dispatch_farm_dirty: bool = true
 var _dispatch_pathing_dirty: bool = true
 var _dispatch_traps_dirty: bool = true
 const TRAP_UPDATE_INTERVAL_SEC: float = 0.12
+const FARM_TICK_INTERVAL_SEC: float = 0.2
 var _trap_update_accum: float = 0.0
+var _farm_tick_accum: float = 0.0
 var _trap_move_event_next_ms: int = 0
 const TRAP_MAX_PER_UPDATE: int = 42
 var _trap_update_cursor: int = 0
@@ -159,6 +161,7 @@ var _structure_maintenance_dirty: bool = true
 var _cached_damaged_repairables: Array = []
 var _cached_maintainable_traps: Array = []
 var _need_job_refresh_next_ms_by_colonist: Dictionary = {}
+var _colonist_idle_state_by_id: Dictionary = {}
 var _group_cache: Dictionary = {}
 var _group_cache_dirty: Dictionary = {}
 
@@ -414,6 +417,10 @@ func _process(delta: float) -> void:
 	_process_camera(_get_camera_delta(delta))
 	if not _game_paused:
 		_elapsed_game_seconds += delta
+		_farm_tick_accum += delta
+		while _farm_tick_accum >= FARM_TICK_INTERVAL_SEC:
+			_tick_farm_zones(FARM_TICK_INTERVAL_SEC)
+			_farm_tick_accum -= FARM_TICK_INTERVAL_SEC
 	var time_tick: int = int(floor(_elapsed_game_seconds * 10.0))
 	if time_tick != _last_hud_time_tick:
 		_last_hud_time_tick = time_tick
@@ -480,8 +487,6 @@ func _mark_maintenance_dirty() -> void:
 
 func _mark_farm_dirty() -> void:
 	_dispatch_farm_dirty = true
-	if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_designation_dirty"):
-		job_system.mark_designation_dirty()
 	_queue_event_dispatch()
 
 func _dispatch_event_updates() -> void:
@@ -526,7 +531,7 @@ func _dispatch_event_updates() -> void:
 		dt_traps_us = Time.get_ticks_usec() - t_us
 	if _dispatch_farm_dirty:
 		var t_us: int = Time.get_ticks_usec()
-		_update_farm_zones(0.2)
+		_produce_farm_jobs()
 		_dispatch_farm_dirty = false
 		dt_farm_us = Time.get_ticks_usec() - t_us
 	if _dispatch_maintenance_dirty:
@@ -563,29 +568,63 @@ func _dispatch_event_updates() -> void:
 				_update_workstation_supply_requests()
 			if build_system != null and is_instance_valid(build_system):
 				build_system.request_build_jobs(job_system)
-			job_system.process_dirty(
-				colonists,
-				enemies,
-				_get_group_nodes_cached(&"resource_drops"),
-				haul_targets,
-				resource_stock,
-				target_stock,
-				rally_pos,
-				TILE_SIZE * 3.0,
-				max_combatants,
-				recipe_lookup,
-				_get_cached_workstation_slots_map(),
-				Callable(self, "_can_start_recipe_at_workstation"),
-				Callable(self, "_on_recipe_started_at_workstation"),
-				_find_research_bench_pos(),
-				_active_research_id if _research_running else &"",
-				_get_damaged_repairable_structures(),
-				_get_maintainable_traps(),
-				_get_group_nodes_cached(&"gatherables"),
-				_get_group_nodes_cached(&"huntables"),
-				_raid_state == &"Active"
-			)
-			_dispatch_jobs_dirty = false
+			var drops: Array = _get_group_nodes_cached(&"resource_drops")
+			var workstation_slots: Dictionary = _get_cached_workstation_slots_map()
+			var repairables: Array = _get_damaged_repairable_structures()
+			var traps: Array = _get_maintainable_traps()
+			var gatherables: Array = _get_group_nodes_cached(&"gatherables")
+			var huntables: Array = _get_group_nodes_cached(&"huntables")
+			var keep_jobs_dirty: bool = false
+			if job_system.has_method("process_producers"):
+				job_system.process_producers(
+					colonists,
+					enemies,
+					drops,
+					haul_targets,
+					resource_stock,
+					target_stock,
+					rally_pos,
+					TILE_SIZE * 3.0,
+					max_combatants,
+					recipe_lookup,
+					workstation_slots,
+					Callable(self, "_can_start_recipe_at_workstation"),
+					Callable(self, "_on_recipe_started_at_workstation"),
+					_find_research_bench_pos(),
+					_active_research_id if _research_running else &"",
+					repairables,
+					traps,
+					gatherables,
+					huntables,
+					_raid_state == &"Active"
+				)
+				job_system.process_assignment(colonists)
+				if job_system.has_method("has_pending_assignment"):
+					keep_jobs_dirty = bool(job_system.has_pending_assignment())
+			else:
+				job_system.process_dirty(
+					colonists,
+					enemies,
+					drops,
+					haul_targets,
+					resource_stock,
+					target_stock,
+					rally_pos,
+					TILE_SIZE * 3.0,
+					max_combatants,
+					recipe_lookup,
+					workstation_slots,
+					Callable(self, "_can_start_recipe_at_workstation"),
+					Callable(self, "_on_recipe_started_at_workstation"),
+					_find_research_bench_pos(),
+					_active_research_id if _research_running else &"",
+					repairables,
+					traps,
+					gatherables,
+					huntables,
+					_raid_state == &"Active"
+				)
+			_dispatch_jobs_dirty = keep_jobs_dirty
 		dt_jobs_us = Time.get_ticks_usec() - t_us
 	if _hud_dirty:
 		var t_us: int = Time.get_ticks_usec()
@@ -703,6 +742,7 @@ func _spawn_initial_colonists() -> void:
 		if c.has_method("set_tile_size"):
 			c.set_tile_size(TILE_SIZE)
 		c.status_changed.connect(_on_colonist_status_changed)
+		_colonist_idle_state_by_id[c.get_instance_id()] = true
 		c.resource_harvested.connect(_on_resource_harvested)
 		c.resource_delivered.connect(_on_resource_delivered)
 		c.craft_completed.connect(_on_craft_completed)
@@ -936,6 +976,7 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 		queue_redraw()
 		return
 	if current_action == &"DragGather":
+		var changed: bool = false
 		for node in get_tree().get_nodes_in_group("gatherables"):
 			if node == null or not is_instance_valid(node):
 				continue
@@ -943,6 +984,7 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 				continue
 			if node.has_method("set_designated"):
 				node.set_designated(true)
+				changed = true
 		for node in get_tree().get_nodes_in_group("huntables"):
 			if node == null or not is_instance_valid(node):
 				continue
@@ -950,6 +992,10 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 				continue
 			if node.has_method("set_designated"):
 				node.set_designated(true)
+				changed = true
+		if changed:
+			job_system.mark_designation_dirty()
+			_mark_jobs_dirty()
 		queue_redraw()
 		return
 	if current_action == &"StockpileZone":
@@ -1139,6 +1185,14 @@ func _on_work_toggle_changed(work_type: StringName, enabled: bool) -> void:
 func _on_colonist_status_changed(_colonist: Node) -> void:
 	if _colonist != null and is_instance_valid(_colonist):
 		var cid: int = _colonist.get_instance_id()
+		var current: Dictionary = _colonist.current_job if "current_job" in _colonist else {}
+		var is_idle_now: bool = current.is_empty()
+		var was_idle: bool = bool(_colonist_idle_state_by_id.get(cid, is_idle_now))
+		_colonist_idle_state_by_id[cid] = is_idle_now
+		if is_idle_now and not was_idle:
+			job_system.mark_designation_dirty()
+			_mark_farm_dirty()
+			_mark_jobs_dirty()
 		var now_ms: int = Time.get_ticks_msec()
 		var next_ms: int = int(_need_job_refresh_next_ms_by_colonist.get(cid, 0))
 		if now_ms >= next_ms:
@@ -1147,7 +1201,6 @@ func _on_colonist_status_changed(_colonist: Node) -> void:
 			if bool(job_system.queue_need_jobs(_colonist, food_available)):
 				_mark_jobs_dirty()
 			if _raid_state == &"Active":
-				var current: Dictionary = _colonist.current_job if "current_job" in _colonist else {}
 				var job_type: StringName = StringName(current.get("type", &""))
 				if current.is_empty() or (job_type != &"CombatMelee" and job_type != &"CombatRanged"):
 					_mark_combat_dirty()
@@ -1385,6 +1438,7 @@ func _on_structure_added(_structure: Node) -> void:
 	_hud_dirty = true
 
 func _on_stockpile_zone_added(zone: Node) -> void:
+	_mark_group_cache_dirty(&"stockpile_zones")
 	if zone != null and is_instance_valid(zone) and zone.has_signal("stockpile_changed") and not zone.is_connected("stockpile_changed", Callable(self, "_on_stockpile_zone_changed")):
 		zone.connect("stockpile_changed", Callable(self, "_on_stockpile_zone_changed"))
 	_mark_economy_dirty()
@@ -1392,6 +1446,7 @@ func _on_stockpile_zone_added(zone: Node) -> void:
 	_hud_dirty = true
 
 func _on_farm_zone_added(zone: Node) -> void:
+	_mark_group_cache_dirty(&"farm_zones")
 	if zone != null and is_instance_valid(zone):
 		if zone.has_signal("zone_changed") and not zone.is_connected("zone_changed", Callable(self, "_on_farm_zone_changed")):
 			zone.connect("zone_changed", Callable(self, "_on_farm_zone_changed"))
@@ -1412,6 +1467,7 @@ func _on_farm_zone_changed(_zone: Node) -> void:
 	_hud_dirty = true
 
 func _on_farm_zone_job_needed(_zone: Node) -> void:
+	_mark_farm_dirty()
 	_mark_jobs_dirty()
 
 func _on_enemy_moved(_enemy: Node, _tile: Vector2i) -> void:
@@ -1481,6 +1537,8 @@ func _draw_demolish_queued_outlines() -> void:
 func _on_resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2) -> void:
 	# Harvest result is always dropped in world first; stock updates only after hauling into stockpile.
 	_spawn_resource_drop(resource_type, amount, world_pos)
+	job_system.mark_designation_dirty()
+	_mark_jobs_dirty()
 
 func _on_resource_delivered(resource_type: StringName, amount: int, zone: Node) -> void:
 	if amount <= 0:
@@ -2636,6 +2694,7 @@ func _spawn_resource_drop(resource_type: StringName, amount: int, world_pos: Vec
 	var drop := RESOURCE_DROP_SCENE.instantiate()
 	drop.global_position = _snap_to_tile(world_pos + Vector2(randf_range(-10.0, 10.0), randf_range(-8.0, 8.0)))
 	world_root.add_child(drop)
+	_mark_group_cache_dirty(&"resource_drops")
 	if drop.has_method("setup_drop"):
 		drop.setup_drop(resource_type, amount)
 	_connect_resource_drop_signals(drop)
@@ -2671,11 +2730,13 @@ func _on_resource_drop_changed(_drop: Node) -> void:
 	_mark_economy_dirty()
 
 func _on_resource_drop_emptied(_drop: Node) -> void:
+	_mark_group_cache_dirty(&"resource_drops")
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
 	_hud_dirty = true
 
 func _on_resource_drop_removed(_drop: Node) -> void:
+	_mark_group_cache_dirty(&"resource_drops")
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
 	_hud_dirty = true
@@ -2952,7 +3013,7 @@ func _find_farm_zone_near(world_pos: Vector2, radius: float) -> Node:
 			return zone
 	return null
 
-func _update_farm_zones(delta: float) -> void:
+func _tick_farm_zones(delta: float) -> void:
 	if _game_paused:
 		return
 	for zone in _get_group_nodes_cached(&"farm_zones"):
@@ -2961,8 +3022,22 @@ func _update_farm_zones(delta: float) -> void:
 		_configure_farm_zone_catalog(zone)
 		if zone.has_method("tick_growth"):
 			zone.tick_growth(delta)
+
+func _produce_farm_jobs() -> void:
+	if _game_paused:
+		return
+	var idle_colonists: int = 0
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if colonist.is_idle():
+			idle_colonists += 1
+	for zone in _get_group_nodes_cached(&"farm_zones"):
+		if zone == null or not is_instance_valid(zone):
+			continue
+		_configure_farm_zone_catalog(zone)
 		if zone.has_method("request_jobs"):
-			zone.request_jobs(job_system)
+			zone.request_jobs(job_system, maxi(1, idle_colonists))
 
 func _configure_farm_zone_catalog(zone: Node) -> void:
 	if zone == null or not is_instance_valid(zone):

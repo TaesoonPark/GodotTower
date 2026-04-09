@@ -7,7 +7,7 @@ const MAX_EXPANSIONS: int = 200
 const GOAL_REPATH_DISTANCE_TILES: float = 1.6
 const STUCK_REPATH_DISTANCE: float = 10.0
 const STUCK_REPATH_TIME_SEC: float = 1.6
-const MAX_REBUILDS_PER_FRAME: int = 1
+const BASE_MAX_REBUILDS_PER_FRAME: int = 3
 
 static var _frame_id: int = -1
 static var _frame_rebuilds: int = 0
@@ -21,6 +21,7 @@ var _last_obstacle_signature: int = 0
 var _walkable_cache: Dictionary = {}
 var _repath_interval_runtime: float = REPATH_INTERVAL_SEC
 var _max_expansions_runtime: int = MAX_EXPANSIONS
+var _budget_scale_runtime: float = 1.0
 var _stuck_elapsed: float = 0.0
 var _stuck_anchor: Vector2 = Vector2.INF
 var _move_result: Dictionary = {"position": Vector2.ZERO, "reached_goal": false, "blocked": false}
@@ -43,6 +44,7 @@ func tick(delta: float) -> void:
 
 func set_budget_scale(scale: float) -> void:
 	var safe_scale: float = clampf(scale, 1.0, 3.0)
+	_budget_scale_runtime = safe_scale
 	_repath_interval_runtime = REPATH_INTERVAL_SEC * minf(2.4, safe_scale)
 	_max_expansions_runtime = maxi(40, int(round(float(MAX_EXPANSIONS) / minf(2.4, safe_scale))))
 
@@ -68,11 +70,13 @@ func _set_result(pos: Vector2, reached: bool, blocked: bool) -> Dictionary:
 	return _move_result
 
 func _can_rebuild_this_frame() -> bool:
-	var fid: int = Engine.get_process_frames()
+	var fid: int = Engine.get_physics_frames()
 	if _frame_id != fid:
 		_frame_id = fid
 		_frame_rebuilds = 0
-	if _frame_rebuilds >= MAX_REBUILDS_PER_FRAME:
+	var time_scale: float = clampf(Engine.time_scale if Engine.time_scale > 0.0 else 1.0, 1.0, 4.0)
+	var allowed_rebuilds: int = maxi(2, int(round((float(BASE_MAX_REBUILDS_PER_FRAME) * time_scale) / _budget_scale_runtime)))
+	if _frame_rebuilds >= allowed_rebuilds:
 		return false
 	_frame_rebuilds += 1
 	return true

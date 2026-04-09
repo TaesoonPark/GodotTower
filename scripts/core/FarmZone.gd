@@ -144,21 +144,30 @@ func tick_growth(delta: float) -> void:
 		_emit_zone_updates()
 	_refresh_label()
 
-func request_jobs(job_system: Node) -> void:
-	var job: Dictionary = claim_next_job()
-	if job.is_empty():
-		return
-	var tile: Vector2i = job.get("tile", Vector2i.ZERO)
-	var crop_id: StringName = StringName(job.get("crop_type", crop_type))
-	var duration: float = float(job.get("work_duration", 2.0))
-	var t: StringName = StringName(job.get("type", &""))
-	if t == &"HarvestCrop":
-		job_system.queue_farm_harvest_job(self, tile, crop_id, duration)
-	elif t == &"PlantCrop":
-		job_system.queue_farm_plant_job(self, tile, crop_id, duration)
-	else:
-		clear_plot_job(tile)
-	_emit_zone_updates()
+func request_jobs(job_system: Node, max_jobs: int = 0) -> void:
+	var remaining: int = maxi(0, max_jobs)
+	var unlimited: bool = remaining == 0
+	var queued_any: bool = false
+	while unlimited or remaining > 0:
+		var job: Dictionary = claim_next_job()
+		if job.is_empty():
+			break
+		var tile: Vector2i = job.get("tile", Vector2i.ZERO)
+		var crop_id: StringName = StringName(job.get("crop_type", crop_type))
+		var duration: float = float(job.get("work_duration", 2.0))
+		var t: StringName = StringName(job.get("type", &""))
+		if t == &"HarvestCrop":
+			job_system.queue_farm_harvest_job(self, tile, crop_id, duration)
+		elif t == &"PlantCrop":
+			job_system.queue_farm_plant_job(self, tile, crop_id, duration)
+		else:
+			clear_plot_job(tile)
+			break
+		queued_any = true
+		if not unlimited:
+			remaining -= 1
+	if queued_any:
+		_emit_zone_updates()
 
 func claim_next_job() -> Dictionary:
 	var crop_def: Resource = get_crop_def()

@@ -92,6 +92,52 @@ func process_dirty(
 	huntables: Array = [],
 	raid_active_mode: bool = false
 ) -> void:
+	process_producers(
+		colonists,
+		enemies,
+		drops,
+		haul_targets,
+		current_stock,
+		target_stock,
+		rally_pos,
+		rally_radius,
+		max_combatants,
+		recipe_lookup,
+		workstation_slots,
+		can_start_callback,
+		on_start_callback,
+		research_target,
+		research_project_id,
+		repairables,
+		traps,
+		gatherables,
+		huntables,
+		raid_active_mode
+	)
+	process_assignment(colonists)
+
+func process_producers(
+	colonists: Array,
+	enemies: Array,
+	drops: Array,
+	haul_targets: Array,
+	current_stock: Dictionary,
+	target_stock: Dictionary,
+	rally_pos: Vector2,
+	rally_radius: float,
+	max_combatants: int,
+	recipe_lookup: Dictionary,
+	workstation_slots: Dictionary,
+	can_start_callback: Callable = Callable(),
+	on_start_callback: Callable = Callable(),
+	research_target: Vector2 = Vector2.INF,
+	research_project_id: StringName = &"",
+	repairables: Array = [],
+	traps: Array = [],
+	gatherables: Array = [],
+	huntables: Array = [],
+	_raid_active_mode: bool = false
+) -> void:
 	if _dirty_designation:
 		request_designated_gather_jobs(gatherables)
 		request_designated_hunt_jobs(huntables)
@@ -112,9 +158,17 @@ func process_dirty(
 	if _dirty_combat:
 		request_combat_jobs(colonists, enemies, rally_pos, rally_radius, max_combatants)
 		_dirty_combat = false
-	if _dirty_assign:
-		assign_jobs(colonists)
-		_dirty_assign = false
+
+func process_assignment(colonists: Array) -> void:
+	if not _dirty_assign:
+		return
+	var assigned_this_tick: int = assign_jobs(colonists)
+	if assigned_this_tick >= MAX_ASSIGN_PER_TICK and not _jobs.is_empty() and _has_idle_colonist(colonists):
+		return
+	_dirty_assign = false
+
+func has_pending_assignment() -> bool:
+	return _dirty_assign
 
 func queue_move_job(colonist: Node, target: Vector2) -> void:
 	var job: Dictionary = {
@@ -685,7 +739,7 @@ func queue_need_jobs(colonist: Node, food_available: int) -> bool:
 		queued = true
 	return queued
 
-func assign_jobs(colonists: Array) -> void:
+func assign_jobs(colonists: Array) -> int:
 	var assigned_this_tick: int = 0
 	for colonist in colonists:
 		if assigned_this_tick >= MAX_ASSIGN_PER_TICK:
@@ -708,9 +762,18 @@ func assign_jobs(colonists: Array) -> void:
 				_reserved_craft_slot_ids[slot_id] = {
 					"assigned_to": colonist.get_instance_id(),
 					"reserved_at_ms": Time.get_ticks_msec()
-				}
+			}
 		colonist.assign_job(job)
 		assigned_this_tick += 1
+	return assigned_this_tick
+
+func _has_idle_colonist(colonists: Array) -> bool:
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if colonist.is_idle():
+			return true
+	return false
 
 func _pick_best_job_index(colonist: Node) -> int:
 	var best_idx: int = -1

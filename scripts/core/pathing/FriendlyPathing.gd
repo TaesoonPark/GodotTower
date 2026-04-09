@@ -7,7 +7,7 @@ const MAX_EXPANSIONS: int = 400
 const GOAL_REPATH_DISTANCE_TILES: float = 1.4
 const STUCK_REPATH_DISTANCE: float = 8.0
 const STUCK_REPATH_TIME_SEC: float = 1.4
-const MAX_REBUILDS_PER_FRAME: int = 1
+const BASE_MAX_REBUILDS_PER_FRAME: int = 4
 
 static var _frame_id: int = -1
 static var _frame_rebuilds: int = 0
@@ -23,6 +23,7 @@ var _stuck_elapsed: float = 0.0
 var _stuck_anchor: Vector2 = Vector2.INF
 var _repath_interval_runtime: float = REPATH_INTERVAL_SEC
 var _max_expansions_runtime: int = MAX_EXPANSIONS
+var _budget_scale_runtime: float = 1.0
 var _move_result: Dictionary = {"position": Vector2.ZERO, "reached_goal": false, "blocked": false}
 
 func setup(next_tile_size: float) -> void:
@@ -30,6 +31,7 @@ func setup(next_tile_size: float) -> void:
 
 func set_budget_scale(scale: float) -> void:
 	var s: float = clampf(scale, 1.0, 3.5)
+	_budget_scale_runtime = s
 	_repath_interval_runtime = REPATH_INTERVAL_SEC * s
 	_max_expansions_runtime = maxi(50, int(round(float(MAX_EXPANSIONS) / s)))
 
@@ -58,11 +60,13 @@ func _set_result(pos: Vector2, reached: bool, blocked: bool) -> Dictionary:
 	return _move_result
 
 func _can_rebuild_this_frame() -> bool:
-	var fid: int = Engine.get_process_frames()
+	var fid: int = Engine.get_physics_frames()
 	if _frame_id != fid:
 		_frame_id = fid
 		_frame_rebuilds = 0
-	if _frame_rebuilds >= MAX_REBUILDS_PER_FRAME:
+	var time_scale: float = clampf(Engine.time_scale if Engine.time_scale > 0.0 else 1.0, 1.0, 4.0)
+	var allowed_rebuilds: int = maxi(2, int(round((float(BASE_MAX_REBUILDS_PER_FRAME) * time_scale) / _budget_scale_runtime)))
+	if _frame_rebuilds >= allowed_rebuilds:
 		return false
 	_frame_rebuilds += 1
 	return true
@@ -95,22 +99,38 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 	if need_rebuild and _can_rebuild_this_frame():
 		_rebuild_path(current_pos, goal, is_blocked)
 		rebuilt_this_step = true
+	_consume_stale_path_points(current_pos, goal, is_blocked)
 	if _path_points.is_empty():
+		if not rebuilt_this_step and _repath_left <= 0.0 and _can_rebuild_this_frame():
+			_rebuild_path(current_pos, goal, is_blocked)
+			rebuilt_this_step = true
+			_consume_stale_path_points(current_pos, goal, is_blocked)
 		var direct_dir: Vector2 = current_pos.direction_to(goal)
 		if direct_dir != Vector2.ZERO:
 			var direct_step: Vector2 = current_pos + direct_dir * speed * safe_delta
 			if not bool(is_blocked.call(direct_step)):
 				return _set_result(direct_step, false, false)
-		return _set_result(current_pos, false, path_empty)
+		return _set_result(current_pos, false, true)
 	var next_pos: Vector2 = _get_next_path_point(goal)
 	var dir: Vector2 = current_pos.direction_to(next_pos)
+	if dir == Vector2.ZERO:
+		_consume_stale_path_points(current_pos, goal, is_blocked)
+		next_pos = _get_next_path_point(goal)
+		dir = current_pos.direction_to(next_pos)
 	if dir == Vector2.ZERO:
 		return _set_result(current_pos, false, false)
 	var proposed: Vector2 = current_pos + dir * speed * safe_delta
 	if bool(is_blocked.call(proposed)):
+		if next_pos != goal and _path_index < _path_points.size():
+			_path_index += 1
+			_consume_stale_path_points(current_pos, goal, is_blocked)
+			next_pos = _get_next_path_point(goal)
+			dir = current_pos.direction_to(next_pos)
+			proposed = current_pos + dir * speed * safe_delta
 		if (_repath_left <= 0.0 or stuck_repath) and not rebuilt_this_step and _can_rebuild_this_frame():
 			_rebuild_path(current_pos, goal, is_blocked)
 			rebuilt_this_step = true
+			_consume_stale_path_points(current_pos, goal, is_blocked)
 		next_pos = _get_next_path_point(goal)
 		dir = current_pos.direction_to(next_pos)
 		proposed = current_pos + dir * speed * safe_delta
@@ -138,6 +158,17 @@ func _get_next_path_point(goal: Vector2) -> Vector2:
 	if _path_points.is_empty() or _path_index >= _path_points.size():
 		return goal
 	return _path_points[_path_index]
+
+func _consume_stale_path_points(current_pos: Vector2, goal: Vector2, is_blocked: Callable) -> void:
+	while _path_index < _path_points.size():
+		var point: Vector2 = _path_points[_path_index]
+		if current_pos.distance_to(point) <= 4.0:
+			_path_index += 1
+			continue
+		if point != goal and bool(is_blocked.call(point)):
+			_path_index += 1
+			continue
+		break
 
 func _tile_walkable(tx: int, ty: int, gx: int, gy: int, is_blocked: Callable) -> bool:
 	if tx == gx and ty == gy:
