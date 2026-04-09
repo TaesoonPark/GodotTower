@@ -128,22 +128,25 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	_sim_accum += delta
 	var tick_interval: float = _lod_tick_interval()
-	if _sim_accum < tick_interval:
+	if tick_interval > 0.0 and _sim_accum < tick_interval:
 		return
-	var sim_delta: float = _sim_accum
-	_sim_accum = 0.0
-	if food_speed_buff_remaining > 0.0:
-		food_speed_buff_remaining = maxf(0.0, food_speed_buff_remaining - sim_delta)
-	if _friendly_pathing != null:
-		_friendly_pathing.tick(sim_delta)
-	_need_tick_left = maxf(0.0, _need_tick_left - sim_delta)
-	_combat_target_refresh_left = maxf(0.0, _combat_target_refresh_left - sim_delta)
-	if _need_tick_left <= 0.0:
-		tick_needs(NEED_TICK_INTERVAL_SEC)
-		_need_tick_left = NEED_TICK_INTERVAL_SEC
-	_process_movement(sim_delta)
-	update_job_completion(sim_delta)
-	_process_active_work(sim_delta)
+	var sim_remaining: float = _sim_accum
+	while sim_remaining > 0.0 and (tick_interval <= 0.0 or sim_remaining >= tick_interval):
+		var sim_delta: float = minf(sim_remaining, 0.05)
+		sim_remaining -= sim_delta
+		if food_speed_buff_remaining > 0.0:
+			food_speed_buff_remaining = maxf(0.0, food_speed_buff_remaining - sim_delta)
+		if _friendly_pathing != null:
+			_friendly_pathing.tick(sim_delta)
+		_need_tick_left = maxf(0.0, _need_tick_left - sim_delta)
+		_combat_target_refresh_left = maxf(0.0, _combat_target_refresh_left - sim_delta)
+		if _need_tick_left <= 0.0:
+			tick_needs(NEED_TICK_INTERVAL_SEC)
+			_need_tick_left = NEED_TICK_INTERVAL_SEC
+		_process_movement(sim_delta)
+		update_job_completion(sim_delta)
+		_process_active_work(sim_delta)
+	_sim_accum = sim_remaining
 
 func _lod_tick_interval() -> float:
 	var cam: Camera2D = get_viewport().get_camera_2d()

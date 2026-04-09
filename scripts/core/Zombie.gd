@@ -83,17 +83,20 @@ func _physics_process(delta: float) -> void:
 	_spawn_unclip_retry_left = maxf(0.0, _spawn_unclip_retry_left - delta)
 	_sim_accum += delta
 	var tick_interval: float = _lod_tick_interval()
-	if _sim_accum < tick_interval:
+	if tick_interval > 0.0 and _sim_accum < tick_interval:
 		return
-	var sim_delta: float = _sim_accum
-	_sim_accum = 0.0
+	var sim_remaining: float = _sim_accum
 	if _enemy_pathing != null:
-		_enemy_pathing.tick(sim_delta)
-	_process_movement(sim_delta)
-	_ai_phase_left = maxf(0.0, _ai_phase_left - sim_delta)
-	if _ai_phase_left <= 0.0:
-		_ai_tick(sim_delta)
-		_ai_phase_left = AI_STEP_SEC
+		_enemy_pathing.tick(sim_remaining)
+	while sim_remaining > 0.0:
+		var sim_delta: float = minf(sim_remaining, 0.05)
+		sim_remaining -= sim_delta
+		_process_movement(sim_delta)
+		_ai_phase_left = maxf(0.0, _ai_phase_left - sim_delta)
+		if _ai_phase_left <= 0.0:
+			_ai_tick(sim_delta)
+			_ai_phase_left = AI_STEP_SEC
+	_sim_accum = sim_remaining
 
 func _lod_tick_interval() -> float:
 	var now_ms: int = Time.get_ticks_msec()

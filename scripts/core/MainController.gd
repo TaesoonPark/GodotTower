@@ -814,9 +814,21 @@ func _on_left_click(world_pos: Vector2) -> void:
 		return
 	if current_action == &"FarmZone":
 		_clear_selected_object()
+		_set_selected([])
+		selected_designation_target = null
+		hud.set_designation_panel_visible(false)
+		selected_stockpile_zone = null
+		selected_bed_node = null
 		selected_farm_zone = _find_farm_zone_near(world_pos, 48.0)
+		if selected_farm_zone != null:
+			_configure_farm_zone_catalog(selected_farm_zone)
+			_selected_object_kind = &"FarmZone"
+			_selected_object_zone = selected_farm_zone
+			_selected_object_resource = &""
+			hud.set_active_action(&"FarmZoneSelected")
+		else:
+			hud.set_active_action(&"FarmZone")
 		_refresh_hud()
-		hud.set_active_action(&"FarmZone")
 		return
 	selected_bed_node = null
 	hud.set_bed_assignment_visible(false)
