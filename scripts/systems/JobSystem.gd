@@ -180,15 +180,19 @@ func queue_move_job(colonist: Node, target: Vector2) -> void:
 	_jobs.append(job)
 	_dirty_assign = true
 
-func issue_immediate_move(colonist: Node, target: Vector2) -> void:
+func issue_immediate_move(colonist: Node, target: Vector2, preserve_current_job: bool = true) -> void:
+	if preserve_current_job:
+		if colonist.has_method("capture_current_job_for_resume"):
+			colonist.capture_current_job_for_resume()
+	elif colonist.has_method("clear_resume_job_after_move"):
+		colonist.clear_resume_job_after_move()
 	_remove_jobs_for_colonist(colonist.get_instance_id())
-	if colonist.has_method("cancel_current_job"):
-		colonist.cancel_current_job()
 	colonist.assign_job({
 		"type": &"MoveTo",
 		"target": target,
 		"base_priority": 100,
-		"assigned_to": colonist.get_instance_id()
+		"assigned_to": colonist.get_instance_id(),
+		"__resume_after_move": preserve_current_job
 	})
 	_dirty_assign = true
 

@@ -15,8 +15,9 @@ fi
 
 export GODOT_PATH="${GODOT_BIN}"
 export DEBUG="${DEBUG:-true}"
+export HOME="${HOME:-${RUNTIME_ROOT}/home}"
 export XDG_DATA_HOME="${XDG_DATA_HOME:-${RUNTIME_ROOT}/xdg-data}"
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${RUNTIME_ROOT}/xdg-config}"
-mkdir -p "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}"
+mkdir -p "${HOME}" "${XDG_DATA_HOME}" "${XDG_CONFIG_HOME}"
 
 exec npx -y @coding-solo/godot-mcp

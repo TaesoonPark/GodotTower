@@ -26,6 +26,8 @@ var mood: float = 100.0
 
 var selected: bool = false
 var current_job: Dictionary = {}
+var _resume_job_after_move: Dictionary = {}
+var _resume_after_move_enabled: bool = false
 var gather_speed_multiplier: float = 1.0
 var build_work_speed_multiplier: float = 1.0
 var repair_work_speed_multiplier: float = 1.0
@@ -264,8 +266,6 @@ func _resolve_move_goal() -> Vector2:
 	if current_job.is_empty():
 		return Vector2.INF
 	var jt: StringName = StringName(current_job.get("type", &""))
-	if jt == &"CombatMelee" or jt == &"CombatRanged":
-		return Vector2.INF
 	if current_job.has("target"):
 		return _snap_to_tile(current_job.get("target", global_position))
 	return _snap_to_tile(nav.target_position)
@@ -389,11 +389,16 @@ func get_priority(job_type: StringName) -> int:
 
 func assign_job(job: Dictionary) -> void:
 	current_job = job
+	var job_type: StringName = job.get("type", &"")
+	if job_type != &"MoveTo" or not bool(job.get("__resume_after_move", false)):
+		_resume_job_after_move.clear()
+		_resume_after_move_enabled = false
 	_reroute_target_pending = Vector2.INF
 	_move_stuck_elapsed = 0.0
 	_reset_build_stall_watch()
 	_clear_path_cache()
-	var job_type: StringName = job.get("type", &"Idle")
+	if job_type == &"":
+		job_type = &"Idle"
 	match job_type:
 		&"MoveTo":
 			var target: Vector2 = job.get("target", global_position)
@@ -470,7 +475,23 @@ func assign_job(job: Dictionary) -> void:
 			_finish_current_job()
 	emit_status()
 
+func capture_current_job_for_resume() -> void:
+	_resume_job_after_move.clear()
+	if current_job.is_empty():
+		return
+	var job_type: StringName = StringName(current_job.get("type", &""))
+	if job_type == &"MoveTo":
+		return
+	_resume_job_after_move = current_job.duplicate(true)
+	_resume_after_move_enabled = true
+
+func clear_resume_job_after_move() -> void:
+	_resume_job_after_move.clear()
+	_resume_after_move_enabled = false
+
 func cancel_current_job() -> void:
+	_resume_job_after_move.clear()
+	_resume_after_move_enabled = false
 	if current_job.is_empty():
 		nav.target_position = global_position
 		return
@@ -1138,6 +1159,8 @@ func _process_combat_job(job_type: StringName) -> void:
 	var target_pos: Vector2 = target_node.global_position
 	if _combat_target_refresh_left <= 0.0:
 		current_job["target"] = target_pos
+		nav.target_position = target_pos
+		_clear_path_cache()
 		_combat_target_refresh_left = COMBAT_TARGET_REFRESH_SEC
 	else:
 		target_pos = current_job.get("target", target_pos)
@@ -1293,6 +1316,14 @@ func _finish_current_job() -> void:
 	_move_stuck_elapsed = 0.0
 	_reset_build_stall_watch()
 	_clear_path_cache()
-	_set_work_progress(0.0, false)
 	nav.target_position = global_position
+	if _resume_after_move_enabled and not _resume_job_after_move.is_empty():
+		var resume_job: Dictionary = _resume_job_after_move
+		_resume_job_after_move = {}
+		_resume_after_move_enabled = false
+		assign_job(resume_job)
+		return
+	_resume_job_after_move.clear()
+	_resume_after_move_enabled = false
+	_set_work_progress(0.0, false)
 	emit_status()

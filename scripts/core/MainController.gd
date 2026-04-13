@@ -2696,7 +2696,7 @@ func _issue_selected_move_command(target_pos: Vector2) -> void:
 	for colonist in selected_colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
-		job_system.issue_immediate_move(colonist, snapped_target)
+		job_system.issue_immediate_move(colonist, snapped_target, _raid_state != &"Active")
 	job_system.mark_assign_dirty()
 	_mark_jobs_dirty()
 
