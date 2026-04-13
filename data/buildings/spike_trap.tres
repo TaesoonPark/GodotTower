@@ -7,7 +7,7 @@ script = ExtResource("1_building_def")
 id = &"SpikeTrap"
 display_name = "Spike Trap"
 category = "Defense"
-required_work = 45.0
+required_work = 1.0
 footprint_size = Vector2(40, 40)
 build_cost = {
 &"Wood": 1

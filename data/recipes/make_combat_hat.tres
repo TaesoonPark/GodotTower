@@ -7,7 +7,7 @@ script = ExtResource("1_recipe_def")
 id = &"MakeCombatHat"
 display_name = "Make Combat Hat"
 workstation_id = &"SimpleBenchStation"
-work_required = 5.0
+work_required = 1.0
 ingredients = {
 &"Steel": 1,
 &"Wood": 1

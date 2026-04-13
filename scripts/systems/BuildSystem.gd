@@ -161,11 +161,16 @@ func request_build_jobs(job_system: Node) -> void:
 			continue
 		_sites.remove_at(i)
 	var now_ms: int = Time.get_ticks_msec()
+	var main_controller: Node = get_tree().get_first_node_in_group("main_controller")
 	for site in _sites:
 		if site.complete:
 			continue
 		if site.job_queued:
 			continue
+		if site.has_method("requires_material_delivery") and bool(site.requires_material_delivery()):
+			if main_controller != null and is_instance_valid(main_controller) and main_controller.has_method("can_fund_build_site"):
+				if not bool(main_controller.can_fund_build_site(site)):
+					continue
 		var retry_after_ms: int = int(site.get_meta("build_retry_after_ms")) if site.has_meta("build_retry_after_ms") else 0
 		if retry_after_ms > now_ms:
 			continue

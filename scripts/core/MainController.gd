@@ -1453,6 +1453,7 @@ func _on_stockpile_zone_added(zone: Node) -> void:
 	_mark_group_cache_dirty(&"stockpile_zones")
 	if zone != null and is_instance_valid(zone) and zone.has_signal("stockpile_changed") and not zone.is_connected("stockpile_changed", Callable(self, "_on_stockpile_zone_changed")):
 		zone.connect("stockpile_changed", Callable(self, "_on_stockpile_zone_changed"))
+	job_system.mark_haul_dirty()
 	_mark_economy_dirty()
 	_mark_jobs_dirty()
 	_hud_dirty = true
@@ -1469,6 +1470,7 @@ func _on_farm_zone_added(zone: Node) -> void:
 	_hud_dirty = true
 
 func _on_stockpile_zone_changed(_zone: Node) -> void:
+	job_system.mark_haul_dirty()
 	_mark_economy_dirty()
 	_mark_jobs_dirty()
 	_mark_maintenance_dirty()
@@ -1563,6 +1565,8 @@ func _on_resource_delivered(resource_type: StringName, amount: int, zone: Node) 
 		_spawn_resource_drop(resource_type, amount, zone.global_position)
 		return
 	var delivered_to_workstation: bool = zone.has_method("can_start_recipe")
+	if delivered_to_workstation and job_system != null and is_instance_valid(job_system):
+		job_system.mark_craft_dirty()
 	if not delivered_to_workstation:
 		if not resource_stock.has(resource_type):
 			resource_stock[resource_type] = 0
@@ -1773,6 +1777,24 @@ func try_supply_build_site(site_obj: Object) -> bool:
 		site_node.mark_materials_delivered()
 	hud.set_resource_stock(resource_stock)
 	return true
+
+func can_fund_build_site(site_obj: Object) -> bool:
+	if site_obj == null or not is_instance_valid(site_obj):
+		return false
+	if not (site_obj is Node):
+		return false
+	var site_node: Node = site_obj
+	if site_node.has_method("requires_material_delivery") and not bool(site_node.requires_material_delivery()):
+		return true
+	var site_building_id: StringName = StringName(site_node.get("building_id"))
+	if site_building_id != &"" and int(_free_build_allowance.get(site_building_id, 0)) > 0:
+		return true
+	var build_cost: Dictionary = {}
+	if site_node.has_method("get_build_cost"):
+		build_cost = site_node.get_build_cost()
+	if build_cost.is_empty():
+		return true
+	return _can_afford_build_cost(build_cost)
 
 func _can_afford_build_cost(cost: Dictionary) -> bool:
 	for key_any in cost.keys():
@@ -2707,9 +2729,10 @@ func _spawn_resource_drop(resource_type: StringName, amount: int, world_pos: Vec
 	drop.global_position = _snap_to_tile(world_pos + Vector2(randf_range(-10.0, 10.0), randf_range(-8.0, 8.0)))
 	world_root.add_child(drop)
 	_mark_group_cache_dirty(&"resource_drops")
+	_connect_resource_drop_signals(drop)
 	if drop.has_method("setup_drop"):
 		drop.setup_drop(resource_type, amount)
-	_connect_resource_drop_signals(drop)
+	job_system.mark_haul_dirty()
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
 	_hud_dirty = true
@@ -2738,17 +2761,20 @@ func _connect_resource_drop_signals(drop: Node) -> void:
 		drop.connect("drop_removed", Callable(self, "_on_resource_drop_removed"))
 
 func _on_resource_drop_changed(_drop: Node) -> void:
+	job_system.mark_haul_dirty()
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
 
 func _on_resource_drop_emptied(_drop: Node) -> void:
 	_mark_group_cache_dirty(&"resource_drops")
+	job_system.mark_haul_dirty()
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
 	_hud_dirty = true
 
 func _on_resource_drop_removed(_drop: Node) -> void:
 	_mark_group_cache_dirty(&"resource_drops")
+	job_system.mark_haul_dirty()
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
 	_hud_dirty = true
@@ -2768,8 +2794,10 @@ func _build_workstation_position_map() -> Dictionary:
 
 func _build_workstation_slots_map() -> Dictionary:
 	var out: Dictionary = {}
+	var seen_slot_ids: Dictionary = {}
 	for ws_id_any in workstation_lookup.keys():
 		out[StringName(ws_id_any)] = []
+		seen_slot_ids[StringName(ws_id_any)] = {}
 	for node in _get_group_nodes_cached(&"structures"):
 		if node == null or not is_instance_valid(node):
 			continue
@@ -2782,9 +2810,38 @@ func _build_workstation_slots_map() -> Dictionary:
 			if StringName(ws.linked_building_id) != building_id:
 				continue
 			var slots: Array = out.get(ws_id, [])
+			var seen: Dictionary = seen_slot_ids.get(ws_id, {})
+			var slot_id: int = node.get_instance_id()
+			if seen.has(slot_id):
+				continue
+			seen[slot_id] = true
+			seen_slot_ids[ws_id] = seen
 			slots.append({
-				"slot_id": node.get_instance_id(),
+				"slot_id": slot_id,
 				"pos": node.global_position
+			})
+			out[ws_id] = slots
+	for site in _get_group_nodes_cached(&"build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if not bool(site.get("complete")):
+			continue
+		var building_id: StringName = StringName(site.get("building_id"))
+		for ws_id_any in workstation_lookup.keys():
+			var ws_id: StringName = StringName(ws_id_any)
+			var ws: Resource = workstation_lookup[ws_id]
+			if StringName(ws.linked_building_id) != building_id:
+				continue
+			var slots: Array = out.get(ws_id, [])
+			var seen: Dictionary = seen_slot_ids.get(ws_id, {})
+			var slot_id: int = site.get_instance_id()
+			if seen.has(slot_id):
+				continue
+			seen[slot_id] = true
+			seen_slot_ids[ws_id] = seen
+			slots.append({
+				"slot_id": slot_id,
+				"pos": site.global_position
 			})
 			out[ws_id] = slots
 	return out
@@ -3769,6 +3826,21 @@ func _find_workstation_id_near(world_pos: Vector2, radius: float) -> StringName:
 			if dist <= best_dist:
 				best_dist = dist
 				best_id = ws.id
+	for site in get_tree().get_nodes_in_group("build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if not bool(site.get("complete")):
+			continue
+		var building_id: StringName = StringName(site.get("building_id"))
+		for ws_id_any in workstation_lookup.keys():
+			var ws_id: StringName = StringName(ws_id_any)
+			var ws: Resource = workstation_lookup[ws_id]
+			if StringName(ws.linked_building_id) != building_id:
+				continue
+			var dist: float = site.global_position.distance_to(world_pos)
+			if dist <= best_dist:
+				best_dist = dist
+				best_id = ws.id
 	return best_id
 
 func _find_workstation_node_near(world_pos: Vector2, radius: float, workstation_id: StringName = &"") -> Node:
@@ -3790,6 +3862,21 @@ func _find_workstation_node_near(world_pos: Vector2, radius: float, workstation_
 			continue
 		best_dist = dist
 		best_node = node
+	for site in get_tree().get_nodes_in_group("build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if not bool(site.get("complete")):
+			continue
+		if not site.has_method("get"):
+			continue
+		var building_id: StringName = StringName(site.get("building_id"))
+		if target_building_id != &"" and building_id != target_building_id:
+			continue
+		var dist: float = site.global_position.distance_to(world_pos)
+		if dist > best_dist:
+			continue
+		best_dist = dist
+		best_node = site
 	return best_node
 
 func _activate_workstation(workstation_id: StringName) -> void:

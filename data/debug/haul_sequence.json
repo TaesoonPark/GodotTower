@@ -1,0 +1,42 @@
+[
+  {
+    "action": "wait_frames",
+    "frames": 20
+  },
+  {
+    "action": "set_colonist_work",
+    "index": 0,
+    "flags": {
+      "Haul": true,
+      "Build": false,
+      "Craft": false,
+      "Combat": false,
+      "Hunt": false,
+      "Gather": false
+    }
+  },
+  {
+    "action": "place_stockpile",
+    "rect": {
+      "x": 4080.0,
+      "y": 2200.0,
+      "w": 320.0,
+      "h": 200.0
+    }
+  },
+  {
+    "action": "spawn_drop",
+    "resource_type": "Wood",
+    "amount": 40,
+    "pos": {
+      "x": 3760.0,
+      "y": 2160.0
+    }
+  },
+  {
+    "action": "wait_until_stock",
+    "resource_type": "Wood",
+    "at_least": 40,
+    "timeout_frames": 1800
+  }
+]

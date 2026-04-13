@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/tests/CraftWorkflowSmokeTest.gd" id="1"]
+
+[node name="CraftWorkflowSmokeTest" type="Node"]
+script = ExtResource("1")

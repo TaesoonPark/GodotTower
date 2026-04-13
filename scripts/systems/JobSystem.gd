@@ -1,6 +1,9 @@
 extends Node
 class_name JobSystem
 
+const JOB_SCORING: Script = preload("res://scripts/sim/JobScoring.gd")
+const HAUL_RESERVATION_LOGIC: Script = preload("res://scripts/sim/HaulReservationLogic.gd")
+
 const HAUL_QUEUE_TIMEOUT_MS: int = 5000
 const HAUL_ASSIGN_TIMEOUT_MS: int = 12000
 const WORK_ADJACENT_OFFSET: float = 40.0
@@ -356,7 +359,7 @@ func queue_combat_job(colonist: Node, enemy: Node, use_ranged: bool, forced_type
 	})
 	_dirty_assign = true
 
-func queue_haul_job(drop_node: Node, zone_node: Node, assigned_to: int = 0, base_priority: int = 8, as_craft_supply: bool = false) -> void:
+func queue_haul_job(drop_node: Node, zone_node: Node, assigned_to: int = 0, base_priority: int = 8, as_craft_supply: bool = false, urgency: float = 0.0) -> void:
 	if drop_node == null or not is_instance_valid(drop_node):
 		return
 	if zone_node == null or not is_instance_valid(zone_node):
@@ -378,7 +381,7 @@ func queue_haul_job(drop_node: Node, zone_node: Node, assigned_to: int = 0, base
 		"base_priority": base_priority,
 		"assigned_to": assigned_to,
 		"as_craft_supply": as_craft_supply,
-		"urgency": 0.0,
+		"urgency": maxf(0.0, urgency),
 		"drop_amount": int(drop_node.get("amount")),
 		"queued_at_ms": Time.get_ticks_msec()
 	}
@@ -464,6 +467,7 @@ func notify_craft_job_finished(craft_slot_id: int = 0) -> void:
 		_reserved_craft_slot_ids.erase(craft_slot_id)
 
 func request_designated_gather_jobs(gatherables: Array) -> void:
+	var pending_drop_types: Dictionary = _pending_drop_types()
 	for node in gatherables:
 		if node == null or not is_instance_valid(node):
 			continue
@@ -472,6 +476,9 @@ func request_designated_gather_jobs(gatherables: Array) -> void:
 		if node.has_method("is_depleted") and node.is_depleted():
 			continue
 		if node.has_method("is_designated") and not bool(node.is_designated()):
+			continue
+		var resource_type: StringName = StringName(node.get("resource_type"))
+		if resource_type != &"" and bool(pending_drop_types.get(resource_type, false)):
 			continue
 		queue_gather_job(node)
 
@@ -508,7 +515,7 @@ func request_haul_jobs(drops: Array, stockpile_zones: Array, current_stock: Dict
 		var urgency: float = maxf(0.0, float(need - have)) * _haul_urgency_multiplier
 		var as_craft_supply: bool = bool(drop_node.get_meta("craft_supply")) if drop_node.has_meta("craft_supply") else false
 		var base_priority: int = 12 if as_craft_supply else 8
-		queue_haul_job(drop_node, nearest_zone, 0, base_priority, as_craft_supply)
+		queue_haul_job(drop_node, nearest_zone, 0, base_priority, as_craft_supply, urgency)
 		_set_latest_haul_meta(drop_node.get_instance_id(), urgency, drop_amount)
 
 func request_craft_jobs(recipe_lookup: Dictionary, workstation_slots: Dictionary, colonists: Array, can_start_callback: Callable = Callable(), on_start_callback: Callable = Callable()) -> void:
@@ -797,47 +804,17 @@ func _pick_best_job_index(colonist: Node) -> int:
 		var job_type: StringName = job.get("type", &"Idle")
 		if colonist.has_method("can_do_job") and not colonist.can_do_job(job_type):
 			continue
-		var score: float = (float(job.get("base_priority", 0)) + float(colonist.get_priority(job_type))) * 10.0
-		if job_type == &"BuildSite" and colonist is Node2D:
-			var bdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(140.0 - bdist, 0.0, 140.0) * 0.003
-		if job_type == &"RepairStructure" and colonist is Node2D:
-			var rdist2: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(180.0 - rdist2, 0.0, 180.0) * 0.003
-			score += float(colonist.get_priority(&"Build")) * 10.0
-		if job_type == &"DemolishStructure" and colonist is Node2D:
-			var ddist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(180.0 - ddist, 0.0, 180.0) * 0.003
-			score += float(colonist.get_priority(&"Build")) * 10.0
-		if job_type == &"MaintainTrap" and colonist is Node2D:
-			var tdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(180.0 - tdist, 0.0, 180.0) * 0.003
-			score += float(colonist.get_priority(&"Build")) * 10.0
-		if job_type == &"Gather" and colonist is Node2D:
-			var gdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(180.0 - gdist, 0.0, 180.0) * 0.003
-		if job_type == &"Hunt" and colonist is Node2D:
-			var hdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(220.0 - hdist, 0.0, 220.0) * 0.003
-		if (job_type == &"PlantCrop" or job_type == &"HarvestCrop") and colonist is Node2D:
-			var fdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(220.0 - fdist, 0.0, 220.0) * 0.003
-			score += float(colonist.get_priority(&"Gather")) * 10.0
-		if job_type == &"ResearchTask" and colonist is Node2D:
-			var rdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(220.0 - rdist, 0.0, 220.0) * 0.003
-			score += float(colonist.get_priority(&"Craft")) * 10.0
-		if job_type == &"HaulResource" and colonist is Node2D:
-			var dist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(180.0 - dist, 0.0, 180.0) * 0.003
-			score += float(job.get("urgency", 0.0)) * 0.08
-			score += float(job.get("drop_amount", 0)) * 0.03
-			if bool(job.get("as_craft_supply", false)):
-				score += float(colonist.get_priority(&"Craft")) * 10.0
-		if (job_type == &"CombatMelee" or job_type == &"CombatRanged") and colonist is Node2D:
-			var cdist: float = colonist.global_position.distance_to(job.get("target", colonist.global_position))
-			score += clampf(260.0 - cdist, 0.0, 260.0) * 0.004
-			score += float(colonist.get_priority(&"Combat")) * 10.0
+		var score: float = -INF
+		if colonist is Node2D:
+			score = JOB_SCORING.score_job(
+				job,
+				colonist.global_position,
+				colonist.get_priority(job_type),
+				colonist.get_priority(&"Build"),
+				colonist.get_priority(&"Craft"),
+				colonist.get_priority(&"Combat"),
+				colonist.get_priority(&"Gather")
+			)
 		if score > best_score:
 			best_score = score
 			best_idx = i
@@ -906,50 +883,61 @@ func _has_queued_haul_job(drop_id: int) -> bool:
 
 func _cleanup_haul_reservations() -> void:
 	var now_ms: int = Time.get_ticks_msec()
-	for i in range(_jobs.size() - 1, -1, -1):
-		var job: Dictionary = _jobs[i]
-		if job.get("type", &"") != &"HaulResource":
-			continue
-		var drop_id: int = int(job.get("drop_id", 0))
-		if drop_id == 0:
-			_jobs.remove_at(i)
-			continue
+	var drop_states: Dictionary = {}
+	for drop_id_any in _reserved_drop_ids.keys():
+		var drop_id: int = int(drop_id_any)
 		var obj: Object = instance_from_id(drop_id)
 		if obj == null or not is_instance_valid(obj):
-			_jobs.remove_at(i)
-			_reserved_drop_ids.erase(drop_id)
 			continue
-		var queued_at_ms: int = int(job.get("queued_at_ms", now_ms))
-		var age_ms: int = now_ms - queued_at_ms
-		var reservation: Dictionary = _reserved_drop_ids.get(drop_id, {})
-		var assigned_to: int = int(reservation.get("assigned_to", 0))
-		if assigned_to == 0 and age_ms > HAUL_QUEUE_TIMEOUT_MS:
-			_set_drop_job_queued(drop_id, false)
-			_jobs.remove_at(i)
-			_reserved_drop_ids.erase(drop_id)
-
-	var stale_keys: Array[int] = []
-	for drop_id in _reserved_drop_ids.keys():
-		var obj: Object = instance_from_id(int(drop_id))
+		drop_states[drop_id] = {
+			"job_queued": bool(obj.get("job_queued")),
+			"is_empty": bool(obj.has_method("is_empty") and obj.is_empty())
+		}
+	for job in _jobs:
+		if not (job is Dictionary):
+			continue
+		if StringName(job.get("type", &"")) != &"HaulResource":
+			continue
+		var job_drop_id: int = int(job.get("drop_id", 0))
+		if job_drop_id == 0 or drop_states.has(job_drop_id):
+			continue
+		var obj: Object = instance_from_id(job_drop_id)
 		if obj == null or not is_instance_valid(obj):
-			stale_keys.append(int(drop_id))
 			continue
-		if obj.has_method("is_empty") and obj.is_empty():
-			stale_keys.append(int(drop_id))
-			continue
-		var reservation: Dictionary = _reserved_drop_ids[drop_id]
-		var assigned_to: int = int(reservation.get("assigned_to", 0))
-		var reserved_at_ms: int = int(reservation.get("reserved_at_ms", now_ms))
-		if assigned_to == 0 and not bool(obj.get("job_queued")):
-			stale_keys.append(int(drop_id))
-			continue
-		if assigned_to != 0 and now_ms - reserved_at_ms > HAUL_ASSIGN_TIMEOUT_MS:
-			var colonist: Object = instance_from_id(assigned_to)
-			if colonist != null and is_instance_valid(colonist) and colonist.has_method("cancel_current_job"):
-				colonist.cancel_current_job()
-			_set_drop_job_queued(int(drop_id), false)
-			stale_keys.append(int(drop_id))
-	for drop_id in stale_keys:
+		drop_states[job_drop_id] = {
+			"job_queued": bool(obj.get("job_queued")),
+			"is_empty": bool(obj.has_method("is_empty") and obj.is_empty())
+		}
+
+	var queue_result: Dictionary = HAUL_RESERVATION_LOGIC.collect_stale_queue_jobs(
+		_jobs,
+		_reserved_drop_ids,
+		drop_states,
+		now_ms,
+		HAUL_QUEUE_TIMEOUT_MS
+	)
+	var remove_indexes: Array = queue_result.get("remove_indexes", [])
+	for idx_any in remove_indexes:
+		_jobs.remove_at(int(idx_any))
+	for drop_id_any in queue_result.get("release_drop_ids", []):
+		var drop_id: int = int(drop_id_any)
+		_set_drop_job_queued(drop_id, false)
+		_reserved_drop_ids.erase(drop_id)
+
+	var reservation_result: Dictionary = HAUL_RESERVATION_LOGIC.collect_stale_reservations(
+		_reserved_drop_ids,
+		drop_states,
+		now_ms,
+		HAUL_ASSIGN_TIMEOUT_MS
+	)
+	for colonist_id_any in reservation_result.get("cancel_colonist_ids", []):
+		var colonist_id: int = int(colonist_id_any)
+		var colonist: Object = instance_from_id(colonist_id)
+		if colonist != null and is_instance_valid(colonist) and colonist.has_method("cancel_current_job"):
+			colonist.cancel_current_job()
+	for drop_id_any in reservation_result.get("stale_drop_ids", []):
+		var drop_id: int = int(drop_id_any)
+		_set_drop_job_queued(drop_id, false)
 		_reserved_drop_ids.erase(drop_id)
 
 func _set_latest_haul_meta(drop_id: int, urgency: float, drop_amount: int) -> void:
@@ -970,6 +958,24 @@ func _set_drop_job_queued(drop_id: int, value: bool) -> void:
 		return
 	if obj.has_method("set_job_queued"):
 		obj.set_job_queued(value)
+
+func _pending_drop_types() -> Dictionary:
+	var out: Dictionary = {}
+	var tree: SceneTree = Engine.get_main_loop() as SceneTree
+	if tree == null:
+		return out
+	if tree.get_nodes_in_group("stockpile_zones").is_empty():
+		return out
+	for drop in tree.get_nodes_in_group("resource_drops"):
+		if drop == null or not is_instance_valid(drop):
+			continue
+		if drop.has_method("is_empty") and bool(drop.is_empty()):
+			continue
+		var resource_type: StringName = StringName(drop.get("resource_type"))
+		if resource_type == &"":
+			continue
+		out[resource_type] = true
+	return out
 
 func _has_pending_need_job(colonist_id: int, job_type: StringName) -> bool:
 	for job in _jobs:

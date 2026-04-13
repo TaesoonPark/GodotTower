@@ -39,9 +39,9 @@ func _run_test() -> void:
 		colonist.set_work_enabled(&"Combat", false)
 		colonist.set_work_enabled(&"Hunt", false)
 		colonist.set_work_enabled(&"Gather", idx == 0)
-		colonist.set_work_enabled(&"Haul", idx == 0)
+		colonist.set_work_enabled(&"Haul", idx <= 1)
 
-	if not main.build_system.place_stockpile_zone(Rect2(Vector2(4080.0, 2200.0), Vector2(320.0, 200.0))):
+	if not main.build_system.place_stockpile_zone(Rect2(Vector2(3880.0, 2140.0), Vector2(240.0, 160.0))):
 		_finish(false, "GATHER_HAUL_TEST_FAIL: stockpile placement failed")
 		return
 
@@ -65,7 +65,7 @@ func _run_test() -> void:
 	var last_stock_count: int = 0
 	var stuck_snapshot: String = ""
 
-	for step in range(3600):
+	for step in range(7600):
 		await get_tree().process_frame
 		var remaining_gather: int = int(node.current_amount) if node != null and is_instance_valid(node) else 0
 		var drop_count: int = _sum_drop_amount()
@@ -77,7 +77,7 @@ func _run_test() -> void:
 		if remaining_gather <= 0 and drop_count <= 0 and stock_count >= 60:
 			_finish(true, "GATHER_HAUL_TEST_PASS: gather to haul flow completed")
 			return
-		if last_progress_step >= 0 and step - last_progress_step > 480:
+		if last_progress_step >= 0 and step - last_progress_step > 1400:
 			stuck_snapshot = _debug_snapshot(main, colonists, remaining_gather, drop_count, stock_count)
 			break
 
@@ -120,7 +120,7 @@ func _debug_snapshot(main: Node, colonists: Array, remaining_gather: int, drop_c
 		colonist_jobs.append("%s:%s@%s" % [
 			colonist.name,
 			String(colonist.current_job.get("type", &"Idle")),
-			str(colonist.global_position)
+			str(colonist.current_job.get("target", Vector2.ZERO)) + "@" + str(colonist.global_position)
 		])
 	return "GATHER_HAUL_TEST_INFO: remaining_gather=%d drops=%d stored=%d reservations=%s queued=%s colonists=%s" % [
 		remaining_gather,

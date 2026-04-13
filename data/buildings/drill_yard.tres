@@ -7,7 +7,7 @@ script = ExtResource("1_building_def")
 id = &"DrillYard"
 display_name = "Drill Yard"
 category = "Production"
-required_work = 70.0
+required_work = 1.0
 footprint_size = Vector2(80, 40)
 build_cost = {
 &"Wood": 2,

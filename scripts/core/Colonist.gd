@@ -4,6 +4,9 @@ const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
 const FRIENDLY_PATHING: Script = preload("res://scripts/core/pathing/FriendlyPathing.gd")
 const COLONIST_STATS_SCRIPT: Script = preload("res://scripts/data/ColonistStatsData.gd")
 const JOB_PRIORITY_SCRIPT: Script = preload("res://scripts/data/JobPriorityData.gd")
+const HAUL_TRANSITION: Script = preload("res://scripts/sim/HaulTransition.gd")
+const GATHER_TRANSITION: Script = preload("res://scripts/sim/GatherTransition.gd")
+const BUILD_TRANSITION: Script = preload("res://scripts/sim/BuildTransition.gd")
 
 signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
@@ -67,6 +70,8 @@ var tile_size: float = 40.0
 const BUILD_WORK_TARGET_THRESHOLD: float = 18.0
 const BUILD_WORK_SITE_RANGE_TILES: float = 1.6
 const MOVE_STUCK_REPATH_SEC: float = 0.55
+const MOVE_STUCK_CANCEL_RETRIES: int = 4
+const MOVE_NO_PROGRESS_REPATH_SEC: float = 0.8
 const BUILD_STALL_RETARGET_SEC: float = 0.45
 const UPDATE_NEAR_RADIUS: float = 900.0
 const UPDATE_FAR_INTERVAL_SEC: float = 0.16
@@ -74,6 +79,9 @@ const NEED_TICK_INTERVAL_SEC: float = 0.25
 const COMBAT_TARGET_REFRESH_SEC: float = 0.24
 
 var _move_stuck_elapsed: float = 0.0
+var _move_repath_fail_streak: int = 0
+var _move_prev_goal_dist: float = INF
+var _move_no_progress_elapsed: float = 0.0
 var _reroute_target_pending: Vector2 = Vector2.INF
 var _friendly_pathing: FriendlyPathing = null
 var _pathing_occupancy: Node = null
@@ -199,13 +207,17 @@ func _process_movement(delta: float) -> void:
 		goal = _resolve_move_goal()
 	if goal == Vector2.INF:
 		_reset_build_stall_watch()
+		_reset_move_progress_watch()
 		_clear_path_cache()
 		_move_stuck_elapsed = 0.0
+		_move_repath_fail_streak = 0
 		return
 	if global_position.distance_to(goal) <= 6.0:
 		_reset_build_stall_watch()
+		_reset_move_progress_watch()
 		_clear_path_cache()
 		_move_stuck_elapsed = 0.0
+		_move_repath_fail_streak = 0
 		if _reroute_target_pending != Vector2.INF:
 			nav.target_position = _reroute_target_pending
 			_reroute_target_pending = Vector2.INF
@@ -222,24 +234,44 @@ func _process_movement(delta: float) -> void:
 		)
 	var blocked: bool = bool(result.get("blocked", false))
 	var next_pos: Vector2 = result.get("position", global_position)
+	var stalled_without_progress: bool = not blocked and next_pos.distance_to(global_position) <= 0.2 and global_position.distance_to(goal) > 12.0
+	if stalled_without_progress:
+		var to_goal: Vector2 = goal - global_position
+		var dist_to_goal: float = to_goal.length()
+		if dist_to_goal > 0.001:
+			var max_step: float = stats.move_speed * speed_mul * move_delta
+			var fallback_pos: Vector2 = global_position + to_goal.normalized() * minf(dist_to_goal, max_step)
+			if not _is_blocked_position(fallback_pos):
+				next_pos = fallback_pos
+				stalled_without_progress = false
 	if is_build_job:
 		if _handle_buildsite_stall(goal, blocked, next_pos, move_delta):
 			return
 	else:
 		_reset_build_stall_watch()
-	if blocked:
+	if blocked or stalled_without_progress:
 		_move_stuck_elapsed += move_delta
 		if _move_stuck_elapsed >= MOVE_STUCK_REPATH_SEC:
 			if is_build_job and _build_retarget_cooldown <= 0.0 and _try_retarget_build_site_work_position():
 				_build_retarget_fail_streak = 0
+				_move_repath_fail_streak = 0
 				_build_retarget_cooldown = 0.35
 			else:
+				_move_repath_fail_streak += 1
 				_clear_path_cache()
+				if not is_build_job and _move_repath_fail_streak >= MOVE_STUCK_CANCEL_RETRIES:
+					cancel_current_job()
+					return
 			_move_stuck_elapsed = 0.0
 		return
 	global_position = next_pos
 	_move_stuck_elapsed = 0.0
 	_build_retarget_fail_streak = 0
+	_move_repath_fail_streak = 0
+	if is_build_job:
+		_reset_move_progress_watch()
+	else:
+		_track_non_build_move_progress(goal, move_delta)
 
 func set_tile_size(value: float) -> void:
 	tile_size = maxf(4.0, value)
@@ -351,6 +383,30 @@ func _reset_build_stall_watch() -> void:
 	_build_retarget_fail_streak = 0
 	_build_retarget_cooldown = 0.0
 
+func _reset_move_progress_watch() -> void:
+	_move_prev_goal_dist = INF
+	_move_no_progress_elapsed = 0.0
+
+func _track_non_build_move_progress(goal: Vector2, delta: float) -> void:
+	var next_dist: float = global_position.distance_to(goal)
+	if _move_prev_goal_dist == INF:
+		_move_prev_goal_dist = next_dist
+		return
+	var progressed: bool = next_dist <= (_move_prev_goal_dist - 1.0)
+	if progressed:
+		_move_prev_goal_dist = next_dist
+		_move_no_progress_elapsed = 0.0
+		return
+	_move_no_progress_elapsed += delta
+	if _move_no_progress_elapsed < MOVE_NO_PROGRESS_REPATH_SEC:
+		return
+	_move_no_progress_elapsed = 0.0
+	_move_prev_goal_dist = next_dist
+	_move_repath_fail_streak += 1
+	_clear_path_cache()
+	if _move_repath_fail_streak >= MOVE_STUCK_CANCEL_RETRIES:
+		cancel_current_job()
+
 func _is_at_goal(goal: Vector2) -> bool:
 	return global_position.distance_to(goal) <= 6.0
 
@@ -395,6 +451,8 @@ func assign_job(job: Dictionary) -> void:
 		_resume_after_move_enabled = false
 	_reroute_target_pending = Vector2.INF
 	_move_stuck_elapsed = 0.0
+	_move_repath_fail_streak = 0
+	_reset_move_progress_watch()
 	_reset_build_stall_watch()
 	_clear_path_cache()
 	if job_type == &"":
@@ -548,6 +606,8 @@ func cancel_current_job() -> void:
 	current_job.clear()
 	_reroute_target_pending = Vector2.INF
 	_move_stuck_elapsed = 0.0
+	_move_repath_fail_streak = 0
+	_reset_move_progress_watch()
 	_reset_build_stall_watch()
 	_clear_path_cache()
 	nav.target_position = global_position
@@ -575,7 +635,14 @@ func update_job_completion(_delta: float = 0.0) -> void:
 				site_for_supply.set_job_queued(false)
 			_finish_current_job()
 			return
-		if not _can_start_build_site_work(site_for_supply):
+		var site_range: float = maxf(tile_size * BUILD_WORK_SITE_RANGE_TILES, BUILD_WORK_TARGET_THRESHOLD + 6.0)
+		if not BUILD_TRANSITION.can_start(
+			site_for_supply,
+			global_position,
+			current_job.get("target", global_position),
+			BUILD_WORK_TARGET_THRESHOLD,
+			site_range
+		):
 			return
 		if site_for_supply != null and is_instance_valid(site_for_supply):
 			if site_for_supply.has_method("requires_material_delivery") and bool(site_for_supply.requires_material_delivery()):
@@ -585,9 +652,11 @@ func update_job_completion(_delta: float = 0.0) -> void:
 					_finish_current_job()
 					return
 		if not bool(current_job.get("work_started", false)):
-			current_job["work_started"] = true
-			current_job["work_elapsed"] = 0.0
-			current_job["work_duration"] = maxf(1.0, float(current_job.get("work_duration", 30.0)) / maxf(0.1, build_work_speed_multiplier))
+			current_job = BUILD_TRANSITION.begin_work(
+				current_job,
+				float(current_job.get("work_duration", 30.0)),
+				build_work_speed_multiplier
+			)
 			_set_work_progress(0.0, true)
 			emit_status()
 		return
@@ -617,9 +686,7 @@ func update_job_completion(_delta: float = 0.0) -> void:
 		return
 	elif job_type == &"Gather" and _is_job_target_reached(18.0):
 		if not bool(current_job.get("work_started", false)):
-			current_job["work_started"] = true
-			current_job["work_elapsed"] = 0.0
-			current_job["work_duration"] = 5.0
+			current_job = GATHER_TRANSITION.build_start_job(current_job, 5.0)
 			_set_work_progress(0.0, true)
 			emit_status()
 		return
@@ -649,48 +716,29 @@ func update_job_completion(_delta: float = 0.0) -> void:
 				zone_node = z
 
 		if phase == &"to_drop":
-			var requested_amount: int = 0
-			var pickup_amount: int = 0
-			var pickup_type: StringName = &""
-			var carry_limit: int = maxi(1, int(stats.haul_carry_capacity))
-			var target_pickup: int = carry_limit
-			if drop_id != 0:
-				var drop: Object = instance_from_id(drop_id)
-				if drop != null and is_instance_valid(drop) and drop.has_method("take_amount"):
-					pickup_type = StringName(drop.get("resource_type"))
-					requested_amount = int(drop.get("amount"))
-					var accepted: int = mini(requested_amount, carry_limit)
-					if zone_node != null and zone_node.has_method("preview_acceptable_amount"):
-						target_pickup = int(zone_node.preview_acceptable_amount(pickup_type, carry_limit))
-						accepted = mini(accepted, target_pickup)
-					pickup_amount = drop.take_amount(accepted)
-					if drop.has_method("is_empty") and drop.is_empty():
-						drop.queue_free()
-					elif drop.has_method("set_job_queued"):
-						drop.set_job_queued(false)
-			if pickup_type != &"" and pickup_amount > 0 and pickup_amount < target_pickup:
-				pickup_amount += _pickup_additional_nearby_drops(pickup_type, target_pickup - pickup_amount)
-			if pickup_amount <= 0 or pickup_type == &"":
+			var drop_obj: Object = instance_from_id(drop_id) if drop_id != 0 else null
+			var haul_result: Dictionary = HAUL_TRANSITION.execute_pickup(
+				current_job,
+				drop_obj,
+				zone_node,
+				maxi(1, int(stats.haul_carry_capacity)),
+				Callable(self, "_pickup_additional_nearby_drops")
+			)
+			if StringName(haul_result.get("status", &"empty")) != &"to_zone":
 				if drop_id != 0:
 					haul_job_released.emit(drop_id)
 				_finish_current_job()
 				return
 
-			current_job["carried_type"] = pickup_type
-			current_job["carried_amount"] = pickup_amount
-			current_job["phase"] = &"to_zone"
-			var target_pos: Vector2 = global_position
-			if zone_node != null:
-				target_pos = zone_node.global_position
-				if zone_node.has_method("get_drop_point"):
-					target_pos = zone_node.get_drop_point()
-			current_job["target"] = target_pos
+			current_job = haul_result.get("job", current_job)
+			var target_pos: Vector2 = current_job.get("target", global_position)
 			nav.target_position = target_pos
 			emit_status()
 			return
 
-		var delivered_type: StringName = current_job.get("carried_type", &"")
-		var delivered_amount: int = int(current_job.get("carried_amount", 0))
+		var delivered: Dictionary = HAUL_TRANSITION.build_delivery_result(current_job)
+		var delivered_type: StringName = StringName(delivered.get("resource_type", &""))
+		var delivered_amount: int = int(delivered.get("amount", 0))
 		if delivered_amount > 0 and delivered_type != &"":
 			resource_delivered.emit(delivered_type, delivered_amount, zone_node)
 		if drop_id != 0:
@@ -958,26 +1006,18 @@ func _complete_gather_job() -> void:
 	var gatherable_id: int = int(current_job.get("gatherable_id", 0))
 	if gatherable_id != 0:
 		var gatherable: Object = instance_from_id(gatherable_id)
-		if gatherable != null and is_instance_valid(gatherable) and gatherable.has_method("gather_once"):
-			var result: Dictionary = gatherable.gather_once(25.0)
-			var amount: int = int(result.get("amount", 0))
-			var resource_type: StringName = result.get("resource_type", &"")
-			if amount > 0 and resource_type != &"":
-				resource_harvested.emit(resource_type, amount, global_position)
-			if gatherable.has_method("set_job_queued"):
-				gatherable.set_job_queued(false)
+		var result: Dictionary = GATHER_TRANSITION.complete(gatherable, global_position)
+		var amount: int = int(result.get("amount", 0))
+		var resource_type: StringName = StringName(result.get("resource_type", &""))
+		if amount > 0 and resource_type != &"":
+			resource_harvested.emit(resource_type, amount, global_position)
 	_finish_current_job()
 
 func _complete_build_job() -> void:
 	var site_id: int = int(current_job.get("site_id", 0))
 	if site_id != 0:
 		var site: Object = instance_from_id(site_id)
-		if site != null and is_instance_valid(site):
-			var target_work: float = float(site.get("required_work"))
-			var progressed: float = float(site.get("work_progress"))
-			site.apply_work(maxf(0.0, target_work - progressed))
-			if not bool(site.get("complete")) and site.has_method("set_job_queued"):
-				site.set_job_queued(false)
+		BUILD_TRANSITION.complete(site)
 	_finish_current_job()
 
 func _complete_repair_job() -> void:

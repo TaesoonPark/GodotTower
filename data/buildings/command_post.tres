@@ -7,7 +7,7 @@ script = ExtResource("1_building_def")
 id = &"CommandPost"
 display_name = "Command Post"
 category = "Defense"
-required_work = 75.0
+required_work = 1.0
 footprint_size = Vector2(80, 40)
 build_cost = {
 &"Wood": 2,

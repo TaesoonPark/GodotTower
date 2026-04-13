@@ -7,7 +7,7 @@ script = ExtResource("1_building_def")
 id = &"TrapController"
 display_name = "Trap Controller"
 category = "Defense"
-required_work = 70.0
+required_work = 1.0
 footprint_size = Vector2(40, 40)
 build_cost = {
 &"Steel": 2,
