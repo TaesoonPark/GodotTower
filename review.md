@@ -1,136 +1,84 @@
-# GodotTower 프로젝트 코드 리뷰 (2026-04-13 업데이트)
+﻿# GodotTower 구현 리뷰 업데이트 (2026-04-14)
 
-## 1. 검토 기준
+## 1. 기준
+- 작업 브랜치 기준 최신 로컬 구현 상태 반영
+- 실행 바이너리 경로: `D:\GodotTower\engine\Godot_v4.6.1-stable_win64_console.exe`
+- 본 문서는 최근 전투/소집/UI 리뉴얼 및 핫픽스 반영 내용을 중심으로 정리
 
-- 기준 브랜치: `main`
-- 기준 커밋: `aae8d5d` (`origin/main`과 동기화 상태)
-- 목적: 현재 코드 구조, 테스트 체계, 운영 리스크를 최신 상태로 정리
+## 2. 이번 사이클 핵심 변경
 
-## 2. 한줄 결론
+### 2.1 전투/AI 동작 보정
+- 장거리 무기 보유 유닛이 불필요하게 적에게 접근하던 동작을 수정.
+- 사거리 안에서는 후퇴 없이 즉시 사격하도록 정리.
+- 사거리 밖일 때는 전투를 위해 자동 접근하지 않도록 제한.
+- 습격 적(약탈자)도 정착민과 동일한 장비 시스템을 사용하도록 통합.
+- 습격 적 사망 시 장착 장비를 드랍하도록 변경하고, 기존 고정 자원 보상 경로는 제거.
 
-기존 런타임 중심 구조는 유지되지만, 이번 상태에서 가장 큰 변화는 `scripts/sim` 기반의 시뮬레이션 코어와 `parity smoke test` 체계가 도입되어 "재현 가능한 디버깅/검증" 역량이 크게 강화됐다는 점이다.
+### 2.2 소집장소(Rally) 기본 비활성화
+- 게임 시작 시 자동 소집장소 생성 로직 제거.
+- 전투 모드에서도 `RallyFlag`가 실제로 생성된 이후에만 rally 좌표를 전달하도록 변경.
+- 최초 `SetRallyFlag` 클릭 시 기존 로직대로 깃발 생성/위치 지정/집결 로직 활성화.
 
-## 3. 현재 규모 (실측)
+### 2.3 연구 요구량 조정
+- 연구 요구 진행도를 기존 대비 1/10 수준으로 축소(연구 진행 속도 체감 개선 목적).
 
-### 3.1 파일/라인 통계
+### 2.4 HUD/UI 리뉴얼 반영
+- 상단: 자원 바 유지.
+- 좌측: 주민 초상화 세로 스크롤 패널 추가(클릭 시 월드 유닛 클릭과 동일 선택 처리).
+- 우측: 선택 대상 정보 통합 패널(유닛/건물/자원/농경/재고/장비/상태).
+- 하단: 컨텍스트 카탈로그 창(건축/연구/농경/제작), 가로 스크롤 아이템 구조.
+- 우하단: 2x3 기능 버튼 구역으로 액션 통합.
+  - `StockpileZone`, `DragGather`, `FarmZone`, `Build`, `Work/Combat`, `SetRallyFlag`
+- 카탈로그 정책: 기본 닫힘 + 컨텍스트 선택 시 자동 열림/해제 시 자동 닫힘.
 
-| 항목 | 수치 |
-|---|---:|
-| `scripts/**/*.gd` 파일 수 | 63 |
-| `scripts/**/*.gd` 총 라인 수 | 14,232 |
-| `scenes/**/*.tscn` 파일 수 | 36 |
-| `data/**/*.tres` 파일 수 | 70 |
-| 테스트 스크립트 (`scripts/tests/*.gd`) | 24 |
-| 테스트 씬 (`scenes/tests/*.tscn`) | 24 |
+## 3. UI 핫픽스(최근)
 
-### 3.2 핵심 파일 크기
+### 3.1 주민 초상화 클릭 미동작
+원인:
+- HUD 주기 갱신 시 초상화 버튼이 계속 재생성되어 클릭 타이밍이 씹힘.
 
-| 파일 | 라인 수 | 함수 수 |
-|---|---:|---:|
-| `scripts/core/MainController.gd` | 3,995 | 228 |
-| `scripts/systems/JobSystem.gd` | 1,205 | 71 |
-| `scripts/core/Colonist.gd` | 1,369 | 82 |
-| `scripts/core/HUDController.gd` | 1,219 | 72 |
-| `scripts/core/EnemyUnitBase.gd` | 477 | 38 |
-| `scripts/systems/BuildSystem.gd` | 286 | 23 |
-| `scripts/core/FarmZone.gd` | 447 | 30 |
+조치:
+- `scripts/ui/HUDRosterPanel.gd`
+  - `set_entries()`에서 기존 데이터와 동일하면 `_rebuild_buttons()`를 건너뛰도록 수정.
 
-## 4. 아키텍처 현황
+### 3.2 농경지 작물 클릭 미동작
+원인:
+- 카탈로그 아이템이 주기적으로 재생성되어 클릭 일관성이 깨짐.
 
-### 4.1 런타임 계층 (Godot 노드 기반)
+조치:
+- `scripts/ui/HUDCatalogPanel.gd`
+  - `set_items()`에서 동일 목록/동일 선택값이면 재빌드 생략.
+- `scripts/core/HUDController.gd`
+  - `set_farm_catalog()`에서 설명 텍스트 갱신과 아이템 재구성을 분리.
 
-- 메인 진입: `scenes/main/Main.tscn`
-- 핵심 오케스트레이터: `MainController`
-- 시스템 노드: `InputController`, `NeedSystem`, `JobSystem`, `BuildSystem`
-- 월드/유닛/HUD는 기존 구조 유지
+### 3.3 하단 창 겹침 조정
+- `scenes/ui/HUD.tscn`의 `BottomCatalogPanel` 앵커를 좌측으로 이동해 우하단 버튼 구역과 겹침 완화.
 
-핵심 루프는 여전히 `MainController._process()` + `dirty dispatch` 구조로 돌아가며, `JobSystem.process_dirty()`를 통해 작업 생성/정리/할당을 단계적으로 처리한다.
+### 3.4 시작 직후 Cook(제작) 하단 창 자동 오픈 문제
+원인:
+- 워크스테이션 목록 초기화 시 기본 선택에서 `workstation_changed`가 즉시 emit되어 Craft 카탈로그가 열림.
 
-### 4.2 적 유닛 구조 리팩터링
+조치:
+- `scripts/core/HUDController.gd`
+  - `set_workstation_catalog()`의 초기 emit 제거.
+  - `set_craft_panel_visible(false)` 시 Craft 카탈로그가 열려 있으면 함께 닫도록 보강.
 
-- `Raider.gd`, `Zombie.gd`는 경량화됨
-- 공통 AI/이동/전투 로직은 `EnemyUnitBase.gd`로 승격
+검증:
+- 스타트업 프로브 결과: `STARTUP_CATALOG_VISIBLE:false`
 
-결과적으로 적 타입별 차이는 프로파일(스탯/무기 성향) 중심으로 축소되어 유지보수성이 개선됐다.
+## 4. 테스트/검증 결과
+- Headless 실행(프로젝트 로드) 정상.
+- `CombatParitySmokeTest` PASS
+- `RtsControlSmokeTest` (`PLAYTEST_INCLUDE_RAID=1`) PASS
+- `ResearchParitySmokeTest` PASS
 
-### 4.3 시뮬레이션 코어 계층 신설
+## 5. 주요 변경 파일
+- `scenes/ui/HUD.tscn`
+- `scripts/core/HUDController.gd`
+- `scripts/core/MainController.gd`
+- `scripts/ui/HUDRosterPanel.gd`
+- `scripts/ui/HUDCatalogPanel.gd`
 
-신규 디렉토리:
-- `scripts/sim/` (`StateRunner`, `JobScoring`, `*Transition`, `HaulReservationLogic`)
-- `scripts/debug/` (`CommandSequenceRunner`, `ScenarioTraceRunner`, `SimulationSnapshot`)
-
-의의:
-- 런타임 노드 로직과 별개로, 딕셔너리 기반 상태 머신을 헤드리스로 재생 가능
-- 런타임 결과와 pure simulation 결과를 비교하는 parity 테스트 기반이 마련됨
-
-## 5. 테스트/검증 체계
-
-### 5.1 테스트 씬 기반 스모크
-
-`scenes/tests/*.tscn` + `scripts/tests/*.gd` 조합으로 다음 축을 검증:
-- RTS 제어
-- Gather/Haul 루프
-- Build/Craft/Research/Repair/Trap 유지보수
-- Combat/Parity/Command sequence
-
-### 5.2 자동 실행 스크립트
-
-- `scripts/run-playtest.sh`: 기본 headless 스모크
-- `scripts/run-parity-suite.sh`: parity 씬 일괄 실행
-- `scripts/run-gui-playtest.sh`: GUI 입력 기반 시나리오
-- `scripts/self-check.sh`: 변경 파일 기반 자동 검사 루프
-
-이전 리뷰와 달리, 현재는 테스트 부재가 아니라 "스모크 중심 테스트 인프라가 충분히 구축된 상태"로 보는 게 맞다.
-
-## 6. 데이터/콘텐츠 상태
-
-### 6.1 Resource 기반 데이터 정의
-
-정의 스크립트(`scripts/data`)는 유지:
-- `BuildingDef`, `RecipeDef`, `WorkstationDef`, `ResearchDef`, `CropDef`, `ResourceDef`, `ColonistStatsData`, `ColonistLoadoutData`, `JobPriorityData`
-
-### 6.2 데이터 인스턴스 수
-
-| 디렉토리 | 개수 |
-|---|---:|
-| `data/buildings` | 19 |
-| `data/resources` | 12 |
-| `data/recipes` | 11 |
-| `data/research` | 22 |
-| `data/workstations` | 2 |
-| `data/crops` | 1 |
-| `data/colonists` | 2 |
-| `data/priorities` | 1 |
-
-## 7. 운영/도구 체계 변화
-
-- 프로젝트 내부 MCP 플러그인 의존이 제거됨 (`addons/` 없음)
-- `project.godot`에도 MCP autoload/editor plugin 설정이 없음
-- MCP는 외부 서버 방식 문서(`docs/GODOT_MCP_PLAYTEST.md`)로 운영
-
-즉, 런타임 프로젝트는 순수 게임 로직에 집중하고, 도구 체인은 외부로 분리하는 방향으로 전환됐다.
-
-## 8. 강점
-
-1. 런타임 + 시뮬레이션 이중 검증 루트 확보
-2. 적 유닛 공통 로직 추출로 중복 제거
-3. 데이터 드리븐 구조 지속 유지 (콘텐츠 확장 용이)
-4. 헤드리스/GUI/self-check 스크립트가 분리되어 운영 선택지가 명확
-
-## 9. 리스크와 개선 우선순위
-
-1. `MainController` 비대화는 여전히 가장 큰 구조적 리스크
-2. 런타임 로직과 `scripts/sim` 로직의 장기 드리프트 위험
-3. 일부 문자열/주석의 인코딩 깨짐(표시 품질 저하, 가독성 문제)
-4. 테스트는 스모크 중심이라, 정밀 회귀(경계값/랜덤성 제어) 보강 여지 존재
-
-## 10. 권장 다음 단계
-
-1. `MainController`를 도메인 단위(raid/economy/research/ui sync)로 분리
-2. `JobSystem` 핵심 스코어링/예약 정리 함수를 sim-core와 공유 가능한 형태로 통합
-3. parity 실패 시 diff 출력을 더 구조화(JSON artifact 고정 경로)
-4. 인코딩 깨짐 문자열 정리(특히 HUD/라벨/테스트 로그 메시지)
-
----
-
-이 문서는 현재 `main`의 실측 수치와 실제 파일 구조를 기준으로 갱신되었다.
+## 6. 남은 점검 포인트
+- UI 텍스트 인코딩(깨진 문자열) 잔여 구간 추가 스캔 및 정리.
+- 대형 파일 분리 작업(`MainController.gd`, `HUDController.gd`)은 후속 리팩터링 범위로 진행 필요.

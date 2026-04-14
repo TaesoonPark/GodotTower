@@ -1,4 +1,4 @@
-﻿extends Node2D
+extends Node2D
 
 const COLONIST_SCENE: PackedScene = preload("res://scenes/units/Colonist.tscn")
 const RAIDER_SCENE: PackedScene = preload("res://scenes/units/Raider.tscn")
@@ -241,6 +241,10 @@ func _ready() -> void:
 	hud.bed_auto_assign_requested.connect(_on_bed_auto_assign_requested)
 	hud.research_project_changed.connect(_on_research_project_changed)
 	hud.research_start_requested.connect(_on_research_start_requested)
+	if hud.has_signal("portrait_selected"):
+		hud.connect("portrait_selected", Callable(self, "_on_hud_portrait_selected"))
+	if hud.has_signal("catalog_item_activated"):
+		hud.connect("catalog_item_activated", Callable(self, "_on_hud_catalog_item_activated"))
 	if build_system != null and is_instance_valid(build_system):
 		if build_system.has_signal("build_site_added"):
 			build_system.connect("build_site_added", Callable(self, "_on_build_site_added"))
@@ -308,6 +312,9 @@ func _emit_gui_playtest_hints() -> void:
 	var building_id: StringName = _get_gui_playtest_building_id()
 	if hud.has_method("get_building_button_rect"):
 		var rect: Rect2 = hud.get_building_button_rect(building_id)
+		if rect.size == Vector2.ZERO:
+			await get_tree().process_frame
+			rect = hud.get_building_button_rect(building_id)
 		if rect.size != Vector2.ZERO:
 			print("GUI_HINT_BUILD_BUTTON %s %d %d %d %d" % [
 				String(building_id),
@@ -801,6 +808,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_selected_object_resource = StringName(stockpile_item.get("resource_type", &""))
 		_refresh_hud()
 		hud.set_active_action(&"StockpileItem")
+		_close_bottom_catalog_if_supported()
 		return
 	var bed_node: Node = _find_installed_bed_near(world_pos, 42.0)
 	if bed_node != null:
@@ -808,11 +816,13 @@ func _on_left_click(world_pos: Vector2) -> void:
 		selected_bed_node = bed_node
 		_refresh_bed_assign_ui()
 		hud.set_active_action(&"BedSelected")
+		_close_bottom_catalog_if_supported()
 		return
 	if current_action == &"StockpileZone":
 		_clear_selected_object()
 		_select_stockpile_zone_near(world_pos)
 		hud.set_active_action(&"StockpileDesignate")
+		_close_bottom_catalog_if_supported()
 		return
 	if current_action == &"FarmZone":
 		_clear_selected_object()
@@ -828,8 +838,10 @@ func _on_left_click(world_pos: Vector2) -> void:
 			_selected_object_zone = selected_farm_zone
 			_selected_object_resource = &""
 			hud.set_active_action(&"FarmZoneSelected")
+			_open_farm_catalog_if_supported(selected_farm_zone)
 		else:
 			hud.set_active_action(&"FarmZone")
+			_close_bottom_catalog_if_supported()
 		_refresh_hud()
 		return
 	selected_bed_node = null
@@ -841,6 +853,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		hud.set_designation_panel_visible(false)
 		_set_selected([clicked])
 		hud.set_active_action(&"UnitSelected")
+		_close_bottom_catalog_if_supported()
 		return
 
 	var drop: Node = _find_resource_drop_near(world_pos, 40.0)
@@ -849,6 +862,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		pending_install_item = &"Bed"
 		pending_install_drop_id = drop.get_instance_id()
 		hud.set_active_action(&"InstallBed")
+		_close_bottom_catalog_if_supported()
 		return
 
 	var gatherable: Node = _find_gatherable_near(world_pos, 48.0)
@@ -857,6 +871,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		selected_designation_target = gatherable
 		_refresh_designation_ui()
 		hud.set_active_action(&"GatherTarget")
+		_close_bottom_catalog_if_supported()
 		return
 
 	var huntable: Node = _find_huntable_near(world_pos, 52.0)
@@ -865,6 +880,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		selected_designation_target = huntable
 		_refresh_designation_ui()
 		hud.set_active_action(&"HuntTarget")
+		_close_bottom_catalog_if_supported()
 		return
 
 	var research_bench: Node = _find_structure_by_building_near(world_pos, &"ResearchBench", 56.0)
@@ -877,6 +893,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_selected_object_resource = &"ResearchBench"
 		_refresh_hud()
 		hud.set_active_action(&"ResearchBenchSelected")
+		_open_research_catalog_if_supported()
 		return
 
 	var ws_id: StringName = _find_workstation_id_near(world_pos, 56.0)
@@ -896,11 +913,13 @@ func _on_left_click(world_pos: Vector2) -> void:
 		hud.set_active_action(&"Workstation")
 		return
 	hud.set_craft_panel_visible(false)
+	_close_bottom_catalog_if_supported()
 
 	if pending_install_item != &"":
 		if _try_install_pending_item(world_pos):
 			_clear_pending_placement()
 		_refresh_hud()
+		_close_bottom_catalog_if_supported()
 		return
 
 	if pending_building_id == &"Gate":
@@ -909,16 +928,19 @@ func _on_left_click(world_pos: Vector2) -> void:
 			_cancel_build_site(wall_site_target)
 			_try_place_building_by_id(wall_site_target.global_position, &"Gate")
 			_refresh_hud()
+			_close_bottom_catalog_if_supported()
 			return
 		var wall_target: Node = _find_structure_by_building_near(world_pos, &"Wall", 32.0)
 		if wall_target != null:
 			_queue_demolish_structure(wall_target, &"Gate")
 			_refresh_hud()
+			_close_bottom_catalog_if_supported()
 			return
 
 	if pending_building_id != &"":
 		_try_place_building_by_id(world_pos, pending_building_id)
 		_refresh_hud()
+		_close_bottom_catalog_if_supported()
 		return
 
 	var build_site_target: Node = _find_build_site_near(world_pos, 30.0)
@@ -930,6 +952,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_selected_object_resource = StringName(build_site_target.get("building_id"))
 		_refresh_hud()
 		hud.set_active_action(&"BuildSiteSelected")
+		_close_bottom_catalog_if_supported()
 		return
 
 	var structure_target: Node = _find_demolishable_structure_near(world_pos, 32.0)
@@ -941,6 +964,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_selected_object_resource = StringName(structure_target.get_meta("building_id")) if structure_target.has_meta("building_id") else &"Structure"
 		_refresh_hud()
 		hud.set_active_action(&"StructureSelected")
+		_close_bottom_catalog_if_supported()
 		return
 
 	var clicked_zone: Node = _find_stockpile_zone_near(world_pos, 40.0)
@@ -952,6 +976,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_clear_selected_object()
 		_refresh_stockpile_filter_ui()
 		hud.set_active_action(&"Stockpile")
+		_close_bottom_catalog_if_supported()
 		return
 	else:
 		selected_stockpile_zone = null
@@ -968,6 +993,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_selected_object_resource = &""
 		_refresh_hud()
 		hud.set_active_action(&"FarmZoneSelected")
+		_open_farm_catalog_if_supported(clicked_farm)
 		return
 	else:
 		selected_farm_zone = null
@@ -978,6 +1004,7 @@ func _on_left_click(world_pos: Vector2) -> void:
 	hud.set_designation_panel_visible(false)
 	hud.set_active_action(&"Interact")
 	_refresh_stockpile_filter_ui()
+	_close_bottom_catalog_if_supported()
 
 func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 	hud.hide_context_action_button()
@@ -1010,17 +1037,22 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 		if changed:
 			job_system.mark_designation_dirty()
 			_mark_jobs_dirty()
+		_close_bottom_catalog_if_supported()
 		queue_redraw()
 		return
 	if current_action == &"StockpileZone":
 		if build_system.place_stockpile_zone(rect):
 			_select_stockpile_zone_near(rect.get_center())
+		_close_bottom_catalog_if_supported()
 		queue_redraw()
 		return
 	if current_action == &"FarmZone":
 		if build_system.place_farm_zone(rect):
 			selected_farm_zone = _find_farm_zone_near(rect.get_center(), 96.0)
 			_configure_farm_zone_catalog(selected_farm_zone)
+			_open_farm_catalog_if_supported(selected_farm_zone)
+		else:
+			_close_bottom_catalog_if_supported()
 		queue_redraw()
 		return
 	selected_stockpile_zone = null
@@ -1031,6 +1063,7 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 		if rect.has_point(colonist.global_position):
 			picked.append(colonist)
 	_set_selected(picked)
+	_close_bottom_catalog_if_supported()
 	queue_redraw()
 
 func _set_selected(new_selection: Array) -> void:
@@ -1072,9 +1105,99 @@ func _find_colonist_near(world_pos: Vector2, radius: float) -> Node:
 			return colonist
 	return null
 
+func _find_colonist_by_id(colonist_id: int) -> Node:
+	if colonist_id == 0:
+		return null
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if colonist.get_instance_id() == colonist_id:
+			return colonist
+	return null
+
+func _build_colonist_roster_entries() -> Array:
+	var selected_ids: Dictionary = {}
+	for c in selected_colonists:
+		if c == null or not is_instance_valid(c):
+			continue
+		selected_ids[c.get_instance_id()] = true
+	var out: Array = []
+	for c in colonists:
+		if c == null or not is_instance_valid(c):
+			continue
+		var alive: bool = true
+		if c.has_method("is_dead"):
+			alive = not bool(c.is_dead())
+		out.append({
+			"id": c.get_instance_id(),
+			"name": c.name,
+			"selected": bool(selected_ids.get(c.get_instance_id(), false)),
+			"alive": alive
+		})
+	return out
+
+func _close_bottom_catalog_if_supported() -> void:
+	if hud == null or not is_instance_valid(hud):
+		return
+	if hud.has_method("close_bottom_catalog"):
+		hud.close_bottom_catalog()
+
+func _open_research_catalog_if_supported() -> void:
+	if hud == null or not is_instance_valid(hud):
+		return
+	if not hud.has_method("open_bottom_catalog"):
+		return
+	hud.open_bottom_catalog(&"Research")
+
+func _open_farm_catalog_if_supported(zone: Node) -> void:
+	if hud == null or not is_instance_valid(hud):
+		return
+	if not hud.has_method("open_bottom_catalog"):
+		return
+	var crop_options: Array = []
+	var selected_crop: StringName = &""
+	var crop_name: String = "미선택"
+	if zone != null and is_instance_valid(zone):
+		if zone.has_method("get_crop_options"):
+			crop_options = zone.get_crop_options()
+		if zone.has_method("get_crop_type"):
+			selected_crop = StringName(zone.get_crop_type())
+		if zone.has_method("get_crop_display_name"):
+			crop_name = String(zone.get_crop_display_name())
+	if hud.has_method("set_farm_catalog"):
+		hud.set_farm_catalog(crop_options, selected_crop, "농경지 작물을 클릭하면 즉시 적용됩니다.")
+	hud.open_bottom_catalog(&"Farm", "현재 작물: %s" % crop_name)
+
+func _open_craft_catalog_if_supported() -> void:
+	if hud == null or not is_instance_valid(hud):
+		return
+	if hud.has_method("open_bottom_catalog"):
+		hud.open_bottom_catalog(&"Craft", "레시피 클릭 시 제작 대기열에 추가됩니다.")
+
+func _on_hud_portrait_selected(colonist_id: int) -> void:
+	var colonist: Node = _find_colonist_by_id(colonist_id)
+	if colonist == null:
+		return
+	_clear_selected_object()
+	selected_designation_target = null
+	selected_stockpile_zone = null
+	selected_farm_zone = null
+	selected_bed_node = null
+	hud.set_designation_panel_visible(false)
+	hud.set_bed_assignment_visible(false)
+	_on_action_changed(&"Interact")
+	_set_selected([colonist])
+	hud.set_active_action(&"UnitSelected")
+	_close_bottom_catalog_if_supported()
+
+func _on_hud_catalog_item_activated(_mode: StringName, _item_id: StringName) -> void:
+	_hud_dirty = true
+
 func _refresh_hud() -> void:
 	hud.set_selected_count(selected_colonists.size())
 	hud.set_resource_stock(resource_stock)
+	if hud.has_method("set_colonist_roster"):
+		hud.set_colonist_roster(_build_colonist_roster_entries())
 	var focus: Node = selected_colonists[0] if not selected_colonists.is_empty() else null
 	var stockpile_focus: Node = selected_stockpile_zone if selected_stockpile_zone != null and is_instance_valid(selected_stockpile_zone) else null
 	var farm_focus: Node = selected_farm_zone if selected_farm_zone != null and is_instance_valid(selected_farm_zone) else null
@@ -1098,20 +1221,15 @@ func _refresh_hud() -> void:
 			crop_options = farm_focus.get_crop_options()
 		if farm_focus.has_method("get_crop_type"):
 			selected_crop = StringName(farm_focus.get_crop_type())
+		if hud.has_method("set_farm_catalog"):
+			hud.set_farm_catalog(crop_options, selected_crop, "농경지 작물을 클릭하면 즉시 적용됩니다.")
 		hud.set_selected_object_preview(
 			"Selected: Farm Zone",
 			"Type: Farm Zone\nCrop: %s\nAction: 성숙 시 자동 수확" % crop_name,
-			[{
-				"type": &"crop_selector",
-				"options": crop_options,
-				"selected_id": selected_crop,
-				"apply_action": &"SetFarmCrop",
-				"apply_label": "작물 적용"
-			}]
+			[]
 		)
 	elif object_focus:
 		if _selected_object_kind == &"ResearchBench":
-			var options: Array = _get_cached_research_options()
 			var progress_text: String = "없음"
 			if _active_research_id != &"":
 				progress_text = "%s %.0f / %.0f" % [
@@ -1122,16 +1240,7 @@ func _refresh_hud() -> void:
 			hud.set_selected_object_preview(
 				"Selected: Research Bench",
 				"Type: Research Bench\n현재 연구: %s" % progress_text,
-				[
-					{
-						"type": &"crop_selector",
-						"options": options,
-						"selected_id": _active_research_id,
-						"apply_action": &"SetResearchProject",
-						"apply_label": "연구 선택"
-					},
-					{"id": &"StartResearch", "label": "연구 시작"}
-				]
+				[]
 			)
 		elif _selected_object_kind == &"BuildSite":
 			var bid_site: StringName = StringName(_selected_object_zone.get("building_id"))
@@ -1268,11 +1377,16 @@ func _on_building_selected(building_id: StringName) -> void:
 
 func _on_workstation_changed(workstation_id: StringName) -> void:
 	selected_workstation_id = workstation_id
+	if _is_research_workstation(workstation_id):
+		hud.set_craft_panel_visible(false)
+		_open_research_catalog_if_supported()
+		return
 	hud.set_recipe_catalog(_filter_recipes_for_workstation(workstation_id))
 	hud.set_craft_queue_preview(job_system.get_craft_queue(workstation_id))
 	hud.set_craft_queue_paused_state(job_system.is_craft_queue_paused(workstation_id))
 	var ws_name: String = _get_workstation_display_name(workstation_id)
 	hud.set_craft_panel_visible(true, ws_name)
+	_open_craft_catalog_if_supported()
 
 func _on_stockpile_filter_mode_changed(mode: int) -> void:
 	if selected_stockpile_zone == null or not is_instance_valid(selected_stockpile_zone):
@@ -2116,6 +2230,7 @@ func _on_clear_state_requested() -> void:
 	_clear_pending_placement()
 	_on_action_changed(&"Interact")
 	_clear_selected_object()
+	_close_bottom_catalog_if_supported()
 
 func _on_context_action_requested(action_id: StringName) -> void:
 	match action_id:
@@ -2752,6 +2867,7 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	if pending_building_id != &"" or pending_install_item != &"" or current_action == &"StockpileZone" or current_action == &"FarmZone" or current_action == &"SetRallyFlag" or current_action == &"DragGather":
 		_clear_pending_placement()
 		_on_action_changed(&"Interact")
+		_close_bottom_catalog_if_supported()
 		return
 	if not selected_colonists.is_empty():
 		var gatherable: Node = _find_gatherable_near(world_pos, 48.0)
@@ -2770,6 +2886,7 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 		return
 	_clear_pending_placement()
 	_on_action_changed(&"Interact")
+	_close_bottom_catalog_if_supported()
 
 func _issue_selected_move_command(target_pos: Vector2) -> void:
 	var snapped_target: Vector2 = _snap_to_tile(target_pos)
@@ -3946,18 +4063,30 @@ func _find_workstation_node_near(world_pos: Vector2, radius: float, workstation_
 func _activate_workstation(workstation_id: StringName) -> void:
 	if workstation_id == &"":
 		hud.set_craft_panel_visible(false)
+		_close_bottom_catalog_if_supported()
 		return
 	selected_workstation_id = workstation_id
 	hud.set_selected_workstation(workstation_id)
+	if _is_research_workstation(workstation_id):
+		hud.set_craft_panel_visible(false)
+		_open_research_catalog_if_supported()
+		return
 	hud.set_recipe_catalog(_filter_recipes_for_workstation(workstation_id))
 	hud.set_craft_queue_paused_state(job_system.is_craft_queue_paused(workstation_id))
 	hud.set_craft_panel_visible(true, _get_workstation_display_name(workstation_id))
+	_open_craft_catalog_if_supported()
 
 func _get_workstation_display_name(workstation_id: StringName) -> String:
 	if workstation_lookup.has(workstation_id):
 		var ws: Resource = workstation_lookup[workstation_id]
 		return ws.display_name
 	return String(workstation_id)
+
+func _is_research_workstation(workstation_id: StringName) -> bool:
+	if workstation_id == &"" or not workstation_lookup.has(workstation_id):
+		return false
+	var ws: Resource = workstation_lookup[workstation_id]
+	return StringName(ws.linked_building_id) == &"ResearchBench"
 
 func _world_to_tile(world_pos: Vector2) -> Vector2i:
 	return Vector2i(

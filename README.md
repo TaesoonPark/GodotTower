@@ -1,82 +1,95 @@
-# ColonySimPrototype
+﻿# ColonySimPrototype
 
-Godot 4.6 기반 림월드 라이크 콜로니 시뮬레이터 프로토타입입니다.
+Godot 4.6 기반 식민지 생존/자동화 시뮬레이션 프로토타입입니다.
 
-## 현재 상태
+## 현재 구현 상태
 
-- RTS 입력: 단일 선택/드래그 다중 선택/우클릭 즉시 이동 명령
-- 액션 패널: `Move`, `Build`, `Gather`, `Blueprint`, `StockpileZone` 전환
-- 주민 상태: `Health`, `Hunger`, `Rest`, `Mood`
-- 작업 시스템: 우선순위 + 주민별 작업 On/Off 기반 자동 할당(`BuildSite`, `Gather`, `HaulResource`, `CraftRecipe` 포함)
-- 건축 시스템: 하단 카탈로그 기반 건물 선택 + 즉시 건축/청사진 배치
-- 채집/운반 시스템: 채집물 드랍 생성 -> 저장구역으로 자동 운반 후 재고 반영
-- 제작 시스템: 작업대 + 레시피 큐(좌측 패널에서 큐 등록)
-- UI: 좌측 액션/상태/작업토글/제작큐 패널 + 하단 건축 목록 + 자원 스톡 표시
+### 핵심 게임플레이
+- RTS 입력: 단일 선택, 드래그 다중 선택, 우클릭 이동 명령
+- 정착민 상태: Health / Hunger / Rest / Mood
+- 작업 시스템: Build / Gather / Haul / Craft / Research / Combat / Hunt 자동 할당
+- 건설 시스템: 하단 카탈로그 기반 건물 선택 + 즉시 배치
+- 농경 시스템: 농경지 지정, 작물 선택, 성장/수확 루프
+- 연구 시스템: 연구 벤치 기반 프로젝트 진행 (요구 진행도 1/10 반영)
 
-상세 정리와 TODO는 `docs/STATUS_AND_TODO.md`를 참고하세요.
+### 전투/습격
+- 장거리 무기 보유 유닛은 사거리 내 즉시 사격
+- 사거리 밖에서 전투를 위해 자동 돌진하지 않도록 조정
+- 습격 적(약탈자)도 장비 시스템 사용
+- 습격 적 사망 시 착용 장비 드랍
 
-## 실행
+### 소집장소(Rally)
+- 게임 시작 시 기본 소집장소는 생성되지 않음
+- `집합 깃발`을 최초 지정한 이후에만 rally 로직 활성화
 
-```bash
-godot --path .
+### UI 리뉴얼
+- 상단: 정착지 자원 바
+- 좌측: 주민 초상화 세로 스크롤 목록 (클릭 시 유닛 선택)
+- 우측: 선택 대상 통합 정보창 (유닛/건물/자원/농경/장비/재고)
+- 하단: 컨텍스트 카탈로그 창 (건축/연구/농경/제작), 가로 스크롤
+- 우하단: 2x3 기능 버튼
+  - 저장구역 / 사냥채집 / 농경지 / 건축 / 복장규정 / 집합깃발
+- 하단 카탈로그는 기본 닫힘, 컨텍스트 선택 시 자동 열림
+
+## 실행 방법
+
+### Windows (현재 레포 기준)
+```powershell
+.\engine\Godot_v4.6.1-stable_win64_console.exe --path .
 ```
 
-또는 Godot 에디터에서 프로젝트를 열어 실행하세요.
+### Godot 에디터
+- Godot 에디터에서 프로젝트를 열고 `scenes/main/Main.tscn` 실행
 
-자동 플레이테스트:
-
+### WSL/Linux
+- 환경에 Godot가 설치되어 있거나 `GODOT_PATH`가 설정되어 있으면:
 ```bash
 bash scripts/run-playtest.sh
 ```
 
-실제 GUI 클릭/드래그 플레이테스트:
+## 테스트
 
-```bash
-bash scripts/run-gui-playtest.sh
+### 빠른 스모크 테스트 (Windows)
+```powershell
+.\engine\Godot_v4.6.1-stable_win64_console.exe --path . --headless res://scenes/tests/CombatParitySmokeTest.tscn
+$env:PLAYTEST_INCLUDE_RAID='1'; .\engine\Godot_v4.6.1-stable_win64_console.exe --path . --headless res://scenes/tests/RtsControlSmokeTest.tscn
+.\engine\Godot_v4.6.1-stable_win64_console.exe --path . --headless res://scenes/tests/ResearchParitySmokeTest.tscn
 ```
 
-자동 셀프체크 루프:
-
+### 스크립트 기반 실행 (WSL/Linux)
 ```bash
+bash scripts/run-playtest.sh
+bash scripts/run-parity-suite.sh
+bash scripts/run-gui-playtest.sh
 bash scripts/self-check.sh
 ```
 
-## 기본 해상도
-
-- `1920 x 1080 (FHD)`
-
 ## 조작
+- 좌클릭: 선택/액션 수행
+- 좌클릭 드래그: 다중 선택 또는 영역 지정(현재 액션 기준)
+- 우클릭: 선택 유닛 이동 명령
+- 휠: 줌 인/아웃
+- 가운데 버튼 드래그: 카메라 이동
+- `Space`: 일시정지 토글
+- `1/2/3`: 게임 속도 조절
+- `Esc`: 배치/액션 취소 후 기본 상호작용 모드 복귀
 
-- `M`: 이동/선택 액션
-- `B`: 즉시 건축 액션
-- `G`: 채집 지시 액션
-- `P`: 청사진 배치 액션
-- `Z`: 저장구역 지정 액션(드래그)
-- 좌클릭: 현재 액션 실행
-- 우클릭: 선택 주민 즉시 이동
-
-## 림월드라이크 확장용 데이터 시드
-
-- 건물 정의: `data/buildings` (`Wall`, `Floor`, `Stockpile`, `SimpleBench`)
-- 자원 정의: `data/resources` (`Wood`, `Stone`, `Steel`, `FoodRaw`, `Meal`)
-- 작업대 정의: `data/workstations/simple_bench_station.tres`
-- 레시피 정의: `data/recipes` (`CutStone`, `CookMeal`, `MakeBed`)
+## 기본 해상도
+- 1920 x 1080 (FHD)
 
 ## 프로젝트 구조
+- `scenes/main`: 메인 진입
+- `scenes/world`: 월드/구조물/존 관련 씬
+- `scenes/units`: 정착민/적 유닛 씬
+- `scenes/ui`: HUD/UI 씬
+- `scripts/core`: 메인 루프 및 핵심 게임 로직
+- `scripts/systems`: 입력/욕구/작업/건설 시스템
+- `scripts/ui`: HUD 하위 UI 컴포넌트
+- `scripts/tests`, `scenes/tests`: 스모크/패리티 테스트
+- `data`, `scripts/data`: Resource 정의 및 게임 데이터
 
-- `scenes/main` : 메인 진입 씬
-- `scenes/world` : 월드/내비게이션/건설 사이트
-- `scenes/units` : 주민 유닛
-- `scenes/ui` : HUD
-- `scripts/core` : 메인/주민/HUD 핵심 로직
-- `scripts/systems` : 입력/욕구/작업/건축 시스템
-- `scripts/data` + `data` : 커스텀 Resource 스키마와 인스턴스
-
-## MCP / 플레이테스트
-
-기존 프로젝트 내부 MCP 플러그인 의존성은 제거했습니다.
-이제 MCP는 외부 서버 방식으로 연결합니다.
-
-설정 및 플레이테스트 절차:
-
-- `docs/GODOT_MCP_PLAYTEST.md`
+## 참고 문서
+- `review.md`: 최근 구현/수정 내역 요약
+- `docs/STATUS_AND_TODO.md`: 상태 및 TODO
+- `docs/GODOT_MCP_PLAYTEST.md`: MCP/플레이테스트 안내
+- `docs/WORK_HISTORY.md`: 작업 이력

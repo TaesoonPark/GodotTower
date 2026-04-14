@@ -1,37 +1,36 @@
-[gd_scene load_steps=8 format=3]
+[gd_scene format=3 uid="uid://c1goislx7tidd"]
 
-[ext_resource type="Script" path="res://scripts/core/MainController.gd" id="1_main_script"]
+[ext_resource type="Script" uid="uid://0r08uh0r1tsw" path="res://scripts/core/MainController.gd" id="1_main_script"]
 [ext_resource type="PackedScene" path="res://scenes/world/World.tscn" id="2_world_scene"]
 [ext_resource type="PackedScene" path="res://scenes/ui/HUD.tscn" id="3_hud_scene"]
-[ext_resource type="Script" path="res://scripts/systems/InputController.gd" id="4_input_script"]
-[ext_resource type="Script" path="res://scripts/systems/NeedSystem.gd" id="5_need_script"]
-[ext_resource type="Script" path="res://scripts/systems/JobSystem.gd" id="6_job_script"]
-[ext_resource type="Script" path="res://scripts/systems/BuildSystem.gd" id="7_build_script"]
+[ext_resource type="Script" uid="uid://5qfuk5ynl7eh" path="res://scripts/systems/InputController.gd" id="4_input_script"]
+[ext_resource type="Script" uid="uid://bb87qn3k1c44h" path="res://scripts/systems/NeedSystem.gd" id="5_need_script"]
+[ext_resource type="Script" uid="uid://cfrdiw5753imp" path="res://scripts/systems/JobSystem.gd" id="6_job_script"]
+[ext_resource type="Script" uid="uid://dseo1r4yns7ty" path="res://scripts/systems/BuildSystem.gd" id="7_build_script"]
 
-[node name="Main" type="Node2D"]
+[node name="Main" type="Node2D" unique_id=997255008]
 script = ExtResource("1_main_script")
 
-[node name="WorldRoot" parent="." instance=ExtResource("2_world_scene")]
+[node name="WorldRoot" parent="." unique_id=1622891998 instance=ExtResource("2_world_scene")]
+position = Vector2(-3, 0)
 
-[node name="UnitsRoot" type="Node2D" parent="."]
+[node name="UnitsRoot" type="Node2D" parent="." unique_id=202329036]
 
-[node name="Camera2D" type="Camera2D" parent="."]
+[node name="Camera2D" type="Camera2D" parent="." unique_id=954211224]
 position = Vector2(960, 540)
-zoom = Vector2(1, 1)
-enabled = true
 
-[node name="Systems" type="Node" parent="."]
+[node name="Systems" type="Node" parent="." unique_id=1744280896]
 
-[node name="InputController" type="Node" parent="Systems"]
+[node name="InputController" type="Node" parent="Systems" unique_id=1934937659]
 script = ExtResource("4_input_script")
 
-[node name="NeedSystem" type="Node" parent="Systems"]
+[node name="NeedSystem" type="Node" parent="Systems" unique_id=704404228]
 script = ExtResource("5_need_script")
 
-[node name="JobSystem" type="Node" parent="Systems"]
+[node name="JobSystem" type="Node" parent="Systems" unique_id=1135971595]
 script = ExtResource("6_job_script")
 
-[node name="BuildSystem" type="Node" parent="Systems"]
+[node name="BuildSystem" type="Node" parent="Systems" unique_id=278477043]
 script = ExtResource("7_build_script")
 
-[node name="HUD" parent="." instance=ExtResource("3_hud_scene")]
+[node name="HUD" parent="." unique_id=1221184466 instance=ExtResource("3_hud_scene")]
