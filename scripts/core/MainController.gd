@@ -1,4 +1,4 @@
-extends Node2D
+﻿extends Node2D
 
 const COLONIST_SCENE: PackedScene = preload("res://scenes/units/Colonist.tscn")
 const RAIDER_SCENE: PackedScene = preload("res://scenes/units/Raider.tscn")
@@ -11,6 +11,7 @@ const RECIPE_DEF_DIR := "res://data/recipes"
 const WORKSTATION_DEF_DIR := "res://data/workstations"
 const CROP_DEF_DIR := "res://data/crops"
 const RESEARCH_DEF_DIR := "res://data/research"
+const RESEARCH_REQUIRED_POINTS_SCALE: float = 0.1
 const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
 const DEFAULT_LOADOUT: ColonistLoadoutData = preload("res://data/colonists/default_loadout.tres")
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
@@ -206,7 +207,6 @@ func _ready() -> void:
 			research_lookup[research_def.id] = research_def
 	_spawn_initial_colonists()
 	_apply_starting_loadout(DEFAULT_LOADOUT)
-	_set_combat_rally_point(_snap_to_tile(WORLD_SIZE * 0.5))
 	_refresh_building_catalog()
 	if input_controller != null and input_controller.has_method("set_grid_size"):
 		input_controller.set_grid_size(TILE_SIZE)
@@ -361,6 +361,7 @@ func _init_group_cache() -> void:
 		&"structures",
 		&"farm_zones",
 		&"raiders",
+		&"zombies",
 		&"trap_structures",
 		&"repairable_structures",
 		&"build_sites"
@@ -467,6 +468,7 @@ func _mark_combat_dirty() -> void:
 	_dispatch_combat_dirty = true
 	_dispatch_traps_dirty = true
 	_mark_group_cache_dirty(&"raiders")
+	_mark_group_cache_dirty(&"zombies")
 	if job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_combat_dirty"):
 		job_system.mark_combat_dirty()
 	_queue_event_dispatch()
@@ -551,7 +553,7 @@ func _dispatch_event_updates() -> void:
 		var throttled: bool = _raid_state == &"Active" and now_jobs_ms < _active_jobs_next_ms
 		if not throttled:
 			var enemies: Array = _cached_alive_enemies
-			var rally_pos: Vector2 = _combat_rally_point if _outfit_mode == &"Combat" else Vector2.INF
+			var rally_pos: Vector2 = _combat_rally_point if _outfit_mode == &"Combat" and _rally_flag_node != null and is_instance_valid(_rally_flag_node) else Vector2.INF
 			var max_combatants: int = mini(maxi(2, enemies.size() * 2), maxi(2, colonists.size()))
 			if _raid_state != &"Active" and _outfit_mode != &"Combat":
 				enemies = _get_workmode_threat_enemies(enemies)
@@ -1203,6 +1205,7 @@ func _on_colonist_status_changed(_colonist: Node) -> void:
 		_colonist_idle_state_by_id[cid] = is_idle_now
 		if is_idle_now and not was_idle:
 			job_system.mark_designation_dirty()
+			job_system.mark_research_dirty()
 			_mark_farm_dirty()
 			_mark_jobs_dirty()
 		var now_ms: int = Time.get_ticks_msec()
@@ -1251,7 +1254,7 @@ func _set_combat_rally_point(world_pos: Vector2) -> void:
 		cloth.position = Vector2(10.0, -24.0)
 		_rally_flag_node.add_child(cloth)
 		var label := Label.new()
-		label.text = "집합 깃발"
+		label.text = "吏묓빀 源껊컻"
 		label.position = Vector2(-26.0, -46.0)
 		_rally_flag_node.add_child(label)
 		world_root.add_child(_rally_flag_node)
@@ -2238,6 +2241,7 @@ func _start_raid_wave() -> void:
 	# Refresh enemy cache immediately so the next process tick does not
 	# resolve the raid before deferred combat dispatch sees spawned enemies.
 	_mark_group_cache_dirty(&"raiders")
+	_mark_group_cache_dirty(&"zombies")
 	_cached_alive_enemies = _get_alive_raiders()
 	_cancel_noncombat_jobs_for_active_raid()
 	_mark_combat_dirty()
@@ -2291,6 +2295,7 @@ func _spawn_raiders(count: int) -> void:
 			raider.died.connect(_on_raider_died)
 		_connect_enemy_signals(raider)
 		units_root.add_child(raider)
+		_apply_raid_enemy_equipment(raider, &"Raider")
 
 func _spawn_zombies(count: int) -> void:
 	if count <= 0:
@@ -2304,6 +2309,42 @@ func _spawn_zombies(count: int) -> void:
 			zombie.died.connect(_on_zombie_died)
 		_connect_enemy_signals(zombie)
 		units_root.add_child(zombie)
+		_apply_raid_enemy_equipment(zombie, &"Zombie")
+
+func _apply_raid_enemy_equipment(enemy: Node, enemy_kind: StringName) -> void:
+	if enemy == null or not is_instance_valid(enemy):
+		return
+	if not enemy.has_method("set_equipment_slots"):
+		return
+	var slots: Dictionary = {
+		&"Top": &"",
+		&"Bottom": &"",
+		&"Hat": &"",
+		&"Weapon": &""
+	}
+	match enemy_kind:
+		&"Raider":
+			slots = {
+				&"Top": &"CombatTop",
+				&"Bottom": &"CombatBottom",
+				&"Hat": &"CombatHat",
+				&"Weapon": &"Sword"
+			}
+		&"Zombie":
+			slots = {
+				&"Top": &"GatherTop",
+				&"Bottom": &"GatherBottom",
+				&"Hat": &"StrawHat",
+				&"Weapon": &"Weapon"
+			}
+		_:
+			slots = {
+				&"Top": &"",
+				&"Bottom": &"",
+				&"Hat": &"",
+				&"Weapon": &"Weapon"
+			}
+	enemy.set_equipment_slots(slots)
 
 func _pick_raid_wave_kind() -> StringName:
 	var roll: float = randf()
@@ -2340,13 +2381,7 @@ func _grant_raid_reward() -> void:
 
 func _on_raider_died(_raider: Node) -> void:
 	if _raider != null and is_instance_valid(_raider):
-		_spawn_resource_drop(&"Wood", randi_range(1, 3), _raider.global_position)
-		_spawn_resource_drop(&"FoodRaw", randi_range(0, 2), _raider.global_position + Vector2(8.0, 0.0))
-		var rare_mul: float = maxf(1.0, _enemy_drop_bonus_from_research)
-		if randf() < minf(0.45, 0.18 * rare_mul):
-			_spawn_resource_drop(&"Steel", 1, _raider.global_position + Vector2(-8.0, -4.0))
-		if randf() < minf(0.25, 0.07 * rare_mul):
-			_spawn_resource_drop(&"Bow", 1, _raider.global_position + Vector2(0.0, -10.0))
+		_drop_enemy_equipment(_raider)
 	_mark_combat_dirty()
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
@@ -2354,19 +2389,42 @@ func _on_raider_died(_raider: Node) -> void:
 
 func _on_zombie_died(_zombie: Node) -> void:
 	if _zombie != null and is_instance_valid(_zombie):
-		_spawn_resource_drop(&"FoodRaw", randi_range(1, 3), _zombie.global_position)
-		_spawn_resource_drop(&"Stone", randi_range(0, 2), _zombie.global_position + Vector2(-6.0, 0.0))
-		var rare_mul: float = maxf(1.0, _enemy_drop_bonus_from_research)
-		if randf() < minf(0.35, 0.11 * rare_mul):
-			_spawn_resource_drop(&"Steel", 1, _zombie.global_position + Vector2(6.0, -4.0))
+		_drop_enemy_equipment(_zombie)
 	_mark_combat_dirty()
 	_mark_jobs_dirty()
 	_mark_economy_dirty()
 	_hud_dirty = true
 
+func _drop_enemy_equipment(enemy: Node) -> void:
+	if enemy == null or not is_instance_valid(enemy):
+		return
+	if not enemy.has_method("get_equipment_snapshot"):
+		return
+	var slots: Dictionary = enemy.get_equipment_snapshot()
+	var slot_order := [&"Top", &"Bottom", &"Hat", &"Weapon"]
+	var offsets: Array[Vector2] = [
+		Vector2(-8.0, -6.0),
+		Vector2(8.0, -6.0),
+		Vector2(-8.0, 6.0),
+		Vector2(8.0, 6.0)
+	]
+	for i in range(slot_order.size()):
+		var slot_key: StringName = slot_order[i]
+		var item_id: StringName = StringName(slots.get(slot_key, &""))
+		if item_id == &"":
+			continue
+		var offset: Vector2 = offsets[i] if i < offsets.size() else Vector2.ZERO
+		_spawn_resource_drop(item_id, 1, enemy.global_position + offset)
+
 func _get_alive_raiders() -> Array:
 	var out: Array = []
 	for node in _get_group_nodes_cached(&"raiders"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.has_method("is_dead") and bool(node.is_dead()):
+			continue
+		out.append(node)
+	for node in _get_group_nodes_cached(&"zombies"):
 		if node == null or not is_instance_valid(node):
 			continue
 		if node.has_method("is_dead") and bool(node.is_dead()):
@@ -2749,6 +2807,8 @@ func _wire_existing_world_signals() -> void:
 		_connect_resource_drop_signals(drop)
 	for enemy in _get_group_nodes_cached(&"raiders"):
 		_connect_enemy_signals(enemy)
+	for enemy in _get_group_nodes_cached(&"zombies"):
+		_connect_enemy_signals(enemy)
 
 func _connect_resource_drop_signals(drop: Node) -> void:
 	if drop == null or not is_instance_valid(drop):
@@ -3007,7 +3067,10 @@ func _active_research_required_points() -> float:
 		return 0.0
 	if not research_lookup.has(_active_research_id):
 		return 0.0
-	return float(research_lookup[_active_research_id].required_points)
+	return _scaled_research_required_points(float(research_lookup[_active_research_id].required_points))
+
+func _scaled_research_required_points(raw_required_points: float) -> float:
+	return raw_required_points * RESEARCH_REQUIRED_POINTS_SCALE
 
 func _apply_research_bonus(research_id: StringName) -> void:
 	if not research_lookup.has(research_id):
@@ -3219,7 +3282,8 @@ func _get_cached_research_options() -> Array:
 		var def: Resource = research_lookup[key]
 		var unlocked: bool = bool(lock_map.get(key, true))
 		var req: StringName = StringName(prereq_map.get(key, &""))
-		var label: String = "%s (%.0f)%s" % [String(def.display_name), float(def.required_points), "" if unlocked else " [잠김]"]
+		var scaled_required: float = _scaled_research_required_points(float(def.required_points))
+		var label: String = "%s (%.1f)%s" % [String(def.display_name), scaled_required, "" if unlocked else " [잠김]"]
 		if not unlocked and req != &"":
 			label += " <- %s" % String(req)
 		options.append({

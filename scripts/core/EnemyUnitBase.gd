@@ -31,6 +31,7 @@ var _cached_lod_interval: float = UPDATE_NEAR_INTERVAL_SEC
 var _next_lod_refresh_ms: int = 0
 var _sim_interval_scale: float = 1.0
 var _weapon_mode: StringName = &"Melee"
+var _default_weapon_mode: StringName = &"Melee"
 var _move_goal: Vector2 = Vector2.INF
 var _last_move_tile: Vector2i = Vector2i(999999, 999999)
 var _last_move_bucket: Vector2i = Vector2i(999999, 999999)
@@ -43,6 +44,13 @@ var _grp_structures_ms: int = 0
 var _grp_blocking: Array = []
 var _grp_blocking_ms: int = 0
 var _is_blocked_callable: Callable
+var _profile_ready: bool = false
+var equipment_slots: Dictionary = {
+	&"Top": &"",
+	&"Bottom": &"",
+	&"Hat": &"",
+	&"Weapon": &""
+}
 
 var max_health: float = 100.0
 var move_speed: float = 100.0
@@ -57,6 +65,19 @@ var attack_cooldown_sec: float = 1.2
 var structure_attack_damage: float = 10.0
 var structure_attack_range: float = 30.0
 var ranged_ratio: float = 0.0
+var _base_max_health: float = 100.0
+var _base_move_speed: float = 100.0
+var _base_hit_chance: float = 0.65
+var _base_defense: float = 2.0
+var _base_melee_attack: float = 8.0
+var _base_ranged_attack: float = 0.0
+var _base_armor_penetration: float = 0.5
+var _base_melee_range: float = 28.0
+var _base_ranged_range: float = 180.0
+var _base_attack_cooldown_sec: float = 1.2
+var _base_structure_attack_damage: float = 10.0
+var _base_structure_attack_range: float = 30.0
+var _base_ranged_ratio: float = 0.0
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
 @onready var sprite: Sprite2D = $Sprite2D
@@ -64,8 +85,11 @@ var ranged_ratio: float = 0.0
 
 func _ready() -> void:
 	_apply_profile(get_unit_profile())
+	_profile_ready = true
+	_default_weapon_mode = get_initial_weapon_mode()
 	health = max_health
-	_weapon_mode = get_initial_weapon_mode()
+	_weapon_mode = _default_weapon_mode
+	_apply_equipment_profile()
 	_register_enemy_groups()
 	_enemy_pathing = ENEMY_PATHING.new()
 	_enemy_pathing.setup(tile_size)
@@ -112,20 +136,69 @@ func _register_enemy_groups() -> void:
 		add_to_group(group_name)
 
 func _apply_profile(profile: Dictionary) -> void:
-	max_health = float(profile.get("max_health", max_health))
-	move_speed = float(profile.get("move_speed", move_speed))
-	base_hit_chance = float(profile.get("base_hit_chance", base_hit_chance))
-	defense = float(profile.get("defense", defense))
-	melee_attack = float(profile.get("melee_attack", melee_attack))
-	ranged_attack = float(profile.get("ranged_attack", ranged_attack))
-	armor_penetration = float(profile.get("armor_penetration", armor_penetration))
-	melee_range = float(profile.get("melee_range", melee_range))
-	ranged_range = float(profile.get("ranged_range", ranged_range))
-	attack_cooldown_sec = float(profile.get("attack_cooldown_sec", attack_cooldown_sec))
-	structure_attack_damage = float(profile.get("structure_attack_damage", structure_attack_damage))
-	structure_attack_range = float(profile.get("structure_attack_range", structure_attack_range))
-	ranged_ratio = float(profile.get("ranged_ratio", ranged_ratio))
+	_base_max_health = float(profile.get("max_health", _base_max_health))
+	_base_move_speed = float(profile.get("move_speed", _base_move_speed))
+	_base_hit_chance = float(profile.get("base_hit_chance", _base_hit_chance))
+	_base_defense = float(profile.get("defense", _base_defense))
+	_base_melee_attack = float(profile.get("melee_attack", _base_melee_attack))
+	_base_ranged_attack = float(profile.get("ranged_attack", _base_ranged_attack))
+	_base_armor_penetration = float(profile.get("armor_penetration", _base_armor_penetration))
+	_base_melee_range = float(profile.get("melee_range", _base_melee_range))
+	_base_ranged_range = float(profile.get("ranged_range", _base_ranged_range))
+	_base_attack_cooldown_sec = float(profile.get("attack_cooldown_sec", _base_attack_cooldown_sec))
+	_base_structure_attack_damage = float(profile.get("structure_attack_damage", _base_structure_attack_damage))
+	_base_structure_attack_range = float(profile.get("structure_attack_range", _base_structure_attack_range))
+	_base_ranged_ratio = float(profile.get("ranged_ratio", _base_ranged_ratio))
+	_apply_equipment_profile()
 	tile_size = float(profile.get("tile_size", tile_size))
+
+func set_equipment_slots(next_slots: Dictionary) -> void:
+	var keys := [&"Top", &"Bottom", &"Hat", &"Weapon"]
+	for key in keys:
+		equipment_slots[key] = StringName(next_slots.get(key, &""))
+	if _profile_ready:
+		_apply_equipment_profile()
+		_refresh_label()
+
+func get_equipment_snapshot() -> Dictionary:
+	return equipment_slots.duplicate(true)
+
+func _apply_equipment_profile() -> void:
+	max_health = _base_max_health
+	move_speed = _base_move_speed
+	base_hit_chance = _base_hit_chance
+	defense = _base_defense
+	melee_attack = _base_melee_attack
+	ranged_attack = _base_ranged_attack
+	armor_penetration = _base_armor_penetration
+	melee_range = _base_melee_range
+	ranged_range = _base_ranged_range
+	attack_cooldown_sec = _base_attack_cooldown_sec
+	structure_attack_damage = _base_structure_attack_damage
+	structure_attack_range = _base_structure_attack_range
+	ranged_ratio = _base_ranged_ratio
+	var has_top: bool = StringName(equipment_slots.get(&"Top", &"")) != &""
+	var has_bottom: bool = StringName(equipment_slots.get(&"Bottom", &"")) != &""
+	var has_hat: bool = StringName(equipment_slots.get(&"Hat", &"")) != &""
+	var weapon_id: StringName = StringName(equipment_slots.get(&"Weapon", &""))
+	if weapon_id == &"Sword":
+		melee_attack += 8.0
+		armor_penetration += 2.0
+		attack_cooldown_sec = maxf(0.25, attack_cooldown_sec - 0.08)
+		_weapon_mode = &"Melee"
+	elif weapon_id == &"Bow":
+		ranged_attack += 7.0
+		ranged_range += 36.0
+		base_hit_chance = clampf(base_hit_chance + 0.08, 0.05, 0.98)
+		_weapon_mode = &"Ranged"
+	elif weapon_id == &"Weapon":
+		melee_attack += 4.0
+		armor_penetration += 1.0
+		_weapon_mode = &"Melee"
+	else:
+		_weapon_mode = _default_weapon_mode
+	if has_top or has_bottom or has_hat:
+		defense += 2.5
 
 func _physics_process(delta: float) -> void:
 	_spawn_unclip_left = maxf(0.0, _spawn_unclip_left - delta)

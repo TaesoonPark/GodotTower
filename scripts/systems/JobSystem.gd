@@ -9,6 +9,7 @@ const HAUL_ASSIGN_TIMEOUT_MS: int = 12000
 const WORK_ADJACENT_OFFSET: float = 40.0
 const MAX_ASSIGN_PER_TICK: int = 8
 const MAX_JOB_SCAN_PER_COLONIST: int = 48
+const COMBAT_PREEMPT_DISTANCE: float = 160.0
 
 var _jobs: Array[Dictionary] = []
 var _craft_queues: Dictionary = {}
@@ -666,11 +667,36 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 		var colonist_id: int = colonist.get_instance_id()
 		if _has_pending_combat_job(colonist_id):
 			continue
-		if _has_pending_move_job(colonist_id):
+		var nearest_enemy: Node = null
+		var best_dist_sq: float = INF
+		for enemy in enemies:
+			if enemy == null or not is_instance_valid(enemy):
+				continue
+			if enemy.has_method("is_dead") and bool(enemy.is_dead()):
+				continue
+			var dist_sq: float = colonist.global_position.distance_squared_to(enemy.global_position)
+			if dist_sq < best_dist_sq:
+				best_dist_sq = dist_sq
+				nearest_enemy = enemy
+		if nearest_enemy == null:
+			continue
+		var enemy_is_close: bool = best_dist_sq <= COMBAT_PREEMPT_DISTANCE * COMBAT_PREEMPT_DISTANCE
+		var has_pending_move: bool = _has_pending_move_job(colonist_id)
+		if has_pending_move and not enemy_is_close:
 			continue
 		if not colonist.current_job.is_empty():
-			continue
-		if rally_pos != Vector2.INF and not _rallied_colonist_ids.has(colonist_id):
+			var current_type: StringName = StringName(colonist.current_job.get("type", &""))
+			if current_type == &"CombatMelee" or current_type == &"CombatRanged":
+				continue
+			if not enemy_is_close:
+				continue
+			if colonist.has_method("cancel_current_job"):
+				colonist.cancel_current_job()
+			else:
+				continue
+		if has_pending_move and enemy_is_close:
+			_remove_pending_move_jobs_for_colonist(colonist_id)
+		if rally_pos != Vector2.INF and not _rallied_colonist_ids.has(colonist_id) and not enemy_is_close:
 			var dist_to_rally: float = colonist.global_position.distance_to(rally_pos)
 			if dist_to_rally <= maxf(20.0, rally_radius):
 				_rallied_colonist_ids[colonist_id] = true
@@ -687,19 +713,6 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 				})
 				assigned_count += 1
 				continue
-		var nearest_enemy: Node = null
-		var best_dist_sq: float = INF
-		for enemy in enemies:
-			if enemy == null or not is_instance_valid(enemy):
-				continue
-			if enemy.has_method("is_dead") and bool(enemy.is_dead()):
-				continue
-			var dist_sq: float = colonist.global_position.distance_squared_to(enemy.global_position)
-			if dist_sq < best_dist_sq:
-				best_dist_sq = dist_sq
-				nearest_enemy = enemy
-		if nearest_enemy == null:
-			continue
 		var use_ranged: bool = preferred_job_type == &"CombatRanged"
 		queue_combat_job(colonist, nearest_enemy, use_ranged, preferred_job_type)
 		assigned_count += 1
@@ -833,6 +846,17 @@ func _remove_jobs_for_colonist(colonist_id: int) -> void:
 	for job in _jobs:
 		var assigned_to: int = int(job.get("assigned_to", 0))
 		if assigned_to == colonist_id:
+			continue
+		filtered.append(job)
+	_jobs = filtered
+
+func _remove_pending_move_jobs_for_colonist(colonist_id: int) -> void:
+	if colonist_id == 0:
+		return
+	var filtered: Array[Dictionary] = []
+	for job in _jobs:
+		var assigned_to: int = int(job.get("assigned_to", 0))
+		if assigned_to == colonist_id and StringName(job.get("type", &"")) == &"MoveTo":
 			continue
 		filtered.append(job)
 	_jobs = filtered

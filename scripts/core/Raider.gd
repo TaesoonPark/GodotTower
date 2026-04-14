@@ -16,7 +16,7 @@ func get_unit_profile() -> Dictionary:
 		"melee_range": 32.0,
 		"ranged_range": 180.0,
 		"attack_cooldown_sec": 1.2,
-		"ranged_ratio": 0.4,
+		"ranged_ratio": 0.0,
 		"structure_attack_damage": 10.0,
 		"structure_attack_range": 30.0
 	}
@@ -25,7 +25,7 @@ func get_enemy_groups() -> Array[StringName]:
 	return [&"raiders"]
 
 func get_initial_weapon_mode() -> StringName:
-	return &"Ranged" if randf() < ranged_ratio else &"Melee"
+	return &"Melee"
 
 func _get_label_text(hp: int) -> String:
 	var weapon_text: String = "활" if get_current_weapon_mode() == &"Ranged" else "칼"

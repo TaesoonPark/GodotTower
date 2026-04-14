@@ -298,6 +298,19 @@ func _resolve_move_goal() -> Vector2:
 	if current_job.is_empty():
 		return Vector2.INF
 	var jt: StringName = StringName(current_job.get("type", &""))
+	if jt == &"CombatMelee" or jt == &"CombatRanged":
+		var target_pos: Vector2 = current_job.get("target", global_position)
+		var target_id: int = int(current_job.get("target_id", 0))
+		if target_id != 0:
+			var target_obj: Object = instance_from_id(target_id)
+			if target_obj != null and is_instance_valid(target_obj) and target_obj is Node2D:
+				target_pos = (target_obj as Node2D).global_position
+				current_job["target"] = target_pos
+		target_pos = _snap_to_tile(target_pos)
+		var effective_type: StringName = _resolve_combat_job_type(jt)
+		if effective_type == &"CombatRanged":
+			return _snap_to_tile(global_position)
+		return target_pos
 	if current_job.has("target"):
 		return _snap_to_tile(current_job.get("target", global_position))
 	return _snap_to_tile(nav.target_position)
@@ -1283,6 +1296,10 @@ func _resolve_combat_job_type(job_type: StringName) -> StringName:
 		return &"CombatRanged"
 	if weapon_id == &"Sword":
 		return &"CombatMelee"
+	var ranged_attack: float = float(combat_profile.get("ranged_attack", 0.0))
+	var melee_attack: float = float(combat_profile.get("melee_attack", 0.0))
+	if ranged_attack > melee_attack:
+		return &"CombatRanged"
 	var profile_mode: StringName = StringName(combat_profile.get("weapon_mode", &"Melee"))
 	if profile_mode == &"Ranged":
 		return &"CombatRanged"
