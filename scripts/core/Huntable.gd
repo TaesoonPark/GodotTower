@@ -1,6 +1,8 @@
 extends Node2D
 class_name Huntable
 
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
+
 @export var display_name: String = "Animal"
 @export var max_health: int = 70
 @export var hunt_damage_per_tick: int = 25
@@ -49,7 +51,10 @@ func hunt_once(work_amount: float) -> Dictionary:
 	return {"resource_type": meat_type, "amount": dropped}
 
 func _refresh_visual() -> void:
-	if sprite.texture == null:
+	var sprite_tex: Texture2D = GAME_SPRITE.get_huntable_texture(display_name)
+	if sprite_tex != null:
+		sprite.texture = sprite_tex
+	elif sprite.texture == null:
 		sprite.texture = _make_texture(30, 20, tint)
 	var ratio: float = clampf(float(health) / maxf(1.0, float(max_health)), 0.0, 1.0)
 	sprite.modulate = tint.lerp(Color(0.25, 0.2, 0.2, 1.0), 1.0 - ratio)

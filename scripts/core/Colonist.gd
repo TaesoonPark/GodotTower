@@ -8,6 +8,7 @@ const HAUL_TRANSITION: Script = preload("res://scripts/sim/HaulTransition.gd")
 const GATHER_TRANSITION: Script = preload("res://scripts/sim/GatherTransition.gd")
 const BUILD_TRANSITION: Script = preload("res://scripts/sim/BuildTransition.gd")
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
 
 signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
@@ -126,6 +127,10 @@ func _ready() -> void:
 		"accuracy_bonus": 0.0,
 		"weapon_mode": &"Melee"
 	})
+	if sprite != null:
+		var sprite_tex: Texture2D = GAME_SPRITE.get_unit_texture(&"colonist")
+		if sprite_tex != null:
+			sprite.texture = sprite_tex
 	_fit_sprite()
 	_friendly_pathing = FRIENDLY_PATHING.new()
 	_friendly_pathing.setup(tile_size)

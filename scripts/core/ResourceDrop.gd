@@ -1,6 +1,8 @@
 extends Node2D
 class_name ResourceDrop
 
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
+
 signal drop_changed(drop: Node)
 signal drop_emptied(drop: Node)
 signal drop_removed(drop: Node)
@@ -56,8 +58,12 @@ func take_amount(v: int) -> int:
 func _refresh() -> void:
 	var sprite_node: Sprite2D = sprite if sprite != null else get_node_or_null("Sprite2D")
 	var label_node: Label = label if label != null else get_node_or_null("Label")
-	if sprite_node != null and sprite_node.texture == null:
-		sprite_node.texture = _make_texture(22, 22, Color(0.92, 0.78, 0.36))
+	if sprite_node != null:
+		var sprite_tex: Texture2D = GAME_SPRITE.get_drop_texture(resource_type)
+		if sprite_tex != null:
+			sprite_node.texture = sprite_tex
+		elif sprite_node.texture == null:
+			sprite_node.texture = _make_texture(22, 22, Color(0.92, 0.78, 0.36))
 	if label_node != null:
 		label_node.text = "%s x%d" % [String(resource_type), amount]
 	visible = amount > 0

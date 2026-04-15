@@ -1,6 +1,7 @@
 extends Node2D
 class_name FarmZone
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
 
 signal zone_changed(zone: Node)
 signal farm_job_needed(zone: Node)
@@ -417,7 +418,7 @@ func _refresh_plot_markers() -> void:
 		if state != &"Growing" and state != &"Mature":
 			stale_tiles.append(tile)
 	for tile in stale_tiles:
-		var old_marker: Polygon2D = _plot_markers.get(tile, null)
+		var old_marker: Node2D = _plot_markers.get(tile, null)
 		if old_marker != null and is_instance_valid(old_marker):
 			old_marker.queue_free()
 		_plot_markers.erase(tile)
@@ -427,14 +428,31 @@ func _refresh_plot_markers() -> void:
 		var state: StringName = StringName(plot.get("state", &"Empty"))
 		if state != &"Growing" and state != &"Mature":
 			continue
-		var marker: Polygon2D = _plot_markers.get(tile, null)
-		if marker == null or not is_instance_valid(marker):
-			marker = Polygon2D.new()
-			marker.name = "PlotMarker_%d_%d" % [tile.x, tile.y]
-			_plot_marker_root.add_child(marker)
-			_plot_markers[tile] = marker
-		marker.position = to_local(get_plot_world(tile))
-		_apply_plot_marker_style(marker, state)
+		var marker: Node2D = _plot_markers.get(tile, null)
+		var marker_tex: Texture2D = _resolve_plot_texture(plot, state)
+		if marker_tex != null:
+			var sprite: Sprite2D = marker as Sprite2D
+			if sprite == null:
+				if marker != null and is_instance_valid(marker):
+					marker.queue_free()
+				sprite = Sprite2D.new()
+				sprite.name = "PlotMarker_%d_%d" % [tile.x, tile.y]
+				_plot_marker_root.add_child(sprite)
+				_plot_markers[tile] = sprite
+			sprite.texture = marker_tex
+			sprite.position = to_local(get_plot_world(tile))
+			sprite.modulate = Color.WHITE
+			continue
+		var polygon: Polygon2D = marker as Polygon2D
+		if polygon == null:
+			if marker != null and is_instance_valid(marker):
+				marker.queue_free()
+			polygon = Polygon2D.new()
+			polygon.name = "PlotMarker_%d_%d" % [tile.x, tile.y]
+			_plot_marker_root.add_child(polygon)
+			_plot_markers[tile] = polygon
+		polygon.position = to_local(get_plot_world(tile))
+		_apply_plot_marker_style(polygon, state)
 
 func _apply_plot_marker_style(marker: Polygon2D, state: StringName) -> void:
 	var size: float = 8.0
@@ -449,3 +467,27 @@ func _apply_plot_marker_style(marker: Polygon2D, state: StringName) -> void:
 		Vector2(-size, 0.0)
 	])
 	marker.color = color
+
+func _resolve_plot_texture(plot: Dictionary, state: StringName) -> Texture2D:
+	if state != &"Growing":
+		return null
+	var growing_crop: StringName = StringName(plot.get("crop", crop_type))
+	if growing_crop == &"":
+		return null
+	var growth_stage: StringName = _resolve_growth_stage(plot, growing_crop)
+	return GAME_SPRITE.get_crop_texture(growing_crop, growth_stage)
+
+func _resolve_growth_stage(plot: Dictionary, growth_crop: StringName) -> StringName:
+	var elapsed: float = float(plot.get("elapsed", 0.0))
+	var effective_growth: float = _effective_growth_seconds(plot, growth_crop)
+	var ratio: float = clampf(elapsed / maxf(0.001, effective_growth), 0.0, 1.0)
+	if ratio < 0.35:
+		return &"planted"
+	return &"growing"
+
+func _effective_growth_seconds(plot: Dictionary, growth_crop: StringName) -> float:
+	var growth_seconds: float = 180.0
+	if crop_catalog.has(growth_crop):
+		growth_seconds = float(crop_catalog[growth_crop].growth_seconds)
+	var rotation_mult: float = float(plot.get("rotation_mult", 1.0))
+	return growth_seconds * growth_time_multiplier * rotation_mult / maxf(0.2, zone_fertility)

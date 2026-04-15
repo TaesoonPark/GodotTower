@@ -4,6 +4,7 @@ class_name BuildSystem
 const BUILDING_SITE_SCENE: PackedScene = preload("res://scenes/world/BuildingSite.tscn")
 const STOCKPILE_ZONE_SCENE: PackedScene = preload("res://scenes/world/StockpileZone.tscn")
 const FARM_ZONE_SCENE: PackedScene = preload("res://scenes/world/FarmZone.tscn")
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
 
 signal build_site_added(site: Node)
 signal build_site_removed(site: Node)
@@ -105,7 +106,11 @@ func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	_apply_structure_metas(placed, def)
 
 	var sprite := Sprite2D.new()
-	sprite.texture = _make_block_texture(int(def.footprint_size.x), int(def.footprint_size.y), def.direct_place_color)
+	var sprite_tex: Texture2D = GAME_SPRITE.get_building_texture(def.id)
+	if sprite_tex != null:
+		sprite.texture = sprite_tex
+	else:
+		sprite.texture = _make_block_texture(int(def.footprint_size.x), int(def.footprint_size.y), def.direct_place_color)
 	placed.add_child(sprite)
 
 	var label := Label.new()

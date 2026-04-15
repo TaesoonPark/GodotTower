@@ -1,5 +1,7 @@
 extends Node2D
 
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
+
 signal site_changed(site: Node)
 signal site_completed(site: Node)
 signal site_removed(site: Node)
@@ -37,8 +39,8 @@ var materials_delivered: bool = false
 
 func _ready() -> void:
 	add_to_group("build_sites")
-	if base_sprite.texture == null:
-		base_sprite.texture = _make_texture(int(footprint_size.x), int(footprint_size.y), blueprint_color)
+	if base_sprite != null:
+		base_sprite.texture = _resolve_base_texture()
 	if progress_sprite.texture == null:
 		progress_sprite.texture = _make_texture(max(12, int(footprint_size.x - 4.0)), 6, Color(0.3, 0.95, 0.4, 0.85))
 	_update_visual()
@@ -96,7 +98,7 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 	set_meta("demolish_job_queued", false)
 	set_meta("materials_delivered", materials_delivered)
 	if is_node_ready():
-		base_sprite.texture = _make_texture(int(footprint_size.x), int(footprint_size.y), blueprint_color)
+		base_sprite.texture = _resolve_base_texture()
 		progress_sprite.texture = _make_texture(max(12, int(footprint_size.x - 4.0)), 6, Color(0.3, 0.95, 0.4, 0.85))
 	if start_complete:
 		work_progress = required_work
@@ -168,10 +170,11 @@ func _update_visual() -> void:
 		progress_sprite.visible = true
 
 func _build_complete_visual() -> void:
-	var roof := Sprite2D.new()
-	roof.texture = _make_texture(int(footprint_size.x), max(6, int(footprint_size.y * 0.25)), complete_color.darkened(0.25))
-	roof.position = Vector2(0, -footprint_size.y * 0.5)
-	add_child(roof)
+	if GAME_SPRITE.get_building_texture(building_id) == null:
+		var roof := Sprite2D.new()
+		roof.texture = _make_texture(int(footprint_size.x), max(6, int(footprint_size.y * 0.25)), complete_color.darkened(0.25))
+		roof.position = Vector2(0, -footprint_size.y * 0.5)
+		add_child(roof)
 
 	var label := Label.new()
 	label.text = building_name
@@ -194,6 +197,12 @@ func _on_completed() -> void:
 
 func _exit_tree() -> void:
 	site_removed.emit(self)
+
+func _resolve_base_texture() -> Texture2D:
+	var sprite_tex: Texture2D = GAME_SPRITE.get_building_texture(building_id)
+	if sprite_tex != null:
+		return sprite_tex
+	return _make_texture(int(footprint_size.x), int(footprint_size.y), Color.WHITE)
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)

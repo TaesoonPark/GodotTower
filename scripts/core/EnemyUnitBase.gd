@@ -3,6 +3,7 @@ class_name EnemyUnitBase
 
 const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
 const ENEMY_PATHING: Script = preload("res://scripts/core/pathing/EnemyPathing.gd")
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
 
 signal died(enemy: Node)
 signal moved(enemy: Node, tile: Vector2i)
@@ -102,7 +103,11 @@ func _ready() -> void:
 	if nav != null:
 		nav.set_physics_process(false)
 	if sprite != null and sprite.texture == null:
-		sprite.texture = _make_texture(28, 34, Color(0.86, 0.22, 0.22, 1.0))
+		var sprite_tex: Texture2D = GAME_SPRITE.get_unit_texture(_resolve_unit_sprite_id())
+		if sprite_tex != null:
+			sprite.texture = sprite_tex
+		else:
+			sprite.texture = _make_texture(28, 34, Color(0.86, 0.22, 0.22, 1.0))
 	_ensure_unblocked_spawn()
 	_last_move_tile = _world_to_tile(global_position)
 	_last_move_bucket = _world_to_bucket(global_position)
@@ -543,6 +548,14 @@ func _refresh_label() -> void:
 
 func _get_label_text(hp: int) -> String:
 	return "Enemy HP:%d" % hp
+
+func _resolve_unit_sprite_id() -> StringName:
+	var script_ref: Script = get_script() as Script
+	if script_ref != null:
+		var script_name: String = script_ref.resource_path.get_file().get_basename().to_lower()
+		if not script_name.is_empty():
+			return StringName(script_name)
+	return StringName(name.to_lower())
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)

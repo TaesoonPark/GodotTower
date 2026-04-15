@@ -1,6 +1,8 @@
 extends Node2D
 class_name Gatherable
 
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
+
 @export var resource_type: StringName = &"Wood"
 @export var display_name: String = "Tree"
 @export var max_amount: int = 80
@@ -47,7 +49,10 @@ func gather_once(work_amount: float) -> Dictionary:
 	return {"resource_type": resource_type, "amount": gain}
 
 func _refresh_visual() -> void:
-	if sprite.texture == null:
+	var sprite_tex: Texture2D = GAME_SPRITE.get_gatherable_texture(resource_type)
+	if sprite_tex != null:
+		sprite.texture = sprite_tex
+	elif sprite.texture == null:
 		sprite.texture = _make_texture(32, 32, tint)
 	var ratio: float = clampf(float(current_amount) / maxf(1.0, float(max_amount)), 0.0, 1.0)
 	sprite.modulate = tint.lerp(Color(0.22, 0.22, 0.24, 1.0), 1.0 - ratio)
