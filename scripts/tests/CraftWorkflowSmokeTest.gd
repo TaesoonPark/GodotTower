@@ -49,6 +49,7 @@ func _run_test() -> void:
 	if not bool(main.build_system.place_building(Vector2(3960.0, 2200.0), true)):
 		_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: campfire blueprint failed")
 		return
+	var campfire_pos: Vector2 = main._snap_to_tile(Vector2(3960.0, 2200.0))
 
 	main._mark_jobs_dirty()
 
@@ -69,15 +70,26 @@ func _run_test() -> void:
 
 	main._on_craft_recipe_queued(&"CookMeal", &"CampfireStation")
 
+	var observed_craft_supply: bool = false
 	for _step in range(3200):
 		await get_tree().process_frame
 		var meal_drops: int = 0
 		for drop in get_tree().get_nodes_in_group("resource_drops"):
 			if drop == null or not is_instance_valid(drop):
 				continue
+			var is_craft_supply: bool = bool(drop.get_meta("craft_supply")) if drop.has_meta("craft_supply") else false
+			if is_craft_supply and StringName(drop.get("resource_type")) == &"FoodRaw":
+				observed_craft_supply = true
+				if drop.global_position.distance_to(campfire_pos) > 0.1:
+					_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: craft supply drop spawned outside campfire tile")
+					return
 			if StringName(drop.get("resource_type")) == &"Meal":
 				meal_drops += int(drop.get("amount"))
 		if meal_drops >= 5:
+			if not observed_craft_supply:
+				print(_debug_snapshot(main, colonists))
+				_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: no craft supply FoodRaw drop observed")
+				return
 			_finish(true, "CRAFT_WORKFLOW_TEST_PASS: blueprint workstation crafted recipe")
 			return
 

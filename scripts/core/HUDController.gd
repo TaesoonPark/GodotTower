@@ -101,6 +101,7 @@ signal stockpile_filter_item_changed(resource_type: StringName, enabled: bool)
 signal stockpile_priority_changed(value: int)
 signal stockpile_limit_changed(resource_type: StringName, limit: int)
 signal stockpile_preset_apply_requested(preset_id: StringName)
+signal stockpile_delete_requested()
 signal designation_toggle_requested()
 signal mouse_mode_cycle_requested()
 signal drag_gather_mode_requested()
@@ -141,6 +142,7 @@ var _stock_limit_lookup: Dictionary = {}
 var _stock_preset_row: HBoxContainer = null
 var _stock_preset_option: OptionButton = null
 var _stock_preset_apply_button: Button = null
+var _stock_delete_button: Button = null
 var _bed_signal_mute: bool = false
 var _selected_object_buttons: Array[Button] = []
 
@@ -270,6 +272,8 @@ func _apply_static_texts() -> void:
 	stock_food_raw_check.text = _t("hud.stock.resource.food_raw")
 	stock_meal_check.text = _t("hud.stock.resource.meal")
 	stock_apply_limit_button.text = _t("hud.stock.apply")
+	if _stock_delete_button != null:
+		_stock_delete_button.text = _t("hud.stock.delete")
 	craft_queue_title.text = _t("hud.craft.title")
 	workstation_text.text = _t("hud.craft.workstation")
 	queue_craft_button.text = _t("hud.craft.queue_add")
@@ -677,6 +681,9 @@ func set_stockpile_filter_state(selected: bool, mode: int, item_map: Dictionary,
 	stock_limit_resource_option.disabled = not selected
 	stock_limit_spin.editable = selected
 	stock_apply_limit_button.disabled = not selected
+	if _stock_delete_button != null:
+		_stock_delete_button.visible = selected
+		_stock_delete_button.disabled = not selected
 	_stock_limit_lookup = limit_map.duplicate(true)
 	_refresh_limit_spin_by_selected_resource()
 	_stock_signal_mute = false
@@ -695,9 +702,18 @@ func set_stockpile_presets(preset_options: Array, selected_id: StringName = &"")
 			var idx: int = maxi(0, _stock_preset_option.get_selected())
 			stockpile_preset_apply_requested.emit(StringName(_stock_preset_option.get_item_metadata(idx)))
 		)
+		_stock_delete_button = Button.new()
+		_stock_delete_button.text = _t("hud.stock.delete")
+		_stock_delete_button.custom_minimum_size = Vector2(98, 0)
+		_stock_delete_button.pressed.connect(func():
+			stockpile_delete_requested.emit()
+		)
 		_stock_preset_row.add_child(_stock_preset_option)
 		_stock_preset_row.add_child(_stock_preset_apply_button)
+		_stock_preset_row.add_child(_stock_delete_button)
 		$SelectedStatusPanel/VBox.add_child(_stock_preset_row)
+	if _stock_delete_button != null:
+		_stock_delete_button.text = _t("hud.stock.delete")
 	_stock_preset_option.clear()
 	for opt_any in preset_options:
 		if not (opt_any is Dictionary):

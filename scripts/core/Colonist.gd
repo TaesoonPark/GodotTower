@@ -750,7 +750,8 @@ func update_job_completion(_delta: float = 0.0) -> void:
 				return
 
 			current_job = haul_result.get("job", current_job)
-			var target_pos: Vector2 = current_job.get("target", global_position)
+			var target_pos: Vector2 = _snap_to_tile(current_job.get("target", global_position))
+			current_job["target"] = target_pos
 			nav.target_position = target_pos
 			emit_status()
 			return

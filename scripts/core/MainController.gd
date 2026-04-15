@@ -167,6 +167,7 @@ var _need_job_refresh_next_ms_by_colonist: Dictionary = {}
 var _colonist_idle_state_by_id: Dictionary = {}
 var _group_cache: Dictionary = {}
 var _group_cache_dirty: Dictionary = {}
+var _job_liveness_next_ms: int = 0
 
 func _ready() -> void:
 	add_to_group("main_controller")
@@ -229,6 +230,7 @@ func _ready() -> void:
 	hud.stockpile_priority_changed.connect(_on_stockpile_priority_changed)
 	hud.stockpile_limit_changed.connect(_on_stockpile_limit_changed)
 	hud.stockpile_preset_apply_requested.connect(_on_stockpile_preset_apply_requested)
+	hud.stockpile_delete_requested.connect(_on_stockpile_delete_requested)
 	hud.designation_toggle_requested.connect(_on_designation_toggle_requested)
 	hud.drag_gather_mode_requested.connect(func(): _on_action_changed(&"DragGather"))
 	hud.drag_stockpile_mode_requested.connect(func(): _on_action_changed(&"StockpileZone"))
@@ -445,6 +447,7 @@ func _process(delta: float) -> void:
 			_queue_event_dispatch()
 	if _has_pending_dispatch():
 		_dispatch_event_updates()
+	_check_job_liveness_watchdog()
 
 func _queue_event_dispatch() -> void:
 	if _dispatch_queued:
@@ -501,6 +504,27 @@ func _mark_maintenance_dirty() -> void:
 func _mark_farm_dirty() -> void:
 	_dispatch_farm_dirty = true
 	_queue_event_dispatch()
+
+func _check_job_liveness_watchdog() -> void:
+	if job_system == null or not is_instance_valid(job_system):
+		return
+	var now_ms: int = Time.get_ticks_msec()
+	if now_ms < _job_liveness_next_ms:
+		return
+	_job_liveness_next_ms = now_ms + 500
+	if _dispatch_jobs_dirty:
+		return
+	if not job_system.has_method("has_pending_assignment") or bool(job_system.has_pending_assignment()):
+		return
+	if not job_system.has_method("has_unassigned_jobs") or not bool(job_system.has_unassigned_jobs()):
+		return
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if not colonist.is_idle():
+			continue
+		_mark_jobs_dirty()
+		return
 
 func _dispatch_event_updates() -> void:
 	_dispatch_queued = false
@@ -564,7 +588,10 @@ func _dispatch_event_updates() -> void:
 		var throttled: bool = _raid_state == &"Active" and now_jobs_ms < _active_jobs_next_ms
 		if not throttled:
 			var enemies: Array = _cached_alive_enemies
-			var rally_pos: Vector2 = _combat_rally_point if _outfit_mode == &"Combat" and _rally_flag_node != null and is_instance_valid(_rally_flag_node) else Vector2.INF
+			var rally_pos: Vector2 = Vector2.INF
+			if _rally_flag_node != null and is_instance_valid(_rally_flag_node):
+				if _outfit_mode == &"Combat" or _raid_state == &"Active":
+					rally_pos = _combat_rally_point
 			var max_combatants: int = mini(maxi(2, enemies.size() * 2), maxi(2, colonists.size()))
 			if _raid_state != &"Active" and _outfit_mode != &"Combat":
 				enemies = _get_workmode_threat_enemies(enemies)
@@ -1458,6 +1485,32 @@ func _on_stockpile_preset_apply_requested(preset_id: StringName) -> void:
 	_mark_jobs_dirty()
 	_refresh_stockpile_filter_ui()
 
+func _on_stockpile_delete_requested() -> void:
+	if selected_stockpile_zone == null or not is_instance_valid(selected_stockpile_zone):
+		return
+	var zone: Node = selected_stockpile_zone
+	var zone_pos: Vector2 = zone.global_position if zone is Node2D else Vector2.ZERO
+	var snapshot: Dictionary = zone.get_stored_snapshot() if zone.has_method("get_stored_snapshot") else {}
+	for key_any in snapshot.keys():
+		var resource_type: StringName = StringName(key_any)
+		var amount: int = int(snapshot.get(key_any, 0))
+		if amount <= 0:
+			continue
+		resource_stock[resource_type] = maxi(0, int(resource_stock.get(resource_type, 0)) - amount)
+		_spawn_resource_drop(resource_type, amount, zone_pos)
+	if _selected_object_zone == zone:
+		_clear_selected_object()
+	selected_stockpile_zone = null
+	zone.queue_free()
+	hud.set_resource_stock(resource_stock)
+	_mark_group_cache_dirty(&"stockpile_zones")
+	job_system.mark_haul_dirty()
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
+	_mark_maintenance_dirty()
+	_refresh_stockpile_filter_ui()
+	_refresh_hud()
+
 func _find_gatherable_near(world_pos: Vector2, radius: float) -> Node:
 	for node in get_tree().get_nodes_in_group("gatherables"):
 		if node == null or not is_instance_valid(node):
@@ -2182,7 +2235,8 @@ func _update_workstation_supply_requests() -> void:
 			if withdrawn <= 0:
 				continue
 			depot.mark_supply_spawned(resource_type, withdrawn)
-			_spawn_supply_drop_for_workstation(resource_type, withdrawn)
+			var depot_pos: Vector2 = depot.global_position if depot is Node2D else ws_pos
+			_spawn_supply_drop_for_workstation(resource_type, withdrawn, depot_pos)
 
 func _ensure_workstation_depot(workstation_id: StringName, pos: Vector2) -> Node:
 	if _workstation_depots.has(workstation_id):
@@ -2198,31 +2252,17 @@ func _ensure_workstation_depot(workstation_id: StringName, pos: Vector2) -> Node
 	_workstation_depots[workstation_id] = depot
 	return depot
 
-func _spawn_supply_drop_for_workstation(resource_type: StringName, amount: int) -> void:
+func _spawn_supply_drop_for_workstation(resource_type: StringName, amount: int, workstation_pos: Vector2 = Vector2.INF) -> void:
 	if amount <= 0:
 		return
-	var anchor_zone: Node = _find_best_stockpile_with_resource(resource_type)
-	var spawn_pos: Vector2 = camera.global_position
-	if anchor_zone != null and is_instance_valid(anchor_zone):
-		spawn_pos = anchor_zone.global_position + Vector2(randf_range(-20.0, 20.0), randf_range(-12.0, 12.0))
+	var spawn_pos: Vector2 = workstation_pos
+	if spawn_pos == Vector2.INF:
+		spawn_pos = camera.global_position if camera != null else Vector2.ZERO
 	var drop: Node = _spawn_resource_drop(resource_type, amount, spawn_pos)
 	if drop != null and is_instance_valid(drop):
+		if drop is Node2D:
+			drop.global_position = _snap_to_tile(spawn_pos)
 		drop.set_meta("craft_supply", true)
-
-func _find_best_stockpile_with_resource(resource_type: StringName) -> Node:
-	var best_zone: Node = null
-	var best_amount: int = 0
-	for zone in _get_group_nodes_cached(&"stockpile_zones"):
-		if zone == null or not is_instance_valid(zone):
-			continue
-		if not zone.has_method("get_stored_amount"):
-			continue
-		var amount: int = int(zone.get_stored_amount(resource_type))
-		if amount <= best_amount:
-			continue
-		best_amount = amount
-		best_zone = zone
-	return best_zone
 
 func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int) -> int:
 	var remain: int = maxi(0, amount)
@@ -2548,8 +2588,12 @@ func _on_raid_test_warning_requested() -> void:
 	_start_raid_warning()
 
 func _cancel_noncombat_jobs_for_active_raid() -> void:
+	if _rally_flag_node == null or not is_instance_valid(_rally_flag_node):
+		return
 	for colonist in colonists:
 		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if not _can_colonist_enter_raid_combat(colonist):
 			continue
 		if not colonist.has_method("cancel_current_job"):
 			continue
@@ -2560,6 +2604,21 @@ func _cancel_noncombat_jobs_for_active_raid() -> void:
 		if job_type == &"CombatMelee" or job_type == &"CombatRanged":
 			continue
 		colonist.cancel_current_job()
+
+func _can_colonist_enter_raid_combat(colonist: Node) -> bool:
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	if not colonist.has_method("can_do_job"):
+		return true
+	var preferred: StringName = &"CombatMelee"
+	if colonist.has_method("get_preferred_combat_job_type"):
+		var preferred_type: StringName = StringName(colonist.get_preferred_combat_job_type())
+		if preferred_type == &"CombatMelee" or preferred_type == &"CombatRanged":
+			preferred = preferred_type
+	if bool(colonist.can_do_job(preferred)):
+		return true
+	var fallback: StringName = &"CombatRanged" if preferred == &"CombatMelee" else &"CombatMelee"
+	return bool(colonist.can_do_job(fallback))
 
 func _spawn_raiders(count: int) -> void:
 	if count <= 0:
@@ -3412,12 +3471,26 @@ func _select_stockpile_zone_near(world_pos: Vector2) -> void:
 	_refresh_stockpile_filter_ui()
 
 func _find_stockpile_zone_near(world_pos: Vector2, radius: float) -> Node:
+	var best_inside: Node = null
+	var best_inside_dist_sq: float = INF
+	var best_near: Node = null
+	var best_near_dist_sq: float = INF
+	var radius_sq: float = radius * radius
 	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if zone == null or not is_instance_valid(zone):
 			continue
-		if zone.global_position.distance_to(world_pos) <= radius:
-			return zone
-	return null
+		var dist_sq: float = zone.global_position.distance_squared_to(world_pos)
+		if zone.has_method("contains_point") and bool(zone.contains_point(world_pos)):
+			if dist_sq < best_inside_dist_sq:
+				best_inside_dist_sq = dist_sq
+				best_inside = zone
+			continue
+		if dist_sq <= radius_sq and dist_sq < best_near_dist_sq:
+			best_near_dist_sq = dist_sq
+			best_near = zone
+	if best_inside != null:
+		return best_inside
+	return best_near
 
 func _find_farm_zone_near(world_pos: Vector2, radius: float) -> Node:
 	for zone in _get_group_nodes_cached(&"farm_zones"):

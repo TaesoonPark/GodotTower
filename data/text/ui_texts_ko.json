@@ -75,6 +75,7 @@
   "hud.stock.resource.food_raw": "FoodRaw",
   "hud.stock.resource.meal": "Meal",
   "hud.stock.apply": "적용",
+  "hud.stock.delete": "구역 삭제",
   "hud.queue.title": "Queue",
   "hud.queue.title.with_ws": "Queue ({name})",
   "hud.craft.title": "제작 큐",
