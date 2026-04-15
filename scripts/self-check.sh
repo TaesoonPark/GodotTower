@@ -10,6 +10,7 @@ mkdir -p "${RUN_DIR}"
 HEADLESS_LOG="${RUN_DIR}/headless.log"
 RAID_LOG="${RUN_DIR}/raid.log"
 GUI_LOG="${RUN_DIR}/gui.log"
+ENCODING_LOG="${RUN_DIR}/encoding.log"
 SUMMARY_LOG="${RUN_DIR}/summary.txt"
 
 CHANGED_FILES_RAW=""
@@ -113,9 +114,21 @@ emit_feedback() {
   echo ""
 } | tee "${SUMMARY_LOG}"
 
+ENCODING_STATUS=0
 HEADLESS_STATUS=0
 RAID_STATUS=0
 GUI_STATUS=0
+
+run_step "encoding" "${ENCODING_LOG}" python3 scripts/check_encoding.py --all || ENCODING_STATUS=$?
+if [[ ${ENCODING_STATUS} -ne 0 ]]; then
+  {
+    echo ""
+    echo "Result:"
+    echo "- encoding=${ENCODING_STATUS}"
+    echo "- overall=1"
+  } | tee -a "${SUMMARY_LOG}"
+  exit 1
+fi
 
 run_step "headless" "${HEADLESS_LOG}" bash scripts/run-playtest.sh || HEADLESS_STATUS=$?
 emit_feedback "headless" "${HEADLESS_LOG}"
@@ -135,13 +148,14 @@ else
 fi
 
 OVERALL_STATUS=0
-if [[ ${HEADLESS_STATUS} -ne 0 || ${RAID_STATUS} -ne 0 || ${GUI_STATUS} -ne 0 ]]; then
+if [[ ${ENCODING_STATUS} -ne 0 || ${HEADLESS_STATUS} -ne 0 || ${RAID_STATUS} -ne 0 || ${GUI_STATUS} -ne 0 ]]; then
   OVERALL_STATUS=1
 fi
 
 {
   echo ""
   echo "Result:"
+  echo "- encoding=${ENCODING_STATUS}"
   echo "- headless=${HEADLESS_STATUS}"
   echo "- raid=${RAID_STATUS}"
   echo "- gui=${GUI_STATUS}"

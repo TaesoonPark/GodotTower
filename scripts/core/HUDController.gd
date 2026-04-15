@@ -6,6 +6,7 @@ const CATALOG_BUILD: StringName = &"Build"
 const CATALOG_RESEARCH: StringName = &"Research"
 const CATALOG_FARM: StringName = &"Farm"
 const CATALOG_CRAFT: StringName = &"Craft"
+const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
 
 @onready var resources_label: Label = $TopResourceBar
 @onready var time_flow_label: Label = $TimeFlowLabel
@@ -23,9 +24,13 @@ const CATALOG_CRAFT: StringName = &"Craft"
 @onready var carry_capacity_label: Label = $SelectedStatusPanel/VBox/CarryCapacityLabel
 @onready var equipment_label: Label = $SelectedStatusPanel/VBox/EquipmentLabel
 @onready var equipment_slots: HBoxContainer = $SelectedStatusPanel/VBox/EquipmentSlots
+@onready var top_slot_label: Label = $SelectedStatusPanel/VBox/EquipmentSlots/TopSlot/TopSlotLabel
 @onready var top_slot_icon: ColorRect = $SelectedStatusPanel/VBox/EquipmentSlots/TopSlot/TopSlotIcon
+@onready var bottom_slot_label: Label = $SelectedStatusPanel/VBox/EquipmentSlots/BottomSlot/BottomSlotLabel
 @onready var bottom_slot_icon: ColorRect = $SelectedStatusPanel/VBox/EquipmentSlots/BottomSlot/BottomSlotIcon
+@onready var hat_slot_label: Label = $SelectedStatusPanel/VBox/EquipmentSlots/HatSlot/HatSlotLabel
 @onready var hat_slot_icon: ColorRect = $SelectedStatusPanel/VBox/EquipmentSlots/HatSlot/HatSlotIcon
+@onready var weapon_slot_label: Label = $SelectedStatusPanel/VBox/EquipmentSlots/WeaponSlot/WeaponSlotLabel
 @onready var weapon_slot_icon: ColorRect = $SelectedStatusPanel/VBox/EquipmentSlots/WeaponSlot/WeaponSlotIcon
 @onready var stockpile_inventory_title: Label = $SelectedStatusPanel/VBox/StockpileInventoryTitle
 @onready var stockpile_inventory_scroll: ScrollContainer = $SelectedStatusPanel/VBox/StockpileInventoryScroll
@@ -49,6 +54,7 @@ const CATALOG_CRAFT: StringName = &"Craft"
 @onready var stockpile_filter_title: Label = $SelectedStatusPanel/VBox/StockpileFilterTitle
 @onready var stockpile_filter_mode_option: OptionButton = $SelectedStatusPanel/VBox/StockpileFilterMode
 @onready var stock_priority_row: HBoxContainer = $SelectedStatusPanel/VBox/StockPriorityRow
+@onready var stock_priority_text: Label = $SelectedStatusPanel/VBox/StockPriorityRow/StockPriorityText
 @onready var stock_priority_spin: SpinBox = $SelectedStatusPanel/VBox/StockPriorityRow/StockPrioritySpin
 @onready var stockpile_filter_grid: GridContainer = $SelectedStatusPanel/VBox/StockpileFilterGrid
 @onready var stock_wood_check: CheckBox = $SelectedStatusPanel/VBox/StockpileFilterGrid/StockWoodCheck
@@ -64,12 +70,13 @@ const CATALOG_CRAFT: StringName = &"Craft"
 @onready var catalog_panel: HUDCatalogPanel = $BottomCatalogPanel
 @onready var craft_panel: VBoxContainer = $BottomCatalogPanel/VBox/CraftPanel
 @onready var craft_queue_title: Label = $BottomCatalogPanel/VBox/CraftPanel/CraftQueueTitle
-@onready var workstation_option: OptionButton = $BottomCatalogPanel/VBox/CraftPanel/WorkstationRow/WorkstationOption
-@onready var recipe_option: OptionButton = $BottomCatalogPanel/VBox/CraftPanel/CraftControls/RecipeOption
-@onready var queue_craft_button: Button = $BottomCatalogPanel/VBox/CraftPanel/CraftControls/QueueCraftButton
-@onready var queue_front_button: Button = $BottomCatalogPanel/VBox/CraftPanel/CraftControls/QueueFrontButton
-@onready var craft_queue_buttons: HBoxContainer = $BottomCatalogPanel/VBox/CraftPanel/CraftQueueButtons
-@onready var clear_queue_button: Button = $BottomCatalogPanel/VBox/CraftPanel/CraftQueueButtons/ClearQueueButton
+@onready var workstation_text: Label = $BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/WorkstationRow/WorkstationText
+@onready var workstation_option: OptionButton = $BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/WorkstationRow/WorkstationOption
+@onready var recipe_option: OptionButton = $BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftControls/RecipeOption
+@onready var queue_craft_button: Button = $BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftControls/QueueCraftButton
+@onready var queue_front_button: Button = $BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftControls/QueueFrontButton
+@onready var craft_queue_buttons: HBoxContainer = $BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftQueueButtons
+@onready var clear_queue_button: Button = $BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftQueueButtons/ClearQueueButton
 @onready var craft_queue_list: VBoxContainer = $BottomCatalogPanel/VBox/CraftPanel/CraftQueueScroll/CraftQueueList
 
 @onready var drag_stockpile_button: Button = $BottomActionPanel/CommandGrid/DragStockpileButton
@@ -118,7 +125,7 @@ var _selected_building_id: StringName = &""
 var _building_defs_cache: Array = []
 var _catalog_mode: StringName = CATALOG_NONE
 var _catalog_visible: bool = false
-var _catalog_description: String = "?좏깮????ぉ ?ㅻ챸"
+var _catalog_description: String = ""
 
 var _recipe_id_by_index: Array[StringName] = []
 var _workstation_ids_by_index: Array[StringName] = []
@@ -145,19 +152,22 @@ var _research_selected_id: StringName = &""
 var _farm_entries: Array[Dictionary] = []
 var _farm_selected_crop_id: StringName = &""
 var _craft_recipe_entries: Array[Dictionary] = []
-var _research_status_text: String = "?곌뎄: ?놁쓬"
+var _research_status_text: String = ""
 
 var _outfit_mode: StringName = &"Work"
 var _context_action_id: StringName = &""
 var _last_resource_stock_text: String = ""
 var _defense_status_label: Label = null
 func _ready() -> void:
-	roster_panel.set_title("주민 초상화 목록")
+	_catalog_description = _t("hud.catalog.description.default")
+	_research_status_text = _t("hud.research.status.none")
+	_apply_static_texts()
+	roster_panel.set_title(_t("hud.roster.title"))
 	roster_panel.portrait_selected.connect(func(colonist_id: int):
 		portrait_selected.emit(colonist_id)
 	)
-	catalog_panel.set_title("?좏깮 移댄깉濡쒓렇")
-	catalog_panel.set_mode(CATALOG_NONE, "紐⑤뱶: ?놁쓬")
+	catalog_panel.set_title(_t("hud.catalog.title"))
+	catalog_panel.set_mode(CATALOG_NONE, _t("hud.catalog.mode.none"))
 	catalog_panel.set_description(_catalog_description)
 	catalog_panel.item_pressed.connect(_on_catalog_item_pressed)
 	catalog_panel.visible = false
@@ -199,7 +209,7 @@ func _ready() -> void:
 	workstation_option.item_selected.connect(_on_workstation_selected)
 
 	_craft_pause_button = Button.new()
-	_craft_pause_button.text = "?쇱떆?뺤?"
+	_craft_pause_button.text = _t("hud.craft.pause")
 	_craft_pause_button.custom_minimum_size = Vector2(96, 0)
 	_craft_pause_button.pressed.connect(func():
 		_craft_queue_paused = not _craft_queue_paused
@@ -214,7 +224,7 @@ func _ready() -> void:
 	raid_test_button.pressed.connect(func(): raid_test_warning_requested.emit())
 
 	_defense_status_label = Label.new()
-	_defense_status_label.text = "諛⑹뼱 ?곹깭: -"
+	_defense_status_label.text = _t("hud.defense.status.empty")
 	_defense_status_label.position = Vector2(16.0, 106.0)
 	add_child(_defense_status_label)
 
@@ -222,6 +232,55 @@ func _ready() -> void:
 	set_selected_status_visible(false)
 	set_stockpile_filter_state(false, 0, {}, 0, {})
 	set_active_action(_active_action)
+
+func _apply_static_texts() -> void:
+	resources_label.text = _t("hud.resource.title")
+	time_flow_label.text = _t("hud.time.default")
+	raid_status_label.text = _t("hud.raid.idle", {"kind": ""})
+	raid_test_button.text = _t("hud.raid.test_button")
+	context_action_button.text = _t("hud.context.action.default")
+	status_title.text = _t("hud.status.title")
+	selected_label.text = _t("hud.selected.none")
+	needs_label.text = _t("hud.needs.empty")
+	priority_label.text = _t("hud.priority.empty")
+	current_job_label.text = _t("hud.current_job.empty")
+	carry_capacity_label.text = _t("hud.carry.empty")
+	equipment_label.text = _t("hud.equipment.empty")
+	top_slot_label.text = _t("hud.slot.top")
+	bottom_slot_label.text = _t("hud.slot.bottom")
+	hat_slot_label.text = _t("hud.slot.hat")
+	weapon_slot_label.text = _t("hud.slot.weapon")
+	stockpile_inventory_title.text = _t("hud.stockpile.title")
+	selected_object_detail.text = _t("hud.common.dash")
+	work_toggle_title.text = _t("hud.work_toggle.title")
+	haul_check.text = _t("hud.work.haul")
+	build_check.text = _t("hud.work.build")
+	craft_check.text = _t("hud.work.craft")
+	combat_check.text = _t("hud.work.combat")
+	gather_check.text = _t("hud.work.gather")
+	hunt_check.text = _t("hud.work.hunt")
+	designation_desc.text = _t("hud.common.dash")
+	designation_toggle_button.text = _t("hud.designation.toggle")
+	bed_assign_auto_button.text = _t("hud.bed.auto_assign")
+	stockpile_filter_title.text = _t("hud.stock.filter.title")
+	stock_priority_text.text = _t("hud.stock.priority")
+	stock_wood_check.text = _t("hud.stock.resource.wood")
+	stock_stone_check.text = _t("hud.stock.resource.stone")
+	stock_steel_check.text = _t("hud.stock.resource.steel")
+	stock_food_raw_check.text = _t("hud.stock.resource.food_raw")
+	stock_meal_check.text = _t("hud.stock.resource.meal")
+	stock_apply_limit_button.text = _t("hud.stock.apply")
+	craft_queue_title.text = _t("hud.craft.title")
+	workstation_text.text = _t("hud.craft.workstation")
+	queue_craft_button.text = _t("hud.craft.queue_add")
+	queue_front_button.text = _t("hud.craft.queue_front")
+	clear_queue_button.text = _t("hud.craft.clear")
+	drag_stockpile_button.text = _t("hud.action.drag_stockpile")
+	drag_gather_button.text = _t("hud.action.drag_gather")
+	drag_farm_button.text = _t("hud.action.drag_farm")
+	build_catalog_button.text = _t("hud.action.build")
+	outfit_toggle_button.text = _t("hud.action.outfit")
+	rally_flag_button.text = _t("hud.action.rally")
 
 func set_colonist_roster(entries: Array) -> void:
 	roster_panel.set_entries(entries)
@@ -234,6 +293,14 @@ func open_bottom_catalog(mode: StringName, description: String = "") -> void:
 	_set_catalog_visible(true)
 
 func close_bottom_catalog() -> void:
+	_set_catalog_visible(false)
+
+func reset_bottom_catalog_state() -> void:
+	_selected_building_id = &""
+	_research_selected_id = &""
+	_farm_selected_crop_id = &""
+	_catalog_description = _t("hud.catalog.description.default")
+	_set_catalog_mode(CATALOG_NONE)
 	_set_catalog_visible(false)
 
 func is_bottom_catalog_visible() -> bool:
@@ -277,7 +344,7 @@ func set_farm_catalog(crop_options: Array, selected_crop_id: StringName = &"", d
 		_refresh_catalog_items()
 
 func set_selected_count(count: int) -> void:
-	selected_label.text = "Selected: %d" % count
+	selected_label.text = _t("hud.selected.count", {"count": count})
 
 func set_active_action(action: StringName) -> void:
 	_active_action = action
@@ -298,7 +365,7 @@ func set_resource_stock(stock: Dictionary) -> void:
 	var chunks: Array[String] = []
 	for key in keys:
 		chunks.append("%s:%d" % [String(key), int(stock.get(key, 0))])
-	var next_text: String = "?뺤갑吏 ?먯썝 ?뺣낫: %s" % ", ".join(chunks)
+	var next_text: String = _t("hud.resource.stock", {"chunks": ", ".join(chunks)})
 	if next_text == _last_resource_stock_text:
 		return
 	_last_resource_stock_text = next_text
@@ -306,44 +373,47 @@ func set_resource_stock(stock: Dictionary) -> void:
 
 func set_outfit_mode(mode: StringName) -> void:
 	_outfit_mode = &"Combat" if mode == &"Combat" else &"Work"
-	outfit_toggle_button.text = "蹂듭옣\n?꾪닾" if _outfit_mode == &"Combat" else "蹂듭옣\n?묒뾽"
+	outfit_toggle_button.text = _t("hud.outfit.combat") if _outfit_mode == &"Combat" else _t("hud.outfit.work")
 
 func set_raid_state(state: StringName, warning_seconds: float = 0.0, wave_kind: StringName = &"") -> void:
 	var kind_text: String = ""
 	match wave_kind:
 		&"ZombieHorde":
-			kind_text = " [醫鍮?"
+			kind_text = _t("hud.raid.kind.zombie")
 		&"Mixed":
-			kind_text = " [?쇳빀]"
+			kind_text = _t("hud.raid.kind.mixed")
 		&"RaiderOnly":
-			kind_text = " [?쏀깉??"
+			kind_text = _t("hud.raid.kind.raider")
 		_:
 			kind_text = ""
 	match state:
 		&"Warning":
-			raid_status_label.text = "습격 경고%s: %.0fs" % [kind_text, ceil(warning_seconds)]
+			raid_status_label.text = _t("hud.raid.warning", {"kind": kind_text, "seconds": "%.0f" % ceil(warning_seconds)})
 			raid_status_label.modulate = Color(1.0, 0.78, 0.32, 1.0)
 		&"Active":
-			raid_status_label.text = "습격 진행중%s" % kind_text
+			raid_status_label.text = _t("hud.raid.active", {"kind": kind_text})
 			raid_status_label.modulate = Color(1.0, 0.35, 0.35, 1.0)
 		&"Resolved":
-			raid_status_label.text = "습격 종료%s" % kind_text
+			raid_status_label.text = _t("hud.raid.resolved", {"kind": kind_text})
 			raid_status_label.modulate = Color(0.68, 0.96, 0.68, 1.0)
 		_:
-			raid_status_label.text = "습격 대기%s" % kind_text
+			raid_status_label.text = _t("hud.raid.idle", {"kind": kind_text})
 			raid_status_label.modulate = Color(0.8, 0.86, 0.95, 1.0)
 
 func set_defense_status(text: String) -> void:
 	if _defense_status_label != null:
-		_defense_status_label.text = "諛⑹뼱 ?곹깭: %s" % text
+		_defense_status_label.text = _t("hud.defense.status", {"text": text})
 
 func set_time_flow_state(paused: bool, speed_scale: float, elapsed_game_seconds: float) -> void:
 	var elapsed_text: String = _format_elapsed_time(elapsed_game_seconds)
-	time_flow_label.text = "Time: Paused | %s" % elapsed_text if paused else "Time: x%.1f | %s" % [speed_scale, elapsed_text]
+	if paused:
+		time_flow_label.text = _t("hud.time.paused", {"elapsed": elapsed_text})
+		return
+	time_flow_label.text = _t("hud.time.running", {"speed": "%.1f" % speed_scale, "elapsed": elapsed_text})
 
 func set_equipment_preview(colonist: Node) -> void:
 	if colonist == null:
-		equipment_label.text = "?λ퉬: -"
+		equipment_label.text = _t("hud.equipment.empty")
 		_set_equipment_slot_icon(top_slot_icon, false, Color(0.36, 0.63, 0.9))
 		_set_equipment_slot_icon(bottom_slot_icon, false, Color(0.55, 0.74, 0.95))
 		_set_equipment_slot_icon(hat_slot_icon, false, Color(0.93, 0.74, 0.4))
@@ -357,44 +427,55 @@ func set_equipment_preview(colonist: Node) -> void:
 		var item_id: StringName = StringName(slots.get(key, &""))
 		if item_id != &"":
 			parts.append("%s:%s" % [String(key), String(item_id)])
-	equipment_label.text = "?λ퉬: %s" % ("?놁쓬" if parts.is_empty() else ", ".join(parts))
+	var equipment_text: String = _t("common.none") if parts.is_empty() else ", ".join(parts)
+	equipment_label.text = _t("hud.equipment.summary", {"items": equipment_text})
 	_set_equipment_slot_icon(top_slot_icon, StringName(slots.get(&"Top", &"")) != &"", Color(0.36, 0.63, 0.9))
 	_set_equipment_slot_icon(bottom_slot_icon, StringName(slots.get(&"Bottom", &"")) != &"", Color(0.55, 0.74, 0.95))
 	_set_equipment_slot_icon(hat_slot_icon, StringName(slots.get(&"Hat", &"")) != &"", Color(0.93, 0.74, 0.4))
 	_set_equipment_slot_icon(weapon_slot_icon, StringName(slots.get(&"Weapon", &"")) != &"", Color(0.92, 0.38, 0.38))
 
 func set_needs_preview(colonist: Node) -> void:
-	needs_label.text = "Needs: -" if colonist == null else "Needs H:%.0f R:%.0f M:%.0f" % [colonist.hunger, colonist.rest, colonist.mood]
+	if colonist == null:
+		needs_label.text = _t("hud.needs.empty")
+		return
+	needs_label.text = _t("hud.needs.status", {
+		"hunger": "%.0f" % colonist.hunger,
+		"rest": "%.0f" % colonist.rest,
+		"mood": "%.0f" % colonist.mood
+	})
 
 func set_priority_preview(colonist: Node) -> void:
 	if colonist == null:
-		priority_label.text = "Priority: -"
+		priority_label.text = _t("hud.priority.empty")
 		return
-	priority_label.text = "Priority Cb:%d B:%d C:%d G:%d Hu:%d Ha:%d" % [
-		colonist.priorities.combat,
-		colonist.priorities.build,
-		colonist.priorities.craft,
-		colonist.priorities.gather,
-		colonist.priorities.hunt,
-		colonist.priorities.haul
-	]
+	priority_label.text = _t("hud.priority.status", {
+		"combat": colonist.priorities.combat,
+		"build": colonist.priorities.build,
+		"craft": colonist.priorities.craft,
+		"gather": colonist.priorities.gather,
+		"hunt": colonist.priorities.hunt,
+		"haul": colonist.priorities.haul
+	})
 
 func set_current_job_preview(colonist: Node) -> void:
 	if colonist == null:
-		current_job_label.text = "Current Job: -"
+		current_job_label.text = _t("hud.current_job.empty")
 		return
 	if colonist.current_job.is_empty():
-		current_job_label.text = "Current Job: Idle"
+		current_job_label.text = _t("hud.current_job.idle")
 		return
-	current_job_label.text = "Current Job: %s" % StringName(colonist.current_job.get("type", &"Idle"))
+	current_job_label.text = _t("hud.current_job.status", {"job": StringName(colonist.current_job.get("type", &"Idle"))})
 
 func set_carry_capacity_preview(colonist: Node) -> void:
-	carry_capacity_label.text = "Carry: -" if colonist == null or colonist.stats == null else "Carry: %d" % int(colonist.stats.haul_carry_capacity)
+	if colonist == null or colonist.stats == null:
+		carry_capacity_label.text = _t("hud.carry.empty")
+		return
+	carry_capacity_label.text = _t("hud.carry.status", {"capacity": int(colonist.stats.haul_carry_capacity)})
 func set_stockpile_inventory_preview(stockpile_zone: Node) -> void:
 	var selected: bool = stockpile_zone != null and is_instance_valid(stockpile_zone)
 	if selected:
-		status_title.text = "?좏깮 ?뺣낫"
-		selected_label.text = "Selected: Stockpile"
+		status_title.text = _t("hud.status.title")
+		selected_label.text = _t("hud.selected.stockpile")
 		_set_unit_info_visible(false)
 		stockpile_inventory_title.visible = true
 		stockpile_inventory_scroll.visible = true
@@ -411,7 +492,7 @@ func set_stockpile_inventory_preview(stockpile_zone: Node) -> void:
 	_rebuild_stockpile_inventory_items({})
 
 func set_selected_object_preview(title: String, detail: String, actions: Array) -> void:
-	status_title.text = "?좏깮 ?뺣낫"
+	status_title.text = _t("hud.status.title")
 	selected_label.text = title
 	_set_unit_info_visible(false)
 	stockpile_inventory_title.visible = false
@@ -447,8 +528,12 @@ func set_research_panel_visible(_visible: bool) -> void:
 
 func set_designation_target_preview(target_name: String, enabled: bool, kind: String) -> void:
 	designation_panel.visible = true
-	designation_desc.text = "%s (%s)\n?꾩옱 吏?? %s" % [target_name, kind, ("ON" if enabled else "OFF")]
-	designation_toggle_button.text = "Toggle OFF" if enabled else "Toggle ON"
+	designation_desc.text = _t("hud.designation.preview", {
+		"target": target_name,
+		"kind": kind,
+		"state": _t("common.on") if enabled else _t("common.off")
+	})
+	designation_toggle_button.text = _t("hud.designation.toggle.off") if enabled else _t("hud.designation.toggle.on")
 
 func set_bed_assignment_visible(visible: bool) -> void:
 	bed_assign_panel.visible = visible
@@ -462,7 +547,7 @@ func set_bed_assignment_options(colonist_options: Array, selected_colonist_id: i
 		var opt: Dictionary = opt_any
 		var idx: int = bed_assign_option.item_count
 		var cid: int = int(opt.get("id", 0))
-		bed_assign_option.add_item(String(opt.get("name", "Unknown")))
+		bed_assign_option.add_item(String(opt.get("name", _t("hud.bed.option.unknown"))))
 		bed_assign_option.set_item_metadata(idx, cid)
 		if cid == selected_colonist_id:
 			bed_assign_option.select(idx)
@@ -473,12 +558,12 @@ func set_bed_assignment_options(colonist_options: Array, selected_colonist_id: i
 func set_craft_panel_visible(visible: bool, workstation_name: String = "") -> void:
 	craft_panel.visible = visible
 	if not visible:
-		craft_queue_title.text = "Queue"
+		craft_queue_title.text = _t("hud.queue.title")
 		if _catalog_mode == CATALOG_CRAFT and _catalog_visible:
 			close_bottom_catalog()
 		return
 	open_bottom_catalog(CATALOG_CRAFT)
-	craft_queue_title.text = "Queue" if workstation_name.is_empty() else "Queue (%s)" % workstation_name
+	craft_queue_title.text = _t("hud.queue.title") if workstation_name.is_empty() else _t("hud.queue.title.with_ws", {"name": workstation_name})
 
 func set_recipe_catalog(recipes: Array) -> void:
 	recipe_option.clear()
@@ -547,23 +632,28 @@ func set_research_catalog(research_defs: Array, selected_id: StringName = &"", l
 		var rid: StringName = def.id
 		var req: StringName = StringName(_research_prereq_map.get(rid, &""))
 		var unlocked: bool = bool(_research_lock_map.get(rid, true))
-		var tip: String = "%s\n?꾩슂 ?ъ씤?? %.0f" % [String(def.id), float(def.required_points)]
+		var tip: String = _t("hud.research.tip.required", {"id": String(def.id), "points": "%.0f" % float(def.required_points)})
 		if req != &"":
-			tip += "\n?좏뻾 ?곌뎄: %s" % String(req)
+			tip += _t("hud.research.tip.prereq", {"id": String(req)})
 		if not unlocked:
-			tip += "\n(?좉?)"
+			tip += _t("hud.research.tip.locked")
 		_research_entries.append({"id": rid, "label": String(def.display_name), "tooltip": tip, "disabled": not unlocked})
 	if _catalog_mode == CATALOG_RESEARCH:
 		_refresh_catalog_items()
 
 func set_research_state(active_id: StringName, points: float, required_points: float, completed_map: Dictionary = {}) -> void:
 	if active_id == &"":
-		_research_status_text = "?곌뎄: ?놁쓬"
+		_research_status_text = _t("hud.research.status.none")
 		if _catalog_mode == CATALOG_RESEARCH:
 			set_bottom_catalog_description(_research_status_text)
 		return
-	var done_text: String = "완료" if bool(completed_map.get(active_id, false)) else "진행중"
-	_research_status_text = "?곌뎄 %s [%s] %.0f / %.0f" % [String(active_id), done_text, points, required_points]
+	var done_text: String = _t("hud.research.state.done") if bool(completed_map.get(active_id, false)) else _t("hud.research.state.progress")
+	_research_status_text = _t("hud.research.status", {
+		"id": String(active_id),
+		"state": done_text,
+		"points": "%.0f" % points,
+		"required": "%.0f" % required_points
+	})
 	if _catalog_mode == CATALOG_RESEARCH:
 		set_bottom_catalog_description(_research_status_text)
 
@@ -597,7 +687,7 @@ func set_stockpile_presets(preset_options: Array, selected_id: StringName = &"")
 		_stock_preset_option = OptionButton.new()
 		_stock_preset_option.custom_minimum_size = Vector2(120, 0)
 		_stock_preset_apply_button = Button.new()
-		_stock_preset_apply_button.text = "?꾨━???곸슜"
+		_stock_preset_apply_button.text = _t("hud.stock.preset.apply")
 		_stock_preset_apply_button.custom_minimum_size = Vector2(98, 0)
 		_stock_preset_apply_button.pressed.connect(func():
 			if _stock_preset_option == null or _stock_preset_option.item_count <= 0:
@@ -665,7 +755,7 @@ func _on_build_catalog_button_pressed() -> void:
 	if _catalog_visible and _catalog_mode == CATALOG_BUILD:
 		close_bottom_catalog()
 		return
-	_catalog_description = "嫄댁텞????ぉ???좏깮?섏꽭??"
+	_catalog_description = _t("hud.catalog.description.build")
 	open_bottom_catalog(CATALOG_BUILD)
 
 func _on_outfit_toggle_button_pressed() -> void:
@@ -696,16 +786,16 @@ func _set_catalog_mode(mode: StringName) -> void:
 	_catalog_mode = mode
 	match mode:
 		CATALOG_BUILD:
-			catalog_panel.set_mode(mode, "모드: 건축")
+			catalog_panel.set_mode(mode, _t("hud.catalog.mode.build"))
 		CATALOG_RESEARCH:
-			catalog_panel.set_mode(mode, "紐⑤뱶: ?곌뎄")
+			catalog_panel.set_mode(mode, _t("hud.catalog.mode.research"))
 			_catalog_description = _research_status_text
 		CATALOG_FARM:
-			catalog_panel.set_mode(mode, "紐⑤뱶: ?띿옉")
+			catalog_panel.set_mode(mode, _t("hud.catalog.mode.farm"))
 		CATALOG_CRAFT:
-			catalog_panel.set_mode(mode, "紐⑤뱶: ?쒖옉")
+			catalog_panel.set_mode(mode, _t("hud.catalog.mode.craft"))
 		_:
-			catalog_panel.set_mode(CATALOG_NONE, "紐⑤뱶: ?놁쓬")
+			catalog_panel.set_mode(CATALOG_NONE, _t("hud.catalog.mode.none"))
 	_refresh_catalog_items()
 	craft_panel.visible = mode == CATALOG_CRAFT
 
@@ -736,7 +826,7 @@ func _rebuild_stockpile_inventory_items(stored_map: Dictionary) -> void:
 		child.queue_free()
 	if stored_map.is_empty():
 		var empty_label := Label.new()
-		empty_label.text = "Empty"
+		empty_label.text = _t("hud.stockpile.empty")
 		stockpile_inventory_list.add_child(empty_label)
 		return
 	var keys: Array = stored_map.keys()
@@ -775,7 +865,7 @@ func _rebuild_queue_items(items: Array[String]) -> void:
 		child.queue_free()
 	if items.is_empty():
 		var empty_label := Label.new()
-		empty_label.text = "Queue: -"
+		empty_label.text = _t("hud.queue.empty")
 		craft_queue_list.add_child(empty_label)
 		return
 	for i in range(items.size()):
@@ -785,7 +875,7 @@ func _rebuild_queue_items(items: Array[String]) -> void:
 		row.text = "%d. %s" % [i + 1, items[i]]
 		row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 		var remove_button := Button.new()
-		remove_button.text = "X"
+		remove_button.text = _t("hud.queue.remove")
 		remove_button.custom_minimum_size = Vector2(26, 0)
 		remove_button.pressed.connect(_on_queue_item_remove_pressed.bind(i))
 		row_box.add_child(row)
@@ -841,9 +931,9 @@ func _on_bed_assign_selected(index: int) -> void:
 	bed_assignee_changed.emit(int(bed_assign_option.get_item_metadata(index)))
 func _setup_stockpile_filter_widgets() -> void:
 	stockpile_filter_mode_option.clear()
-	stockpile_filter_mode_option.add_item("All")
-	stockpile_filter_mode_option.add_item("AllowOnly")
-	stockpile_filter_mode_option.add_item("DenyList")
+	stockpile_filter_mode_option.add_item(_t("hud.stock.filter.mode.all"))
+	stockpile_filter_mode_option.add_item(_t("hud.stock.filter.mode.allow_only"))
+	stockpile_filter_mode_option.add_item(_t("hud.stock.filter.mode.deny_list"))
 	stockpile_filter_mode_option.item_selected.connect(_on_stockpile_filter_mode_selected)
 	stock_priority_spin.value_changed.connect(_on_stockpile_priority_spin_changed)
 	_stock_filter_checks = {
@@ -895,7 +985,7 @@ func _refresh_limit_spin_by_selected_resource() -> void:
 
 func _refresh_craft_pause_button() -> void:
 	if _craft_pause_button != null:
-		_craft_pause_button.text = "재개" if _craft_queue_paused else "일시정지"
+		_craft_pause_button.text = _t("hud.craft.resume") if _craft_queue_paused else _t("hud.craft.pause")
 
 func _format_elapsed_time(total_seconds: float) -> String:
 	var total: int = maxi(0, int(floor(total_seconds)))
@@ -928,17 +1018,31 @@ func _humanize_recipe_id(recipe_id: StringName) -> String:
 	return out.strip_edges()
 
 func _format_recipe_tooltip(recipe: Resource) -> String:
-	return "%s\nInput: %s\nOutput: %s" % [recipe.display_name, _compact_cost_text(recipe.ingredients), _compact_cost_text(recipe.products)]
+	return _t("hud.recipe.tooltip", {
+		"name": String(recipe.display_name),
+		"input": _compact_cost_text(recipe.ingredients),
+		"output": _compact_cost_text(recipe.products)
+	})
 
 func _format_building_button_text(def: Resource) -> String:
 	var cost_text: String = _compact_cost_text(def.build_cost)
-	return "%s\nNoCost" % def.display_name if cost_text.is_empty() else "%s\n%s" % [def.display_name, cost_text]
+	if cost_text.is_empty():
+		return _t("hud.building.button.no_cost", {"name": String(def.display_name)})
+	return "%s\n%s" % [def.display_name, cost_text]
 
 func _format_building_tooltip(def: Resource) -> String:
 	var cost_text: String = _compact_cost_text(def.build_cost)
 	if cost_text.is_empty():
-		cost_text = "No resource cost"
-	return "%s (%s)\nWork: %.0f\nCost: %s" % [def.display_name, def.category, def.required_work, cost_text]
+		cost_text = _t("hud.building.tooltip.no_cost")
+	return _t("hud.building.tooltip", {
+		"name": String(def.display_name),
+		"category": String(def.category),
+		"work": "%.0f" % def.required_work,
+		"cost": cost_text
+	})
+
+func _t(key: String, params: Dictionary = {}, fallback: String = "") -> String:
+	return GAME_TEXT.get_text(key, params, fallback)
 
 func _compact_cost_text(cost: Dictionary) -> String:
 	if cost.is_empty():

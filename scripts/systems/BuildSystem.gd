@@ -79,8 +79,8 @@ func _set_building_defs(building_defs: Array) -> void:
 
 func _place_blueprint(def: Resource, world_pos: Vector2) -> void:
 	var site = BUILDING_SITE_SCENE.instantiate()
-	site.global_position = world_pos
 	_world_root.add_child(site)
+	site.global_position = world_pos
 	if site.has_method("setup_building"):
 		site.setup_building(def, false)
 	_sites.append(site)
@@ -101,7 +101,6 @@ func cancel_build_site(site: Node) -> bool:
 func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	var placed := Node2D.new()
 	placed.name = "Built_%s" % String(def.id)
-	placed.global_position = world_pos
 	placed.add_to_group("structures")
 	_apply_structure_metas(placed, def)
 
@@ -114,6 +113,7 @@ func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	label.position = Vector2(-def.footprint_size.x * 0.48, -def.footprint_size.y * 0.9)
 	placed.add_child(label)
 	_world_root.add_child(placed)
+	placed.global_position = world_pos
 	_structures_cache_dirty = true
 	structure_added.emit(placed)
 

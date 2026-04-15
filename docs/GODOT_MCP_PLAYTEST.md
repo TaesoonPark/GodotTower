@@ -56,6 +56,29 @@ WSL에서 Windows exe 직접 호출은 환경에 따라 실패할 수 있으므�
 bash scripts/setup-playtest-env.sh
 ```
 
+## UTF-8 공통 워크플로 (Windows + macOS)
+
+OS를 혼용할 때 한글 깨짐을 막기 위해 아래 규칙을 고정합니다.
+
+- 저장소 파일은 `UTF-8 without BOM + LF`
+- 작업 전/CI 전 `python3 scripts/check_encoding.py --all` 실행
+- 변경분만 빠르게 확인할 때 `python3 scripts/check_encoding.py --staged` 실행
+
+Windows PowerShell 권장:
+
+```powershell
+$env:PYTHONUTF8='1'
+$env:PYTHONIOENCODING='UTF-8'
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+```
+
+macOS/WSL/Linux 권장:
+
+```bash
+export PYTHONUTF8=1
+export PYTHONIOENCODING=UTF-8
+```
+
 ## 직접 실행
 
 Cursor에서 MCP 서버가 정상 등록되면, 아래 순서로 확인합니다.

@@ -7,6 +7,7 @@ const JOB_PRIORITY_SCRIPT: Script = preload("res://scripts/data/JobPriorityData.
 const HAUL_TRANSITION: Script = preload("res://scripts/sim/HaulTransition.gd")
 const GATHER_TRANSITION: Script = preload("res://scripts/sim/GatherTransition.gd")
 const BUILD_TRANSITION: Script = preload("res://scripts/sim/BuildTransition.gd")
+const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
 
 signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
@@ -932,42 +933,42 @@ func _update_job_label() -> void:
 	job_label.text = job_name
 	job_label.visible = true
 	if job_type == &"Gather" and bool(current_job.get("work_started", false)):
-		job_label.text = "채집 진행중"
+		job_label.text = _t("colonist.job.gather_in_progress")
 
 func _job_display_name(job_type: StringName) -> String:
 	match job_type:
 		&"MoveTo":
-			return "이동"
+			return _t("colonist.job.move")
 		&"BuildSite":
-			return "건설"
+			return _t("colonist.job.build")
 		&"RepairStructure":
-			return "수리"
+			return _t("colonist.job.repair")
 		&"DemolishStructure":
-			return "해체"
+			return _t("colonist.job.demolish")
 		&"MaintainTrap":
-			return "함정 정비"
+			return _t("colonist.job.maintain_trap")
 		&"Gather":
-			return "채집"
+			return _t("colonist.job.gather")
 		&"Hunt":
-			return "사냥"
+			return _t("colonist.job.hunt")
 		&"HaulResource":
-			return "운반"
+			return _t("colonist.job.haul")
 		&"CraftRecipe":
-			return "제작"
+			return _t("colonist.job.craft")
 		&"ResearchTask":
-			return "연구"
+			return _t("colonist.job.research")
 		&"PlantCrop":
-			return "파종"
+			return _t("colonist.job.plant")
 		&"HarvestCrop":
-			return "수확"
+			return _t("colonist.job.harvest")
 		&"EatStub":
-			return "식사"
+			return _t("colonist.job.eat")
 		&"IdleRecover":
-			return "휴식"
+			return _t("colonist.job.rest")
 		&"CombatMelee":
-			return "근접 전투"
+			return _t("colonist.job.combat_melee")
 		&"CombatRanged":
-			return "원거리 전투"
+			return _t("colonist.job.combat_ranged")
 		_:
 			return ""
 
@@ -1384,3 +1385,6 @@ func _finish_current_job() -> void:
 	_resume_after_move_enabled = false
 	_set_work_progress(0.0, false)
 	emit_status()
+
+func _t(key: String, params: Dictionary = {}, fallback: String = "") -> String:
+	return GAME_TEXT.get_text(key, params, fallback)

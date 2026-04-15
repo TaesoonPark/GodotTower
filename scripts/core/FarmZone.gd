@@ -1,5 +1,6 @@
 extends Node2D
 class_name FarmZone
+const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
 
 signal zone_changed(zone: Node)
 signal farm_job_needed(zone: Node)
@@ -103,8 +104,11 @@ func get_crop_display_name() -> String:
 	if crop_def == null:
 		if crop_type != &"":
 			return String(crop_type)
-		return "미선택"
+		return _t("common.unselected")
 	return String(crop_def.display_name)
+
+func _t(key: String, params: Dictionary = {}, fallback: String = "") -> String:
+	return GAME_TEXT.get_text(key, params, fallback)
 
 func tick_growth(delta: float) -> void:
 	var changed: bool = false

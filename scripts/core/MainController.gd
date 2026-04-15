@@ -15,6 +15,7 @@ const RESEARCH_REQUIRED_POINTS_SCALE: float = 0.1
 const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
 const DEFAULT_LOADOUT: ColonistLoadoutData = preload("res://data/colonists/default_loadout.tres")
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
+const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
 const WORLD_SIZE: Vector2 = Vector2(7680.0, 4320.0)
 const TILE_SIZE: float = 40.0
 const EDGE_SCROLL_MARGIN: float = 18.0
@@ -95,6 +96,7 @@ var _speed_scale: float = 1.0
 var pending_building_id: StringName = &""
 var pending_install_item: StringName = &""
 var pending_install_drop_id: int = 0
+var _deferred_build_requests: Dictionary = {}
 var selected_designation_target: Node = null
 var selected_bed_node: Node = null
 var _last_camera_ticks_usec: int = 0
@@ -232,6 +234,7 @@ func _ready() -> void:
 	hud.drag_stockpile_mode_requested.connect(func(): _on_action_changed(&"StockpileZone"))
 	hud.drag_farm_mode_requested.connect(func(): _on_action_changed(&"FarmZone"))
 	hud.rally_flag_mode_requested.connect(func(): _on_action_changed(&"SetRallyFlag"))
+	hud.action_button_pressed.connect(_on_hud_action_button_pressed)
 	hud.clear_state_requested.connect(_on_clear_state_requested)
 	hud.context_action_requested.connect(_on_context_action_requested)
 	hud.selected_object_action_requested.connect(_on_selected_object_action_requested)
@@ -434,6 +437,7 @@ func _process(delta: float) -> void:
 		_last_hud_time_tick = time_tick
 		_hud_dirty = true
 	_update_raid_state(delta)
+	_process_deferred_build_requests()
 	if _raid_state == &"Active":
 		_trap_update_accum += delta
 		if _trap_update_accum >= TRAP_UPDATE_INTERVAL_SEC:
@@ -703,6 +707,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				return
 			KEY_ESCAPE:
 				_clear_pending_placement()
+				if hud != null and is_instance_valid(hud) and hud.has_method("reset_bottom_catalog_state"):
+					hud.reset_bottom_catalog_state()
+				else:
+					_close_bottom_catalog_if_supported()
 				_on_action_changed(&"Interact")
 				return
 	input_controller.process_unhandled_input(event, world_root)
@@ -846,6 +854,24 @@ func _on_left_click(world_pos: Vector2) -> void:
 		return
 	selected_bed_node = null
 	hud.set_bed_assignment_visible(false)
+	if pending_building_id == &"Gate":
+		var wall_site_target: Node = _find_build_site_near(world_pos, 28.0, &"Wall")
+		if wall_site_target != null:
+			_cancel_build_site(wall_site_target)
+			_try_place_building_by_id(wall_site_target.global_position, &"Gate")
+			_refresh_hud()
+			return
+		var wall_target: Node = _find_structure_by_building_near(world_pos, &"Wall", 32.0)
+		if wall_target != null:
+			_queue_demolish_structure(wall_target, &"Gate")
+			_refresh_hud()
+			return
+
+	if pending_building_id != &"":
+		_try_place_building_by_id(world_pos, pending_building_id)
+		_refresh_hud()
+		return
+
 	var clicked: Node = _find_colonist_near(world_pos, 30.0)
 	if clicked != null:
 		_clear_selected_object()
@@ -913,32 +939,13 @@ func _on_left_click(world_pos: Vector2) -> void:
 		hud.set_active_action(&"Workstation")
 		return
 	hud.set_craft_panel_visible(false)
-	_close_bottom_catalog_if_supported()
+	var keep_build_catalog_open: bool = pending_building_id != &"" and hud.is_bottom_catalog_visible() and hud.get_bottom_catalog_mode() == &"Build"
+	if not keep_build_catalog_open:
+		_close_bottom_catalog_if_supported()
 
 	if pending_install_item != &"":
 		if _try_install_pending_item(world_pos):
 			_clear_pending_placement()
-		_refresh_hud()
-		_close_bottom_catalog_if_supported()
-		return
-
-	if pending_building_id == &"Gate":
-		var wall_site_target: Node = _find_build_site_near(world_pos, 28.0, &"Wall")
-		if wall_site_target != null:
-			_cancel_build_site(wall_site_target)
-			_try_place_building_by_id(wall_site_target.global_position, &"Gate")
-			_refresh_hud()
-			_close_bottom_catalog_if_supported()
-			return
-		var wall_target: Node = _find_structure_by_building_near(world_pos, &"Wall", 32.0)
-		if wall_target != null:
-			_queue_demolish_structure(wall_target, &"Gate")
-			_refresh_hud()
-			_close_bottom_catalog_if_supported()
-			return
-
-	if pending_building_id != &"":
-		_try_place_building_by_id(world_pos, pending_building_id)
 		_refresh_hud()
 		_close_bottom_catalog_if_supported()
 		return
@@ -1068,9 +1075,13 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 
 func _set_selected(new_selection: Array) -> void:
 	for c in selected_colonists:
-		if c != null:
+		if c != null and is_instance_valid(c):
 			c.set_selected(false)
-	selected_colonists = new_selection
+	selected_colonists.clear()
+	for c in new_selection:
+		if c == null or not is_instance_valid(c):
+			continue
+		selected_colonists.append(c)
 	for c in selected_colonists:
 		c.set_selected(true)
 	_hud_dirty = true
@@ -1093,6 +1104,7 @@ func _maybe_start_auto_raid_benchmark() -> void:
 	)
 
 func _on_command_move(world_pos: Vector2) -> void:
+	_sanitize_selected_colonists()
 	if selected_colonists.is_empty():
 		return
 	_issue_selected_move_command(world_pos)
@@ -1156,7 +1168,7 @@ func _open_farm_catalog_if_supported(zone: Node) -> void:
 		return
 	var crop_options: Array = []
 	var selected_crop: StringName = &""
-	var crop_name: String = "미선택"
+	var crop_name: String = _t("common.unselected")
 	if zone != null and is_instance_valid(zone):
 		if zone.has_method("get_crop_options"):
 			crop_options = zone.get_crop_options()
@@ -1165,14 +1177,14 @@ func _open_farm_catalog_if_supported(zone: Node) -> void:
 		if zone.has_method("get_crop_display_name"):
 			crop_name = String(zone.get_crop_display_name())
 	if hud.has_method("set_farm_catalog"):
-		hud.set_farm_catalog(crop_options, selected_crop, "농경지 작물을 클릭하면 즉시 적용됩니다.")
-	hud.open_bottom_catalog(&"Farm", "현재 작물: %s" % crop_name)
+		hud.set_farm_catalog(crop_options, selected_crop, _t("main.farm.catalog.description"))
+	hud.open_bottom_catalog(&"Farm", _t("main.farm.current_crop", {"crop": crop_name}))
 
 func _open_craft_catalog_if_supported() -> void:
 	if hud == null or not is_instance_valid(hud):
 		return
 	if hud.has_method("open_bottom_catalog"):
-		hud.open_bottom_catalog(&"Craft", "레시피 클릭 시 제작 대기열에 추가됩니다.")
+		hud.open_bottom_catalog(&"Craft", _t("main.craft.catalog.description"))
 
 func _on_hud_portrait_selected(colonist_id: int) -> void:
 	var colonist: Node = _find_colonist_by_id(colonist_id)
@@ -1193,7 +1205,16 @@ func _on_hud_portrait_selected(colonist_id: int) -> void:
 func _on_hud_catalog_item_activated(_mode: StringName, _item_id: StringName) -> void:
 	_hud_dirty = true
 
+func _on_hud_action_button_pressed(action_id: StringName) -> void:
+	if action_id != &"BuildCatalogToggle":
+		return
+	# Build tab toggle should always reset current building choice so reopening starts unselected.
+	pending_building_id = &""
+	hud.set_selected_building(&"")
+	_hud_dirty = true
+
 func _refresh_hud() -> void:
+	_sanitize_selected_colonists()
 	hud.set_selected_count(selected_colonists.size())
 	hud.set_resource_stock(resource_stock)
 	if hud.has_method("set_colonist_roster"):
@@ -1212,7 +1233,7 @@ func _refresh_hud() -> void:
 	if focus != null:
 		hud.set_stockpile_inventory_preview(null)
 	elif farm_focus != null:
-		var crop_name: String = "미선택"
+		var crop_name: String = _t("common.unselected")
 		var crop_options: Array = []
 		var selected_crop: StringName = &""
 		if farm_focus.has_method("get_crop_display_name"):
@@ -1222,15 +1243,15 @@ func _refresh_hud() -> void:
 		if farm_focus.has_method("get_crop_type"):
 			selected_crop = StringName(farm_focus.get_crop_type())
 		if hud.has_method("set_farm_catalog"):
-			hud.set_farm_catalog(crop_options, selected_crop, "농경지 작물을 클릭하면 즉시 적용됩니다.")
+			hud.set_farm_catalog(crop_options, selected_crop, _t("main.farm.catalog.description"))
 		hud.set_selected_object_preview(
-			"Selected: Farm Zone",
-			"Type: Farm Zone\nCrop: %s\nAction: 성숙 시 자동 수확" % crop_name,
+			_t("main.selected.farm.title"),
+			_t("main.selected.farm.detail", {"crop": crop_name}),
 			[]
 		)
 	elif object_focus:
 		if _selected_object_kind == &"ResearchBench":
-			var progress_text: String = "없음"
+			var progress_text: String = _t("main.research.progress.none")
 			if _active_research_id != &"":
 				progress_text = "%s %.0f / %.0f" % [
 					String(_active_research_id),
@@ -1238,8 +1259,8 @@ func _refresh_hud() -> void:
 					_active_research_required_points()
 				]
 			hud.set_selected_object_preview(
-				"Selected: Research Bench",
-				"Type: Research Bench\n현재 연구: %s" % progress_text,
+				_t("main.selected.research.title"),
+				_t("main.selected.research.detail", {"progress": progress_text}),
 				[]
 			)
 		elif _selected_object_kind == &"BuildSite":
@@ -1247,29 +1268,29 @@ func _refresh_hud() -> void:
 			var work_need: float = float(_selected_object_zone.get("required_work"))
 			var work_done: float = float(_selected_object_zone.get("work_progress"))
 			hud.set_selected_object_preview(
-				"Selected: Blueprint %s" % String(bid_site),
-				"Type: Build Site\n진행도: %.1f / %.1f" % [work_done, work_need],
-				[{"id": &"CancelBuildSite", "label": "건축 취소"}]
+				_t("main.selected.blueprint.title", {"id": String(bid_site)}),
+				_t("main.selected.buildsite.detail", {"done": "%.1f" % work_done, "need": "%.1f" % work_need}),
+				[{"id": &"CancelBuildSite", "label": _t("main.action.cancel_build")}]
 			)
 		elif _selected_object_kind == &"Structure":
 			var building_id: StringName = StringName(_selected_object_zone.get_meta("building_id")) if _selected_object_zone.has_meta("building_id") else &"Structure"
 			var hp: float = float(_selected_object_zone.get_meta("structure_health")) if _selected_object_zone.has_meta("structure_health") else 0.0
 			var max_hp: float = float(_selected_object_zone.get_meta("structure_max_health")) if _selected_object_zone.has_meta("structure_max_health") else hp
-			var detail: String = "Type: Structure\nID: %s\n내구도: %.0f / %.0f" % [String(building_id), hp, max_hp]
+			var detail: String = _t("main.selected.structure.detail", {"id": String(building_id), "hp": "%.0f" % hp, "max_hp": "%.0f" % max_hp})
 			hud.set_selected_object_preview(
 				"Selected: %s" % String(building_id),
 				detail,
-				[{"id": &"DemolishSelectedStructure", "label": "해체"}]
+				[{"id": &"DemolishSelectedStructure", "label": _t("main.action.demolish")}]
 			)
 		else:
 			var amount: int = 0
 			if _selected_object_zone.has_method("get_stored_amount"):
 				amount = int(_selected_object_zone.get_stored_amount(_selected_object_resource))
-			var title: String = "Selected: %s" % String(_selected_object_resource)
-			var detail: String = "Type: Stockpile Item\nAmount: %d" % amount
+			var title: String = _t("main.selected.resource.title", {"resource": String(_selected_object_resource)})
+			var detail: String = _t("main.selected.resource.detail", {"amount": amount})
 			var actions: Array = []
 			if _selected_object_resource == &"Bed" and amount > 0:
-				actions.append({"id": &"PlaceBedFromStockpile", "label": "배치하기"})
+				actions.append({"id": &"PlaceBedFromStockpile", "label": _t("main.action.place_bed")})
 			hud.set_selected_object_preview(title, detail, actions)
 	else:
 		hud.set_stockpile_inventory_preview(stockpile_focus)
@@ -1300,7 +1321,10 @@ func _on_priority_changed(job_type: StringName, value: int) -> void:
 	_mark_jobs_dirty()
 
 func _on_work_toggle_changed(work_type: StringName, enabled: bool) -> void:
+	_sanitize_selected_colonists()
 	for c in selected_colonists:
+		if c == null or not is_instance_valid(c):
+			continue
 		c.set_work_enabled(work_type, enabled)
 	job_system.mark_assign_dirty()
 	_mark_jobs_dirty()
@@ -1329,6 +1353,7 @@ func _on_colonist_status_changed(_colonist: Node) -> void:
 				if current.is_empty() or (job_type != &"CombatMelee" and job_type != &"CombatRanged"):
 					_mark_combat_dirty()
 					_mark_jobs_dirty()
+	_sanitize_selected_colonists()
 	if selected_colonists.is_empty():
 		return
 	_hud_dirty = true
@@ -1363,7 +1388,7 @@ func _set_combat_rally_point(world_pos: Vector2) -> void:
 		cloth.position = Vector2(10.0, -24.0)
 		_rally_flag_node.add_child(cloth)
 		var label := Label.new()
-		label.text = "吏묓빀 源껊컻"
+		label.text = _t("main.rally.label")
 		label.position = Vector2(-26.0, -46.0)
 		_rally_flag_node.add_child(label)
 		world_root.add_child(_rally_flag_node)
@@ -1838,7 +1863,7 @@ func _on_colonist_ate_food() -> void:
 		_mark_economy_dirty()
 		_mark_jobs_dirty()
 
-func _try_place_selected_building(world_pos: Vector2, as_blueprint: bool) -> void:
+func _try_place_selected_building(world_pos: Vector2, as_blueprint: bool) -> bool:
 	var placed: bool = build_system.place_building(world_pos, as_blueprint)
 	if placed and not as_blueprint:
 		hud.set_resource_stock(resource_stock)
@@ -1848,13 +1873,14 @@ func _try_place_selected_building(world_pos: Vector2, as_blueprint: bool) -> voi
 		_mark_maintenance_dirty()
 		_mark_economy_dirty()
 		_hud_dirty = true
+	return placed
 
-func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> void:
+func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> bool:
 	if building_id == &"Stockpile":
 		var snapshot: Dictionary = resource_stock.duplicate(true)
 		build_system.set_selected_building(building_id)
 		if not build_system.consume_selected_cost(resource_stock):
-			return
+			return false
 		var zone_rect := Rect2(world_pos - Vector2(80.0, 60.0), Vector2(160.0, 120.0))
 		if not build_system.place_stockpile_zone(zone_rect):
 			resource_stock = snapshot
@@ -1863,9 +1889,147 @@ func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> v
 			_mark_economy_dirty()
 			_mark_jobs_dirty()
 		hud.set_resource_stock(resource_stock)
-		return
+		return true
+	if _queue_deferred_build_request_if_resource_blocked(world_pos, building_id):
+		return false
 	build_system.set_selected_building(building_id)
-	_try_place_selected_building(world_pos, true)
+	var placed: bool = _try_place_selected_building(world_pos, true)
+	if placed:
+		_deferred_build_requests.erase(_deferred_build_key(world_pos, building_id))
+	return placed
+
+func _deferred_build_key(world_pos: Vector2, building_id: StringName) -> String:
+	var snapped: Vector2 = _snap_to_tile(world_pos)
+	return "%s:%d:%d" % [String(building_id), int(round(snapped.x)), int(round(snapped.y))]
+
+func _find_building_def(building_id: StringName) -> Resource:
+	for def in _building_defs_all:
+		if def == null:
+			continue
+		if StringName(def.id) == building_id:
+			return def
+	return null
+
+func _build_candidate_rect(world_pos: Vector2, building_id: StringName) -> Rect2:
+	var snapped: Vector2 = _snap_to_tile(world_pos)
+	var footprint: Vector2 = Vector2(TILE_SIZE, TILE_SIZE)
+	var def: Resource = _find_building_def(building_id)
+	if def != null:
+		footprint = def.footprint_size
+	return Rect2(snapped - footprint * 0.5, footprint)
+
+func _is_resource_node_overlapping_build(node: Node, candidate_rect: Rect2) -> bool:
+	if node == null or not is_instance_valid(node):
+		return false
+	var center: Vector2 = _snap_to_tile(node.global_position)
+	var half: float = TILE_SIZE * 0.5
+	var blocker_rect := Rect2(center - Vector2(half, half), Vector2(TILE_SIZE, TILE_SIZE))
+	return candidate_rect.intersects(blocker_rect)
+
+func _collect_resource_blockers_for_build(world_pos: Vector2, building_id: StringName) -> Array:
+	var candidate_rect: Rect2 = _build_candidate_rect(world_pos, building_id)
+	var blockers: Array = []
+	var seen_ids: Dictionary = {}
+	for node in _get_group_nodes_cached(&"gatherables"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.has_method("is_depleted") and bool(node.is_depleted()):
+			continue
+		if not _is_resource_node_overlapping_build(node, candidate_rect):
+			continue
+		var nid: int = node.get_instance_id()
+		if seen_ids.has(nid):
+			continue
+		seen_ids[nid] = true
+		blockers.append(node)
+	for node in _get_group_nodes_cached(&"huntables"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.has_method("is_dead") and bool(node.is_dead()):
+			continue
+		if not _is_resource_node_overlapping_build(node, candidate_rect):
+			continue
+		var nid: int = node.get_instance_id()
+		if seen_ids.has(nid):
+			continue
+		seen_ids[nid] = true
+		blockers.append(node)
+	for node in _get_group_nodes_cached(&"resource_drops"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.has_method("is_empty") and bool(node.is_empty()):
+			continue
+		if not _is_resource_node_overlapping_build(node, candidate_rect):
+			continue
+		var nid: int = node.get_instance_id()
+		if seen_ids.has(nid):
+			continue
+		seen_ids[nid] = true
+		blockers.append(node)
+	return blockers
+
+func _queue_resource_clear_jobs_for_build(blockers: Array) -> void:
+	var queued_designation_job: bool = false
+	var has_drop_blocker: bool = false
+	for blocker in blockers:
+		if blocker == null or not is_instance_valid(blocker):
+			continue
+		if blocker.is_in_group("gatherables"):
+			if blocker.has_method("set_designated"):
+				blocker.set_designated(true)
+			if not bool(blocker.get("job_queued")):
+				job_system.queue_gather_job(blocker)
+				queued_designation_job = true
+		elif blocker.is_in_group("huntables"):
+			if blocker.has_method("set_designated"):
+				blocker.set_designated(true)
+			if not bool(blocker.get("job_queued")):
+				job_system.queue_hunt_job(blocker)
+				queued_designation_job = true
+		elif blocker.is_in_group("resource_drops"):
+			has_drop_blocker = true
+	if queued_designation_job and job_system != null and is_instance_valid(job_system) and job_system.has_method("mark_designation_dirty"):
+		job_system.mark_designation_dirty()
+	if queued_designation_job:
+		_mark_jobs_dirty()
+	if has_drop_blocker:
+		_mark_economy_dirty()
+		_mark_jobs_dirty()
+
+func _queue_deferred_build_request_if_resource_blocked(world_pos: Vector2, building_id: StringName) -> bool:
+	var blockers: Array = _collect_resource_blockers_for_build(world_pos, building_id)
+	if blockers.is_empty():
+		return false
+	var key: String = _deferred_build_key(world_pos, building_id)
+	if _deferred_build_requests.has(key):
+		return true
+	_deferred_build_requests[key] = {
+		"building_id": building_id,
+		"world_pos": _snap_to_tile(world_pos)
+	}
+	_queue_resource_clear_jobs_for_build(blockers)
+	_hud_dirty = true
+	return true
+
+func _process_deferred_build_requests() -> void:
+	if _deferred_build_requests.is_empty():
+		return
+	var request_keys: Array = _deferred_build_requests.keys()
+	for key_any in request_keys:
+		var key: String = String(key_any)
+		var request: Dictionary = _deferred_build_requests.get(key, {})
+		var building_id: StringName = StringName(request.get("building_id", &""))
+		var world_pos: Vector2 = request.get("world_pos", Vector2.INF)
+		if building_id == &"" or world_pos == Vector2.INF:
+			_deferred_build_requests.erase(key)
+			continue
+		if not _collect_resource_blockers_for_build(world_pos, building_id).is_empty():
+			continue
+		if _try_place_building_by_id(world_pos, building_id):
+			_deferred_build_requests.erase(key)
+			continue
+		# Placement still failed after resource clear (ex: structure occupancy). Drop request.
+		_deferred_build_requests.erase(key)
 
 func try_supply_build_site(site_obj: Object) -> bool:
 	if site_obj == null or not is_instance_valid(site_obj):
@@ -1963,7 +2127,7 @@ func _try_install_pending_item(world_pos: Vector2) -> bool:
 	sprite.texture = ImageTexture.create_from_image(image)
 	placed.add_child(sprite)
 	var txt := Label.new()
-	txt.text = "Bed (미배정)"
+	txt.text = _t("main.bed.label.unassigned")
 	txt.position = Vector2(-24, -28)
 	placed.add_child(txt)
 	world_root.add_child(placed)
@@ -2151,16 +2315,16 @@ func _refresh_designation_ui() -> void:
 	var title: String = String(selected_designation_target.get("display_name"))
 	if title.is_empty():
 		title = String(selected_designation_target.name)
-	var kind: String = "채집"
+	var kind: String = _t("main.designation.kind.gather")
 	if selected_designation_target.is_in_group("huntables"):
-		kind = "사냥"
+		kind = _t("main.designation.kind.hunt")
 	hud.set_designation_target_preview(title, enabled, kind)
 
 func _refresh_bed_assign_ui() -> void:
 	if selected_bed_node == null or not is_instance_valid(selected_bed_node):
 		hud.set_bed_assignment_visible(false)
 		return
-	var options: Array = [{"id": 0, "name": "미배정"}]
+	var options: Array = [{"id": 0, "name": _t("common.unselected")}]
 	for i in range(colonists.size()):
 		var c: Node = colonists[i]
 		if c == null or not is_instance_valid(c):
@@ -2177,7 +2341,7 @@ func _on_bed_assignee_changed(colonist_id: int) -> void:
 	if selected_bed_node == null or not is_instance_valid(selected_bed_node):
 		return
 	selected_bed_node.set_meta("assigned_colonist_id", colonist_id)
-	var owner_name: String = "미배정"
+	var owner_name: String = _t("common.unselected")
 	if colonist_id != 0:
 		for c in colonists:
 			if c != null and is_instance_valid(c) and c.get_instance_id() == colonist_id:
@@ -2185,7 +2349,7 @@ func _on_bed_assignee_changed(colonist_id: int) -> void:
 				break
 	for child in selected_bed_node.get_children():
 		if child is Label:
-			child.text = "Bed (%s)" % owner_name
+			child.text = _t("main.bed.label", {"owner": owner_name})
 			break
 	_apply_passive_item_bonuses()
 	_mark_maintenance_dirty()
@@ -2240,10 +2404,12 @@ func _on_context_action_requested(action_id: StringName) -> void:
 				if gather_obj.has_method("set_designated"):
 					gather_obj.set_designated(true)
 				var assigned_to: int = 0
+				_sanitize_selected_colonists()
 				if not selected_colonists.is_empty():
-					assigned_to = selected_colonists[0].get_instance_id()
-					if selected_colonists[0].has_method("cancel_current_job"):
-						selected_colonists[0].cancel_current_job()
+					var primary: Node = selected_colonists[0]
+					assigned_to = primary.get_instance_id()
+					if primary.has_method("cancel_current_job"):
+						primary.cancel_current_job()
 				job_system.queue_gather_job(gather_obj, assigned_to)
 				job_system.mark_designation_dirty()
 				_mark_jobs_dirty()
@@ -2869,18 +3035,19 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 		_on_action_changed(&"Interact")
 		_close_bottom_catalog_if_supported()
 		return
+	_sanitize_selected_colonists()
 	if not selected_colonists.is_empty():
 		var gatherable: Node = _find_gatherable_near(world_pos, 48.0)
 		if gatherable != null:
 			_context_gather_target_id = gatherable.get_instance_id()
 			_context_workstation_id = &""
-			hud.show_context_action_button(&"Gather", "채집하기", event.position)
+			hud.show_context_action_button(&"Gather", _t("main.context.gather"), event.position)
 			return
 		var ws_id: StringName = _find_workstation_id_near(world_pos, 56.0)
 		if ws_id != &"":
 			_context_workstation_id = ws_id
 			_context_gather_target_id = 0
-			hud.show_context_action_button(&"Workstation", "작업하기", event.position)
+			hud.show_context_action_button(&"Workstation", _t("main.context.workstation"), event.position)
 			return
 		_issue_selected_move_command(world_pos)
 		return
@@ -3400,7 +3567,7 @@ func _get_cached_research_options() -> Array:
 		var unlocked: bool = bool(lock_map.get(key, true))
 		var req: StringName = StringName(prereq_map.get(key, &""))
 		var scaled_required: float = _scaled_research_required_points(float(def.required_points))
-		var label: String = "%s (%.1f)%s" % [String(def.display_name), scaled_required, "" if unlocked else " [잠김]"]
+		var label: String = "%s (%.1f)%s" % [String(def.display_name), scaled_required, "" if unlocked else " [%s]" % _t("common.locked")]
 		if not unlocked and req != &"":
 			label += " <- %s" % String(req)
 		options.append({
@@ -3639,8 +3806,15 @@ func _refresh_structure_maintenance_cache() -> void:
 			pending_count += 1
 	var estimated_batches: int = maxi(1, int(ceil(float(missing_charge_total) / 2.0)))
 	var maintain_affordable: bool = int(resource_stock.get(&"Wood", 0)) >= estimated_batches and int(resource_stock.get(&"Steel", 0)) >= estimated_batches
-	var maint_state: String = "가능" if maintain_affordable else "재료부족"
-	_defense_status_text = "수리:%d / 함정정비:%d / 소진함정:%d / 필요(W:%d,S:%d) %s" % [_cached_damaged_repairables.size(), pending_count, depleted_count, estimated_batches, estimated_batches, maint_state]
+	var maint_state: String = _t("main.defense.maint.state.ok") if maintain_affordable else _t("main.defense.maint.state.lack")
+	_defense_status_text = _t("main.defense.maint.summary", {
+		"repair": _cached_damaged_repairables.size(),
+		"pending": pending_count,
+		"depleted": depleted_count,
+		"wood": estimated_batches,
+		"steel": estimated_batches,
+		"state": maint_state
+	})
 
 func _haul_urgency_multiplier_by_colony_state() -> float:
 	var avg_hunger: float = 100.0
@@ -3691,13 +3865,13 @@ func _refresh_stockpile_filter_ui() -> void:
 
 func _get_stockpile_preset_options() -> Array:
 	return [
-		{"id": &"All", "label": "전체"},
-		{"id": &"Food", "label": "식량"},
-		{"id": &"War", "label": "전투 물자"},
-		{"id": &"Build", "label": "건설 자재"},
-		{"id": &"Industry", "label": "산업 물자"},
-		{"id": &"Emergency", "label": "응급 보급"},
-		{"id": &"Harvest", "label": "농산물"}
+		{"id": &"All", "label": _t("main.stock.preset.all")},
+		{"id": &"Food", "label": _t("main.stock.preset.food")},
+		{"id": &"War", "label": _t("main.stock.preset.war")},
+		{"id": &"Build", "label": _t("main.stock.preset.build")},
+		{"id": &"Industry", "label": _t("main.stock.preset.industry")},
+		{"id": &"Emergency", "label": _t("main.stock.preset.emergency")},
+		{"id": &"Harvest", "label": _t("main.stock.preset.harvest")}
 	]
 
 func try_consume_trap_maintenance_cost(batch_count: int = 1) -> bool:
@@ -4186,3 +4360,16 @@ func _apply_combat_tile_occupancy(enemies: Array = []) -> void:
 		_combat_tile_claims[assigned_tile] = unit.get_instance_id()
 	# Do not forcibly snap unit positions. Hard snapping can cause wall clipping and jitter
 	# when units are enclosed; claims are kept for lightweight occupancy bookkeeping only.
+
+func _sanitize_selected_colonists() -> void:
+	if selected_colonists.is_empty():
+		return
+	var valid: Array = []
+	for c in selected_colonists:
+		if c == null or not is_instance_valid(c):
+			continue
+		valid.append(c)
+	selected_colonists = valid
+
+func _t(key: String, params: Dictionary = {}, fallback: String = "") -> String:
+	return GAME_TEXT.get_text(key, params, fallback)

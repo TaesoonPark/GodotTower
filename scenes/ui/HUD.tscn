@@ -12,7 +12,7 @@ anchor_left = 0.12
 anchor_right = 0.88
 offset_top = 10.0
 offset_bottom = 56.0
-text = "정착지 자원 정보"
+text = ""
 horizontal_alignment = 0
 vertical_alignment = 1
 theme_override_font_sizes/font_size = 24
@@ -24,7 +24,7 @@ offset_left = -300.0
 offset_top = 64.0
 offset_right = -16.0
 offset_bottom = 90.0
-text = "Time: x1.0"
+text = ""
 horizontal_alignment = 2
 theme_override_font_sizes/font_size = 14
 
@@ -35,7 +35,7 @@ offset_left = -300.0
 offset_top = 88.0
 offset_right = -16.0
 offset_bottom = 114.0
-text = "습격 대기"
+text = ""
 horizontal_alignment = 2
 theme_override_font_sizes/font_size = 14
 
@@ -46,13 +46,13 @@ offset_left = -56.0
 offset_top = 14.0
 offset_right = 56.0
 offset_bottom = 42.0
-text = "습격 테스트"
+text = ""
 
 [node name="ContextActionButton" type="Button" parent="."]
 visible = false
 offset_right = 120.0
 offset_bottom = 32.0
-text = "작업"
+text = ""
 
 [node name="LeftRosterPanel" type="PanelContainer" parent="."]
 script = ExtResource("2_roster_script")
@@ -66,7 +66,7 @@ layout_mode = 2
 theme_override_constants/separation = 8
 
 [node name="RosterTitle" type="Label" parent="LeftRosterPanel/VBox"]
-text = "주민"
+text = ""
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 14
 
@@ -92,27 +92,27 @@ layout_mode = 2
 theme_override_constants/separation = 8
 
 [node name="StatusTitle" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "선택 정보"
+text = ""
 theme_override_font_sizes/font_size = 20
 
 [node name="SelectedLabel" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "선택 없음"
+text = ""
 theme_override_font_sizes/font_size = 17
 
 [node name="NeedsLabel" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "Needs: -"
+text = ""
 
 [node name="PriorityLabel" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "Priority: -"
+text = ""
 
 [node name="CurrentJobLabel" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "Current Job: -"
+text = ""
 
 [node name="CarryCapacityLabel" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "Carry: -"
+text = ""
 
 [node name="EquipmentLabel" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "장비: -"
+text = ""
 
 [node name="EquipmentSlots" type="HBoxContainer" parent="SelectedStatusPanel/VBox"]
 theme_override_constants/separation = 8
@@ -120,7 +120,7 @@ theme_override_constants/separation = 8
 [node name="TopSlot" type="VBoxContainer" parent="SelectedStatusPanel/VBox/EquipmentSlots"]
 
 [node name="TopSlotLabel" type="Label" parent="SelectedStatusPanel/VBox/EquipmentSlots/TopSlot"]
-text = "상의"
+text = ""
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 11
 
@@ -131,7 +131,7 @@ color = Color(0.14, 0.14, 0.14, 1)
 [node name="BottomSlot" type="VBoxContainer" parent="SelectedStatusPanel/VBox/EquipmentSlots"]
 
 [node name="BottomSlotLabel" type="Label" parent="SelectedStatusPanel/VBox/EquipmentSlots/BottomSlot"]
-text = "하의"
+text = ""
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 11
 
@@ -142,7 +142,7 @@ color = Color(0.14, 0.14, 0.14, 1)
 [node name="HatSlot" type="VBoxContainer" parent="SelectedStatusPanel/VBox/EquipmentSlots"]
 
 [node name="HatSlotLabel" type="Label" parent="SelectedStatusPanel/VBox/EquipmentSlots/HatSlot"]
-text = "모자"
+text = ""
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 11
 
@@ -153,7 +153,7 @@ color = Color(0.14, 0.14, 0.14, 1)
 [node name="WeaponSlot" type="VBoxContainer" parent="SelectedStatusPanel/VBox/EquipmentSlots"]
 
 [node name="WeaponSlotLabel" type="Label" parent="SelectedStatusPanel/VBox/EquipmentSlots/WeaponSlot"]
-text = "무기"
+text = ""
 horizontal_alignment = 1
 theme_override_font_sizes/font_size = 11
 
@@ -162,7 +162,7 @@ custom_minimum_size = Vector2(26, 26)
 color = Color(0.14, 0.14, 0.14, 1)
 
 [node name="StockpileInventoryTitle" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "저장구역 목록"
+text = ""
 visible = false
 
 [node name="StockpileInventoryScroll" type="ScrollContainer" parent="SelectedStatusPanel/VBox"]
@@ -175,7 +175,7 @@ visible = false
 theme_override_constants/separation = 4
 
 [node name="SelectedObjectDetail" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "-"
+text = ""
 autowrap_mode = 3
 visible = false
 
@@ -184,7 +184,7 @@ theme_override_constants/separation = 8
 visible = false
 
 [node name="WorkToggleTitle" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "작업 토글"
+text = ""
 visible = false
 
 [node name="WorkToggleGrid" type="GridContainer" parent="SelectedStatusPanel/VBox"]
@@ -194,27 +194,27 @@ theme_override_constants/v_separation = 6
 visible = false
 
 [node name="HaulCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/WorkToggleGrid"]
-text = "운반"
+text = ""
 button_pressed = true
 
 [node name="BuildCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/WorkToggleGrid"]
-text = "건축"
+text = ""
 button_pressed = true
 
 [node name="CraftCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/WorkToggleGrid"]
-text = "제작"
+text = ""
 button_pressed = true
 
 [node name="CombatCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/WorkToggleGrid"]
-text = "전투"
+text = ""
 button_pressed = true
 
 [node name="GatherCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/WorkToggleGrid"]
-text = "채집"
+text = ""
 button_pressed = true
 
 [node name="HuntCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/WorkToggleGrid"]
-text = "사냥"
+text = ""
 button_pressed = true
 
 [node name="DesignationPanel" type="PanelContainer" parent="SelectedStatusPanel/VBox"]
@@ -225,11 +225,11 @@ layout_mode = 2
 theme_override_constants/separation = 6
 
 [node name="DesignationDesc" type="Label" parent="SelectedStatusPanel/VBox/DesignationPanel/VBox"]
-text = "-"
+text = ""
 autowrap_mode = 3
 
 [node name="DesignationToggleButton" type="Button" parent="SelectedStatusPanel/VBox/DesignationPanel/VBox"]
-text = "지정 토글"
+text = ""
 
 [node name="BedAssignPanel" type="PanelContainer" parent="SelectedStatusPanel/VBox"]
 visible = false
@@ -242,10 +242,10 @@ theme_override_constants/separation = 6
 custom_minimum_size = Vector2(200, 0)
 
 [node name="BedAssignAutoButton" type="Button" parent="SelectedStatusPanel/VBox/BedAssignPanel/VBox"]
-text = "자동 배정"
+text = ""
 
 [node name="StockpileFilterTitle" type="Label" parent="SelectedStatusPanel/VBox"]
-text = "저장구역 필터"
+text = ""
 visible = false
 
 [node name="StockpileFilterMode" type="OptionButton" parent="SelectedStatusPanel/VBox"]
@@ -256,7 +256,7 @@ visible = false
 visible = false
 
 [node name="StockPriorityText" type="Label" parent="SelectedStatusPanel/VBox/StockPriorityRow"]
-text = "우선순위"
+text = ""
 
 [node name="StockPrioritySpin" type="SpinBox" parent="SelectedStatusPanel/VBox/StockPriorityRow"]
 min_value = -10.0
@@ -272,19 +272,19 @@ theme_override_constants/v_separation = 6
 visible = false
 
 [node name="StockWoodCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/StockpileFilterGrid"]
-text = "Wood"
+text = ""
 
 [node name="StockStoneCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/StockpileFilterGrid"]
-text = "Stone"
+text = ""
 
 [node name="StockSteelCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/StockpileFilterGrid"]
-text = "Steel"
+text = ""
 
 [node name="StockFoodRawCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/StockpileFilterGrid"]
-text = "FoodRaw"
+text = ""
 
 [node name="StockMealCheck" type="CheckBox" parent="SelectedStatusPanel/VBox/StockpileFilterGrid"]
-text = "Meal"
+text = ""
 
 [node name="StockLimitRow" type="HBoxContainer" parent="SelectedStatusPanel/VBox"]
 visible = false
@@ -300,7 +300,7 @@ value = -1.0
 custom_minimum_size = Vector2(90, 0)
 
 [node name="StockApplyLimitButton" type="Button" parent="SelectedStatusPanel/VBox/StockLimitRow"]
-text = "적용"
+text = ""
 custom_minimum_size = Vector2(72, 0)
 
 [node name="BottomCatalogPanel" type="PanelContainer" parent="."]
@@ -310,7 +310,7 @@ anchor_left = 0.20
 anchor_right = 0.78
 anchor_top = 1.0
 anchor_bottom = 1.0
-offset_top = -210.0
+offset_top = -260.0
 offset_bottom = -28.0
 
 [node name="VBox" type="VBoxContainer" parent="BottomCatalogPanel"]
@@ -321,11 +321,11 @@ theme_override_constants/separation = 8
 theme_override_constants/separation = 12
 
 [node name="CatalogTitle" type="Label" parent="BottomCatalogPanel/VBox/HeaderRow"]
-text = "카탈로그"
+text = ""
 theme_override_font_sizes/font_size = 18
 
 [node name="CatalogMode" type="Label" parent="BottomCatalogPanel/VBox/HeaderRow"]
-text = "모드: 없음"
+text = ""
 theme_override_font_sizes/font_size = 14
 
 [node name="ItemScroll" type="ScrollContainer" parent="BottomCatalogPanel/VBox"]
@@ -341,40 +341,47 @@ visible = false
 theme_override_constants/separation = 6
 
 [node name="CraftQueueTitle" type="Label" parent="BottomCatalogPanel/VBox/CraftPanel"]
-text = "제작 큐"
+text = ""
 
-[node name="WorkstationRow" type="HBoxContainer" parent="BottomCatalogPanel/VBox/CraftPanel"]
+[node name="CraftTopRow" type="HBoxContainer" parent="BottomCatalogPanel/VBox/CraftPanel"]
+theme_override_constants/separation = 10
+
+[node name="WorkstationRow" type="HBoxContainer" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow"]
 theme_override_constants/separation = 8
+size_flags_horizontal = 3
 
-[node name="WorkstationText" type="Label" parent="BottomCatalogPanel/VBox/CraftPanel/WorkstationRow"]
-text = "작업대"
+[node name="WorkstationText" type="Label" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/WorkstationRow"]
+text = ""
 
-[node name="WorkstationOption" type="OptionButton" parent="BottomCatalogPanel/VBox/CraftPanel/WorkstationRow"]
-custom_minimum_size = Vector2(220, 0)
+[node name="WorkstationOption" type="OptionButton" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/WorkstationRow"]
+custom_minimum_size = Vector2(180, 0)
+size_flags_horizontal = 3
 
-[node name="CraftControls" type="HBoxContainer" parent="BottomCatalogPanel/VBox/CraftPanel"]
+[node name="CraftControls" type="HBoxContainer" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow"]
 theme_override_constants/separation = 8
+size_flags_horizontal = 3
 
-[node name="RecipeOption" type="OptionButton" parent="BottomCatalogPanel/VBox/CraftPanel/CraftControls"]
-custom_minimum_size = Vector2(220, 0)
+[node name="RecipeOption" type="OptionButton" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftControls"]
+custom_minimum_size = Vector2(180, 0)
+size_flags_horizontal = 3
 
-[node name="QueueCraftButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftControls"]
-text = "대기열 추가"
-custom_minimum_size = Vector2(108, 0)
-
-[node name="QueueFrontButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftControls"]
-text = "맨앞 추가"
+[node name="QueueCraftButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftControls"]
+text = ""
 custom_minimum_size = Vector2(96, 0)
 
-[node name="CraftQueueButtons" type="HBoxContainer" parent="BottomCatalogPanel/VBox/CraftPanel"]
+[node name="QueueFrontButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftControls"]
+text = ""
+custom_minimum_size = Vector2(96, 0)
+
+[node name="CraftQueueButtons" type="HBoxContainer" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow"]
 theme_override_constants/separation = 8
 
-[node name="DequeueButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftQueueButtons"]
+[node name="DequeueButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftQueueButtons"]
 visible = false
-text = "제거"
+text = ""
 
-[node name="ClearQueueButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftQueueButtons"]
-text = "큐 초기화"
+[node name="ClearQueueButton" type="Button" parent="BottomCatalogPanel/VBox/CraftPanel/CraftTopRow/CraftQueueButtons"]
+text = ""
 custom_minimum_size = Vector2(96, 0)
 
 [node name="CraftQueueScroll" type="ScrollContainer" parent="BottomCatalogPanel/VBox/CraftPanel"]
@@ -386,7 +393,7 @@ vertical_scroll_mode = 1
 theme_override_constants/separation = 4
 
 [node name="CatalogDescription" type="Label" parent="BottomCatalogPanel/VBox"]
-text = "선택된 항목 설명"
+text = ""
 autowrap_mode = 3
 
 [node name="BottomActionPanel" type="PanelContainer" parent="."]
@@ -407,24 +414,24 @@ theme_override_constants/v_separation = 8
 
 [node name="DragStockpileButton" type="Button" parent="BottomActionPanel/CommandGrid"]
 custom_minimum_size = Vector2(108, 84)
-text = "저장\n구역"
+text = ""
 
 [node name="DragGatherButton" type="Button" parent="BottomActionPanel/CommandGrid"]
 custom_minimum_size = Vector2(108, 84)
-text = "사냥\n채집"
+text = ""
 
 [node name="DragFarmButton" type="Button" parent="BottomActionPanel/CommandGrid"]
 custom_minimum_size = Vector2(108, 84)
-text = "농경지"
+text = ""
 
 [node name="BuildCatalogButton" type="Button" parent="BottomActionPanel/CommandGrid"]
 custom_minimum_size = Vector2(108, 84)
-text = "건축"
+text = ""
 
 [node name="OutfitToggleButton" type="Button" parent="BottomActionPanel/CommandGrid"]
 custom_minimum_size = Vector2(108, 84)
-text = "복장\n규정"
+text = ""
 
 [node name="RallyFlagButton" type="Button" parent="BottomActionPanel/CommandGrid"]
 custom_minimum_size = Vector2(108, 84)
-text = "집합\n깃발"
+text = ""

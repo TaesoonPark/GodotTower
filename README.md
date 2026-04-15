@@ -1,4 +1,4 @@
-﻿# ColonySimPrototype
+# ColonySimPrototype
 
 Godot 4.6 기반 식민지 생존/자동화 시뮬레이션 프로토타입입니다.
 
@@ -35,19 +35,37 @@ Godot 4.6 기반 식민지 생존/자동화 시뮬레이션 프로토타입입�
 
 ### Windows (현재 레포 기준)
 ```powershell
+$env:PYTHONUTF8='1'
+$env:PYTHONIOENCODING='UTF-8'
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 .\engine\Godot_v4.6.1-stable_win64_console.exe --path .
+```
+
+### Windows UTF-8 콘솔 권장 (cmd.exe)
+```bat
+chcp 65001
+set PYTHONUTF8=1
+set PYTHONIOENCODING=UTF-8
 ```
 
 ### Godot 에디터
 - Godot 에디터에서 프로젝트를 열고 `scenes/main/Main.tscn` 실행
 
-### WSL/Linux
+### macOS/WSL/Linux
 - 환경에 Godot가 설치되어 있거나 `GODOT_PATH`가 설정되어 있으면:
 ```bash
+export PYTHONUTF8=1
+export PYTHONIOENCODING=UTF-8
 bash scripts/run-playtest.sh
 ```
 
 ## 테스트
+
+### 인코딩 검증 (공통)
+```bash
+python3 scripts/check_encoding.py --all
+python3 scripts/check_encoding.py --staged
+```
 
 ### 빠른 스모크 테스트 (Windows)
 ```powershell
@@ -63,6 +81,9 @@ bash scripts/run-parity-suite.sh
 bash scripts/run-gui-playtest.sh
 bash scripts/self-check.sh
 ```
+
+`scripts/self-check.sh`는 시작 시 `python3 scripts/check_encoding.py --all`을 먼저 실행하며,
+UTF-8/BOM 정책 위반이 있으면 즉시 실패합니다.
 
 ## 조작
 - 좌클릭: 선택/액션 수행

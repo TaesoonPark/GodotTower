@@ -1,5 +1,6 @@
 extends EnemyUnitBase
 class_name Raider
+const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
 
 var _cached_cover_val: float = 0.0
 var _cached_cover_ms: int = 0
@@ -28,8 +29,8 @@ func get_initial_weapon_mode() -> StringName:
 	return &"Melee"
 
 func _get_label_text(hp: int) -> String:
-	var weapon_text: String = "활" if get_current_weapon_mode() == &"Ranged" else "칼"
-	return "Raider(%s) HP:%d" % [weapon_text, hp]
+	var weapon_text: String = _t("raider.weapon.ranged") if get_current_weapon_mode() == &"Ranged" else _t("raider.weapon.melee")
+	return _t("raider.label", {"weapon": weapon_text, "hp": hp})
 
 func _get_combat_defender_profile() -> Dictionary:
 	return {"defense": defense + _nearby_cover_bonus()}
@@ -51,3 +52,6 @@ func _nearby_cover_bonus() -> float:
 			best_bonus = cover
 	_cached_cover_val = best_bonus
 	return best_bonus
+
+func _t(key: String, params: Dictionary = {}, fallback: String = "") -> String:
+	return GAME_TEXT.get_text(key, params, fallback)
