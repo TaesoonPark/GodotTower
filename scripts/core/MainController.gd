@@ -221,6 +221,7 @@ func _ready() -> void:
 	hud.building_selected.connect(_on_building_selected)
 	hud.workstation_changed.connect(_on_workstation_changed)
 	hud.craft_recipe_queued.connect(_on_craft_recipe_queued)
+	hud.craft_recipe_repeat_queued.connect(_on_craft_recipe_repeat_queued)
 	hud.craft_recipe_front_queued.connect(_on_craft_recipe_front_queued)
 	hud.craft_queue_clear_requested.connect(_on_craft_queue_clear_requested)
 	hud.craft_queue_remove_requested.connect(_on_craft_queue_remove_requested)
@@ -1879,6 +1880,16 @@ func _on_craft_recipe_queued(recipe_id: StringName, workstation_id: StringName) 
 		return
 	selected_workstation_id = ws_id
 	job_system.enqueue_craft_recipe(recipe_id, ws_id)
+	job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
+	hud.set_craft_queue_preview(job_system.get_craft_queue(ws_id))
+
+func _on_craft_recipe_repeat_queued(recipe_id: StringName, workstation_id: StringName) -> void:
+	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
+	if ws_id == &"":
+		return
+	selected_workstation_id = ws_id
+	job_system.enqueue_craft_recipe(recipe_id, ws_id, true)
 	job_system.mark_craft_dirty()
 	_mark_jobs_dirty()
 	hud.set_craft_queue_preview(job_system.get_craft_queue(ws_id))

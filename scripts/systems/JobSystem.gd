@@ -400,7 +400,7 @@ func queue_haul_job(drop_node: Node, zone_node: Node, assigned_to: int = 0, base
 	}
 	_dirty_assign = true
 
-func enqueue_craft_recipe(recipe_id: StringName, workstation_id: StringName) -> void:
+func enqueue_craft_recipe(recipe_id: StringName, workstation_id: StringName, repeat: bool = false) -> void:
 	if recipe_id == &"" or workstation_id == &"":
 		return
 	if not _craft_queues.has(workstation_id):
@@ -408,11 +408,12 @@ func enqueue_craft_recipe(recipe_id: StringName, workstation_id: StringName) -> 
 	var queue: Array = _craft_queues[workstation_id]
 	queue.append({
 		"recipe_id": recipe_id,
-		"workstation_id": workstation_id
+		"workstation_id": workstation_id,
+		"repeat": repeat
 	})
 	_craft_queues[workstation_id] = queue
 
-func enqueue_craft_recipe_front(recipe_id: StringName, workstation_id: StringName) -> void:
+func enqueue_craft_recipe_front(recipe_id: StringName, workstation_id: StringName, repeat: bool = false) -> void:
 	if recipe_id == &"" or workstation_id == &"":
 		return
 	if not _craft_queues.has(workstation_id):
@@ -420,7 +421,8 @@ func enqueue_craft_recipe_front(recipe_id: StringName, workstation_id: StringNam
 	var queue: Array = _craft_queues[workstation_id]
 	queue.insert(0, {
 		"recipe_id": recipe_id,
-		"workstation_id": workstation_id
+		"workstation_id": workstation_id,
+		"repeat": repeat
 	})
 	_craft_queues[workstation_id] = queue
 
@@ -593,7 +595,8 @@ func request_craft_jobs(recipe_lookup: Dictionary, workstation_slots: Dictionary
 				"reserved_at_ms": Time.get_ticks_msec()
 			}
 			_dirty_assign = true
-			queue.remove_at(0)
+			if not bool(order.get("repeat", false)):
+				queue.remove_at(0)
 			_craft_queues[workstation_id] = queue
 
 func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: StringName, work_duration: float = 6.0) -> void:

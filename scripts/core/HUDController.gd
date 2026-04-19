@@ -91,6 +91,7 @@ signal action_changed(action: StringName)
 signal building_selected(building_id: StringName)
 signal work_toggle_changed(work_type: StringName, enabled: bool)
 signal craft_recipe_queued(recipe_id: StringName, workstation_id: StringName)
+signal craft_recipe_repeat_queued(recipe_id: StringName, workstation_id: StringName)
 signal craft_recipe_front_queued(recipe_id: StringName, workstation_id: StringName)
 signal craft_queue_clear_requested()
 signal craft_queue_remove_requested(workstation_id: StringName, index: int)
@@ -135,6 +136,7 @@ var _recipe_name_lookup: Dictionary = {}
 var _last_craft_queue_items: Array[String] = []
 var _craft_queue_paused: bool = false
 var _craft_pause_button: Button = null
+var _queue_repeat_button: Button = null
 
 var _stock_filter_checks: Dictionary = {}
 var _stock_signal_mute: bool = false
@@ -206,6 +208,14 @@ func _ready() -> void:
 	bed_assign_auto_button.pressed.connect(func(): bed_auto_assign_requested.emit())
 
 	queue_craft_button.pressed.connect(_on_queue_craft_button_pressed)
+	_queue_repeat_button = Button.new()
+	_queue_repeat_button.custom_minimum_size = Vector2(112, 0)
+	_queue_repeat_button.text = _t("hud.craft.queue_repeat", {}, "Repeat Add")
+	_queue_repeat_button.pressed.connect(_on_queue_craft_repeat_button_pressed)
+	var craft_controls: HBoxContainer = queue_craft_button.get_parent() as HBoxContainer
+	if craft_controls != null:
+		craft_controls.add_child(_queue_repeat_button)
+		craft_controls.move_child(_queue_repeat_button, queue_front_button.get_index())
 	queue_front_button.pressed.connect(_on_queue_craft_front_button_pressed)
 	clear_queue_button.pressed.connect(func(): craft_queue_clear_requested.emit())
 	workstation_option.item_selected.connect(_on_workstation_selected)
@@ -277,6 +287,8 @@ func _apply_static_texts() -> void:
 	craft_queue_title.text = _t("hud.craft.title")
 	workstation_text.text = _t("hud.craft.workstation")
 	queue_craft_button.text = _t("hud.craft.queue_add")
+	if _queue_repeat_button != null:
+		_queue_repeat_button.text = _t("hud.craft.queue_repeat", {}, "Repeat Add")
 	queue_front_button.text = _t("hud.craft.queue_front")
 	clear_queue_button.text = _t("hud.craft.clear")
 	drag_stockpile_button.text = _t("hud.action.drag_stockpile")
@@ -594,7 +606,10 @@ func set_craft_queue_preview(order_list: Array) -> void:
 		if order is Dictionary:
 			var recipe_id: StringName = order.get("recipe_id", &"")
 			var recipe_name: String = String(_recipe_name_lookup.get(recipe_id, ""))
-			items.append(recipe_name if not recipe_name.is_empty() else _humanize_recipe_id(recipe_id))
+			var label: String = recipe_name if not recipe_name.is_empty() else _humanize_recipe_id(recipe_id)
+			if bool(order.get("repeat", false)):
+				label += _t("hud.queue.repeat_suffix", {}, " (Repeat)")
+			items.append(label)
 		else:
 			items.append(String(order))
 	if items == _last_craft_queue_items:
@@ -909,6 +924,18 @@ func _on_queue_craft_button_pressed() -> void:
 	if _selected_workstation_id == &"":
 		return
 	craft_recipe_queued.emit(_recipe_id_by_index[idx], _selected_workstation_id)
+
+func _on_queue_craft_repeat_button_pressed() -> void:
+	var idx: int = recipe_option.get_selected()
+	if idx < 0 and recipe_option.item_count > 0:
+		recipe_option.select(0)
+		idx = 0
+	if idx < 0 or idx >= _recipe_id_by_index.size():
+		return
+	_resolve_selected_workstation_from_option()
+	if _selected_workstation_id == &"":
+		return
+	craft_recipe_repeat_queued.emit(_recipe_id_by_index[idx], _selected_workstation_id)
 
 func _on_queue_craft_front_button_pressed() -> void:
 	var idx: int = recipe_option.get_selected()

@@ -1,6 +1,8 @@
 extends Node2D
 class_name StockpileZone
 
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
+
 signal stockpile_changed(zone: Node)
 
 @export var min_zone_size: float = 32.0
@@ -111,11 +113,22 @@ func get_stored_snapshot() -> Dictionary:
 
 func get_resource_at_point(world_point: Vector2) -> StringName:
 	var local_point: Vector2 = to_local(world_point)
+	var allow_fallback: bool = contains_point(world_point)
+	var best_type: StringName = &""
+	var best_dist_sq: float = INF
 	for i in range(_stack_slots.size() - 1, -1, -1):
 		var slot: Dictionary = _stack_slots[i]
-		var slot_rect: Rect2 = slot.get("rect", Rect2())
+		var slot_rect: Rect2 = (slot.get("rect", Rect2()) as Rect2).grow(8.0)
 		if slot_rect.has_point(local_point):
 			return StringName(slot.get("resource_type", &""))
+		var center: Vector2 = slot_rect.get_center()
+		var dist_sq: float = center.distance_squared_to(local_point)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best_type = StringName(slot.get("resource_type", &""))
+	# Input click position is grid-snapped (40px), so allow a small nearest-slot fallback.
+	if allow_fallback and best_type != &"" and best_dist_sq <= 30.0 * 30.0:
+		return best_type
 	return &""
 
 func accepts_resource(resource_type: StringName) -> bool:
@@ -265,7 +278,9 @@ func _rebuild_stack_visuals() -> void:
 		var holder := Node2D.new()
 		holder.position = cell_pos
 		var cube := Sprite2D.new()
-		cube.texture = _make_texture(16, 16, _resource_color(key))
+		var icon_tex: Texture2D = GAME_SPRITE.get_drop_texture(key)
+		cube.texture = icon_tex if icon_tex != null else _make_texture(16, 16, _resource_color(key))
+		_fit_sprite_to(cube, 18.0)
 		holder.add_child(cube)
 		var txt := Label.new()
 		txt.text = "%s x%d" % [_resource_short_name(key), amount]
@@ -277,7 +292,7 @@ func _rebuild_stack_visuals() -> void:
 		_stack_root.add_child(holder)
 		_stack_slots.append({
 			"resource_type": key,
-			"rect": Rect2(cell_pos - Vector2(34.0, 16.0), Vector2(68.0, 34.0))
+			"rect": Rect2(cell_pos - Vector2(36.0, 18.0), Vector2(72.0, 42.0))
 		})
 
 func _resource_color(resource_type: StringName) -> Color:
@@ -339,6 +354,15 @@ func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var tex: Texture2D = ImageTexture.create_from_image(image)
 	_stack_texture_cache[key] = tex
 	return tex
+
+func _fit_sprite_to(sprite_node: Sprite2D, max_size: float) -> void:
+	if sprite_node == null or sprite_node.texture == null:
+		return
+	var tex_size: Vector2 = sprite_node.texture.get_size()
+	if tex_size.x <= 0.0 or tex_size.y <= 0.0:
+		return
+	var scale_factor: float = minf(max_size / tex_size.x, max_size / tex_size.y)
+	sprite_node.scale = Vector2(scale_factor, scale_factor)
 
 func _stack_signature() -> String:
 	var base_sig: String = "w%d|h%d" % [int(round(zone_size.x)), int(round(zone_size.y))]
