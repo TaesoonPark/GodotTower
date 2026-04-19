@@ -313,6 +313,8 @@ func _resolve_move_goal() -> Vector2:
 				target_pos = (target_obj as Node2D).global_position
 				current_job["target"] = target_pos
 		target_pos = _snap_to_tile(target_pos)
+		if selected:
+			return _snap_to_tile(global_position)
 		var effective_type: StringName = _resolve_combat_job_type(jt)
 		if effective_type == &"CombatRanged":
 			return _snap_to_tile(global_position)
@@ -855,6 +857,8 @@ func get_preferred_combat_job_type() -> StringName:
 	return _resolve_combat_job_type(&"CombatMelee")
 
 func can_do_job(job_type: StringName) -> bool:
+	if selected:
+		return job_type == &"CombatMelee" or job_type == &"CombatRanged"
 	match job_type:
 		&"BuildSite":
 			return bool(work_enabled.get(&"Build", true))

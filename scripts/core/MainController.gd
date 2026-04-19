@@ -1101,6 +1101,22 @@ func _on_drag_selection(start_pos: Vector2, end_pos: Vector2) -> void:
 	queue_redraw()
 
 func _set_selected(new_selection: Array) -> void:
+	var prev_ids: Dictionary = {}
+	for c_prev in selected_colonists:
+		if c_prev == null or not is_instance_valid(c_prev):
+			continue
+		prev_ids[c_prev.get_instance_id()] = true
+	var next_ids: Dictionary = {}
+	for c_next in new_selection:
+		if c_next == null or not is_instance_valid(c_next):
+			continue
+		next_ids[c_next.get_instance_id()] = true
+	var selection_changed: bool = prev_ids.size() != next_ids.size()
+	if not selection_changed:
+		for id_any in prev_ids.keys():
+			if not next_ids.has(id_any):
+				selection_changed = true
+				break
 	for c in selected_colonists:
 		if c != null and is_instance_valid(c):
 			c.set_selected(false)
@@ -1111,6 +1127,9 @@ func _set_selected(new_selection: Array) -> void:
 		selected_colonists.append(c)
 	for c in selected_colonists:
 		c.set_selected(true)
+	if selection_changed:
+		_mark_jobs_dirty()
+		_mark_combat_dirty()
 	_hud_dirty = true
 	_refresh_hud()
 

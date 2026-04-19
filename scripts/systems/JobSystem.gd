@@ -691,7 +691,23 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 		if hold_before_engage and rally_pos == Vector2.INF:
 			continue
 		var has_pending_move: bool = _has_pending_move_job(colonist_id)
-		if has_pending_move and not enemy_is_close and not hold_before_engage:
+		var is_selected: bool = bool(colonist.get("selected"))
+		if is_selected:
+			if has_pending_move:
+				_remove_pending_move_jobs_for_colonist(colonist_id)
+			if hold_before_engage:
+				continue
+			if not colonist.current_job.is_empty():
+				var selected_current_type: StringName = StringName(colonist.current_job.get("type", &""))
+				if selected_current_type == &"CombatMelee" or selected_current_type == &"CombatRanged":
+					continue
+				continue
+			var selected_attack_range: float = _combat_attack_range_for(colonist, preferred_job_type)
+			if best_dist_sq > selected_attack_range * selected_attack_range:
+				continue
+			var selected_use_ranged: bool = preferred_job_type == &"CombatRanged"
+			queue_combat_job(colonist, nearest_enemy, selected_use_ranged, preferred_job_type)
+			assigned_count += 1
 			continue
 		if hold_before_engage:
 			if not colonist.current_job.is_empty():
@@ -713,6 +729,8 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 			})
 			_dirty_assign = true
 			assigned_count += 1
+			continue
+		if has_pending_move and not enemy_is_close:
 			continue
 		if not colonist.current_job.is_empty():
 			var current_type: StringName = StringName(colonist.current_job.get("type", &""))
@@ -747,6 +765,16 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 		queue_combat_job(colonist, nearest_enemy, use_ranged, preferred_job_type)
 		assigned_count += 1
 	_combat_assign_cursor = (start_idx + assigned_count + 1) % maxi(1, size)
+
+func _combat_attack_range_for(colonist: Node, preferred_job_type: StringName) -> float:
+	if colonist != null and is_instance_valid(colonist) and colonist.has_method("get_combat_profile"):
+		var profile: Dictionary = colonist.get_combat_profile()
+		if preferred_job_type == &"CombatRanged":
+			return maxf(20.0, float(profile.get("ranged_range", 160.0)))
+		return maxf(18.0, float(profile.get("melee_range", 30.0)))
+	if preferred_job_type == &"CombatRanged":
+		return 160.0
+	return 30.0
 
 func _resolve_preferred_combat_job_type(colonist: Node) -> StringName:
 	if colonist == null or not is_instance_valid(colonist):
