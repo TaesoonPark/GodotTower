@@ -150,11 +150,13 @@ func tick_growth(delta: float) -> void:
 	_refresh_label()
 
 func request_jobs(job_system: Node, max_jobs: int = 0) -> void:
+	var blocking_gatherables: Dictionary = _collect_blocking_gatherables_by_tile()
+	_queue_blocking_plot_gather_jobs(job_system, blocking_gatherables)
 	var remaining: int = maxi(0, max_jobs)
 	var unlimited: bool = remaining == 0
 	var queued_any: bool = false
 	while unlimited or remaining > 0:
-		var job: Dictionary = claim_next_job()
+		var job: Dictionary = claim_next_job(blocking_gatherables)
 		if job.is_empty():
 			break
 		var tile: Vector2i = job.get("tile", Vector2i.ZERO)
@@ -174,7 +176,7 @@ func request_jobs(job_system: Node, max_jobs: int = 0) -> void:
 	if queued_any:
 		_emit_zone_updates()
 
-func claim_next_job() -> Dictionary:
+func claim_next_job(blocking_gatherables: Dictionary = {}) -> Dictionary:
 	var crop_def: Resource = get_crop_def()
 	var plant_work: float = 2.0
 	var harvest_work: float = 2.0
@@ -207,6 +209,8 @@ func claim_next_job() -> Dictionary:
 		var state: StringName = StringName(plot.get("state", &"Empty"))
 		if state != &"Empty":
 			continue
+		if blocking_gatherables.has(tile):
+			continue
 		plot["job_queued"] = true
 		_plots[tile] = plot
 		return {
@@ -218,6 +222,52 @@ func claim_next_job() -> Dictionary:
 			"work_duration": plant_work
 		}
 	return {}
+
+func _collect_blocking_gatherables_by_tile() -> Dictionary:
+	var out: Dictionary = {}
+	var tree: SceneTree = get_tree()
+	if tree == null:
+		return out
+	for node in tree.get_nodes_in_group("gatherables"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.has_method("is_depleted") and bool(node.is_depleted()):
+			continue
+		var tile: Vector2i = get_plot_tile_from_world(node.global_position)
+		if not _plots.has(tile):
+			continue
+		if out.has(tile):
+			continue
+		out[tile] = node
+	return out
+
+func _queue_blocking_plot_gather_jobs(job_system: Node, blocking_gatherables: Dictionary) -> void:
+	if crop_type == &"":
+		return
+	if job_system == null or not is_instance_valid(job_system):
+		return
+	var queued_any: bool = false
+	for tile_any in blocking_gatherables.keys():
+		var tile: Vector2i = tile_any
+		if not _plots.has(tile):
+			continue
+		var plot: Dictionary = _plots[tile]
+		if StringName(plot.get("state", &"Empty")) != &"Empty":
+			continue
+		if bool(plot.get("job_queued", false)):
+			continue
+		var gatherable: Node = blocking_gatherables.get(tile, null)
+		if gatherable == null or not is_instance_valid(gatherable):
+			continue
+		if gatherable.has_method("set_designated"):
+			gatherable.set_designated(true)
+		if bool(gatherable.get("job_queued")):
+			continue
+		if job_system.has_method("queue_gather_job"):
+			job_system.queue_gather_job(gatherable)
+			queued_any = true
+	if queued_any and job_system.has_method("mark_designation_dirty"):
+		job_system.mark_designation_dirty()
 
 func clear_plot_job(tile: Vector2i) -> void:
 	if not _plots.has(tile):
@@ -469,11 +519,19 @@ func _apply_plot_marker_style(marker: Polygon2D, state: StringName) -> void:
 	marker.color = color
 
 func _resolve_plot_texture(plot: Dictionary, state: StringName) -> Texture2D:
-	if state != &"Growing":
+	if state != &"Growing" and state != &"Mature":
 		return null
 	var growing_crop: StringName = StringName(plot.get("crop", crop_type))
 	if growing_crop == &"":
 		return null
+	if state == &"Mature":
+		var mature_tex: Texture2D = GAME_SPRITE.get_crop_texture(growing_crop, &"mature")
+		if mature_tex != null:
+			return mature_tex
+		var grown_tex: Texture2D = GAME_SPRITE.get_crop_texture(growing_crop, &"growing")
+		if grown_tex != null:
+			return grown_tex
+		return GAME_SPRITE.get_crop_texture(growing_crop, &"planted")
 	var growth_stage: StringName = _resolve_growth_stage(plot, growing_crop)
 	return GAME_SPRITE.get_crop_texture(growing_crop, growth_stage)
 

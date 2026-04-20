@@ -109,8 +109,9 @@ UTF-8/BOM 정책 위반이 있으면 즉시 실패합니다.
 - `scripts/tests`, `scenes/tests`: 스모크/패리티 테스트
 - `data`, `scripts/data`: Resource 정의 및 게임 데이터
 
-## 참고 문서
-- `review.md`: 최근 구현/수정 내역 요약
-- `docs/STATUS_AND_TODO.md`: 상태 및 TODO
-- `docs/GODOT_MCP_PLAYTEST.md`: MCP/플레이테스트 안내
-- `docs/WORK_HISTORY.md`: 작업 이력
+## Reference Documents
+- `docs/README.md`: active docs map
+- `review.md`: recent implementation summary
+- `docs/PROJECT_STATUS.md`: consolidated status/TODO/history
+- `docs/MCP_GUIDE.md`: consolidated MCP + playtest + server comparison guide
+- `docs/CUI_SIM_REFACTOR_PLAN.md`: simulation-core refactor plan

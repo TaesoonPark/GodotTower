@@ -211,6 +211,7 @@ func _ready() -> void:
 	_queue_repeat_button = Button.new()
 	_queue_repeat_button.custom_minimum_size = Vector2(112, 0)
 	_queue_repeat_button.text = _t("hud.craft.queue_repeat", {}, "Repeat Add")
+	_queue_repeat_button.focus_mode = Control.FOCUS_NONE
 	_queue_repeat_button.pressed.connect(_on_queue_craft_repeat_button_pressed)
 	var craft_controls: HBoxContainer = queue_craft_button.get_parent() as HBoxContainer
 	if craft_controls != null:
@@ -223,6 +224,7 @@ func _ready() -> void:
 	_craft_pause_button = Button.new()
 	_craft_pause_button.text = _t("hud.craft.pause")
 	_craft_pause_button.custom_minimum_size = Vector2(96, 0)
+	_craft_pause_button.focus_mode = Control.FOCUS_NONE
 	_craft_pause_button.pressed.connect(func():
 		_craft_queue_paused = not _craft_queue_paused
 		_refresh_craft_pause_button()
@@ -239,6 +241,7 @@ func _ready() -> void:
 	_defense_status_label.text = _t("hud.defense.status.empty")
 	_defense_status_label.position = Vector2(16.0, 106.0)
 	add_child(_defense_status_label)
+	_disable_focus_for_controls(self)
 
 	set_outfit_mode(&"Work")
 	set_selected_status_visible(false)
@@ -708,9 +711,11 @@ func set_stockpile_presets(preset_options: Array, selected_id: StringName = &"")
 		_stock_preset_row = HBoxContainer.new()
 		_stock_preset_option = OptionButton.new()
 		_stock_preset_option.custom_minimum_size = Vector2(120, 0)
+		_stock_preset_option.focus_mode = Control.FOCUS_NONE
 		_stock_preset_apply_button = Button.new()
 		_stock_preset_apply_button.text = _t("hud.stock.preset.apply")
 		_stock_preset_apply_button.custom_minimum_size = Vector2(98, 0)
+		_stock_preset_apply_button.focus_mode = Control.FOCUS_NONE
 		_stock_preset_apply_button.pressed.connect(func():
 			if _stock_preset_option == null or _stock_preset_option.item_count <= 0:
 				return
@@ -720,6 +725,7 @@ func set_stockpile_presets(preset_options: Array, selected_id: StringName = &"")
 		_stock_delete_button = Button.new()
 		_stock_delete_button.text = _t("hud.stock.delete")
 		_stock_delete_button.custom_minimum_size = Vector2(98, 0)
+		_stock_delete_button.focus_mode = Control.FOCUS_NONE
 		_stock_delete_button.pressed.connect(func():
 			stockpile_delete_requested.emit()
 		)
@@ -887,6 +893,7 @@ func _rebuild_selected_object_actions(actions: Array) -> void:
 			continue
 		var button := Button.new()
 		button.text = String(entry.get("label", String(action_id)))
+		button.focus_mode = Control.FOCUS_NONE
 		button.pressed.connect(func(): selected_object_action_requested.emit(action_id))
 		selected_object_actions.add_child(button)
 		_selected_object_buttons.append(button)
@@ -908,6 +915,7 @@ func _rebuild_queue_items(items: Array[String]) -> void:
 		var remove_button := Button.new()
 		remove_button.text = _t("hud.queue.remove")
 		remove_button.custom_minimum_size = Vector2(26, 0)
+		remove_button.focus_mode = Control.FOCUS_NONE
 		remove_button.pressed.connect(_on_queue_item_remove_pressed.bind(i))
 		row_box.add_child(row)
 		row_box.add_child(remove_button)
@@ -1029,6 +1037,15 @@ func _refresh_limit_spin_by_selected_resource() -> void:
 func _refresh_craft_pause_button() -> void:
 	if _craft_pause_button != null:
 		_craft_pause_button.text = _t("hud.craft.resume") if _craft_queue_paused else _t("hud.craft.pause")
+
+func _disable_focus_for_controls(root: Node) -> void:
+	if root == null:
+		return
+	if root is Control:
+		var control: Control = root as Control
+		control.focus_mode = Control.FOCUS_NONE
+	for child in root.get_children():
+		_disable_focus_for_controls(child)
 
 func _format_elapsed_time(total_seconds: float) -> String:
 	var total: int = maxi(0, int(floor(total_seconds)))

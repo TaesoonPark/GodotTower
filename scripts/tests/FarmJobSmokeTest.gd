@@ -1,6 +1,7 @@
 extends Node
 
 const MAIN_SCENE: PackedScene = preload("res://scenes/main/Main.tscn")
+const GATHERABLE_SCENE: PackedScene = preload("res://scenes/world/Gatherable.tscn")
 const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
 const FARM_RECT := Rect2(Vector2(3720.0, 2120.0), Vector2(120.0, 120.0))
@@ -59,25 +60,75 @@ func _run_test() -> void:
 		_finish(false, "FARM_TEST_FAIL: farm zone invalid")
 		return
 
+	var plot_tiles: Array = zone._plots.keys()
+	plot_tiles.sort_custom(func(a, b):
+		var ta: Vector2i = a
+		var tb: Vector2i = b
+		if ta.y == tb.y:
+			return ta.x < tb.x
+		return ta.y < tb.y
+	)
+	if plot_tiles.is_empty():
+		_finish(false, "FARM_TEST_FAIL: farm zone has no plots")
+		return
+	var blocked_tile: Vector2i = plot_tiles[0]
+	var blocked_world: Vector2 = zone.get_plot_world(blocked_tile)
+	var blocker = GATHERABLE_SCENE.instantiate()
+	blocker.global_position = blocked_world
+	main.world_root.add_child(blocker)
+	blocker.resource_type = &"Wood"
+	blocker.display_name = "FarmBlocker"
+	blocker.max_amount = 24
+	blocker.current_amount = 24
+	blocker.gather_per_tick = 1000
+	if blocker.has_method("set_designated"):
+		blocker.set_designated(false)
+	main._mark_group_cache_dirty(&"gatherables")
+
 	main._configure_farm_zone_catalog(zone)
 	zone.set_crop_type(&"Potato")
 	main._mark_farm_dirty()
 	main._mark_jobs_dirty()
 
-	var saw_plant_workers: int = 0
-	for _step in range(240):
+	var blocker_id: int = blocker.get_instance_id()
+	var saw_blocker_gather_job: bool = false
+	var blocked_tile_planted: bool = false
+	var max_plant_workers_observed: int = 0
+	for _step in range(1800):
 		await get_tree().process_frame
-		var assigned_ids: Dictionary = {}
+		var blocked_plot: Dictionary = zone._plots.get(blocked_tile, {})
+		var blocked_state: StringName = StringName(blocked_plot.get("state", &"Empty"))
+		var blocker_depleted: bool = true
+		var assigned_plant_ids: Dictionary = {}
+		if blocker != null and is_instance_valid(blocker):
+			if blocker.has_method("is_depleted"):
+				blocker_depleted = bool(blocker.is_depleted())
+			else:
+				blocker_depleted = int(blocker.get("current_amount")) <= 0
+		if not blocker_depleted and blocked_state != &"Empty":
+			_finish(false, "FARM_TEST_FAIL: blocked plot was planted before gather clear")
+			return
 		for colonist in colonists:
 			if colonist == null or not is_instance_valid(colonist):
 				continue
 			var current_job: Dictionary = colonist.current_job
-			if StringName(current_job.get("type", &"")) == &"PlantCrop":
-				assigned_ids[colonist.get_instance_id()] = true
-		saw_plant_workers = assigned_ids.size()
-		if saw_plant_workers >= 2:
+			var job_type: StringName = StringName(current_job.get("type", &""))
+			if job_type == &"PlantCrop":
+				assigned_plant_ids[colonist.get_instance_id()] = true
+			if job_type == &"Gather" and int(current_job.get("gatherable_id", 0)) == blocker_id:
+				saw_blocker_gather_job = true
+		max_plant_workers_observed = maxi(max_plant_workers_observed, assigned_plant_ids.size())
+		if blocked_state == &"Growing":
+			blocked_tile_planted = true
 			break
-	if saw_plant_workers < 2:
+	if not saw_blocker_gather_job:
+		_finish(false, "FARM_TEST_FAIL: no gather job assigned for farm plot blocker")
+		return
+	if not blocked_tile_planted:
+		var blocker_amount: int = int(blocker.get("current_amount")) if blocker != null and is_instance_valid(blocker) else -1
+		_finish(false, "FARM_TEST_FAIL: blocked plot did not plant after gather clear (blocker_amount=%d)" % blocker_amount)
+		return
+	if max_plant_workers_observed < 2:
 		var queued_types: Array[String] = []
 		for job in main.job_system._jobs:
 			queued_types.append(String(job.get("type", &"")))

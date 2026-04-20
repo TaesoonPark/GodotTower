@@ -696,7 +696,9 @@ func _has_demolish_queued_structure() -> bool:
 	for node in _get_group_nodes_cached(&"structures"):
 		if node == null or not is_instance_valid(node):
 			continue
-		if bool(node.get_meta("demolish_job_queued")):
+		if not node.has_meta("demolish_job_queued"):
+			continue
+		if node.get_meta("demolish_job_queued") == true:
 			return true
 	return false
 
@@ -857,9 +859,11 @@ func _on_left_click(world_pos: Vector2) -> void:
 	if current_action == &"StockpileZone":
 		_clear_selected_object()
 		_select_stockpile_zone_near(world_pos)
-		hud.set_active_action(&"StockpileDesignate")
-		_close_bottom_catalog_if_supported()
-		return
+		if selected_stockpile_zone != null and is_instance_valid(selected_stockpile_zone):
+			hud.set_active_action(&"StockpileDesignate")
+			_close_bottom_catalog_if_supported()
+			return
+		_on_action_changed(&"Interact")
 	if current_action == &"FarmZone":
 		_clear_selected_object()
 		_set_selected([])
@@ -875,11 +879,11 @@ func _on_left_click(world_pos: Vector2) -> void:
 			_selected_object_resource = &""
 			hud.set_active_action(&"FarmZoneSelected")
 			_open_farm_catalog_if_supported(selected_farm_zone)
-		else:
-			hud.set_active_action(&"FarmZone")
-			_close_bottom_catalog_if_supported()
+			_refresh_hud()
+			return
+		_on_action_changed(&"Interact")
+		_close_bottom_catalog_if_supported()
 		_refresh_hud()
-		return
 	selected_bed_node = null
 	hud.set_bed_assignment_visible(false)
 	if pending_building_id == &"Gate":
@@ -1294,7 +1298,7 @@ func _refresh_hud() -> void:
 		hud.set_selected_object_preview(
 			_t("main.selected.farm.title"),
 			_t("main.selected.farm.detail", {"crop": crop_name}),
-			[]
+			[{"id": &"DeleteFarmZone", "label": _t("hud.stock.delete")}]
 		)
 	elif object_focus:
 		if _selected_object_kind == &"ResearchBench":
@@ -1756,7 +1760,9 @@ func _draw_demolish_queued_outlines() -> void:
 	for node in get_tree().get_nodes_in_group("structures"):
 		if node == null or not is_instance_valid(node):
 			continue
-		if not bool(node.get_meta("demolish_job_queued")):
+		if not node.has_meta("demolish_job_queued"):
+			continue
+		if node.get_meta("demolish_job_queued") != true:
 			continue
 		var size: Vector2 = node.get_meta("footprint_size") if node.has_meta("footprint_size") else Vector2(TILE_SIZE, TILE_SIZE)
 		var rect := Rect2(node.global_position - size * 0.5, size)
@@ -3079,6 +3085,25 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		_refresh_hud()
 		_mark_farm_dirty()
 		_mark_jobs_dirty()
+	elif action_id == &"DeleteFarmZone":
+		var target_farm_zone: Node = null
+		if selected_farm_zone != null and is_instance_valid(selected_farm_zone):
+			target_farm_zone = selected_farm_zone
+		elif _selected_object_kind == &"FarmZone" and _selected_object_zone != null and is_instance_valid(_selected_object_zone):
+			target_farm_zone = _selected_object_zone
+		if target_farm_zone == null:
+			return
+		if _selected_object_zone == target_farm_zone:
+			_clear_selected_object()
+		selected_farm_zone = null
+		target_farm_zone.queue_free()
+		_mark_group_cache_dirty(&"farm_zones")
+		_mark_farm_dirty()
+		_mark_jobs_dirty()
+		_hud_dirty = true
+		_on_action_changed(&"Interact")
+		_close_bottom_catalog_if_supported()
+		_refresh_hud()
 	elif action_id == &"StartResearch":
 		if _selected_object_kind != &"ResearchBench":
 			return
