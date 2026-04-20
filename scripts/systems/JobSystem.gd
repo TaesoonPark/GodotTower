@@ -249,6 +249,10 @@ func queue_demolish_job(structure: Node, work_duration: float = 4.0, replace_bui
 		return
 	structure.set_meta("demolish_job_queued", true)
 	var target_pos: Vector2 = structure.global_position if structure is Node2D else Vector2.ZERO
+	if structure is Node2D and _requires_adjacent_work_target(structure):
+		var adjacent_pos: Vector2 = _find_adjacent_work_position(structure)
+		if adjacent_pos != Vector2.INF:
+			target_pos = adjacent_pos
 	_jobs.append({
 		"type": &"DemolishStructure",
 		"target": target_pos,
@@ -259,6 +263,9 @@ func queue_demolish_job(structure: Node, work_duration: float = 4.0, replace_bui
 		"assigned_to": 0
 	})
 	_dirty_assign = true
+
+func _requires_adjacent_work_target(structure: Node) -> bool:
+	return bool(structure.get_meta("blocks_movement")) and not bool(structure.get_meta("passable_for_friendly"))
 
 func queue_trap_maint_job(structure: Node, work_duration: float = 3.0) -> void:
 	if structure == null or not is_instance_valid(structure):

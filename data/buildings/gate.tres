@@ -17,5 +17,6 @@ direct_place_color = Color(0.42, 0.34, 0.22, 1)
 blueprint_color = Color(0.42, 0.34, 0.22, 0.72)
 blocks_movement = true
 passable_for_friendly = true
+blocks_ranged_line_of_sight = true
 max_health = 260.0
 repair_work = 8.0

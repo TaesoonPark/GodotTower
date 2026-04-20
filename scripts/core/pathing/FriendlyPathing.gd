@@ -8,9 +8,13 @@ const GOAL_REPATH_DISTANCE_TILES: float = 1.4
 const STUCK_REPATH_DISTANCE: float = 8.0
 const STUCK_REPATH_TIME_SEC: float = 1.4
 const BASE_MAX_REBUILDS_PER_FRAME: int = 4
+const PATH_CACHE_LIMIT: int = 48
 
 static var _frame_id: int = -1
 static var _frame_rebuilds: int = 0
+static var _path_cache: Dictionary = {}
+static var _path_cache_lru: Dictionary = {}
+static var _path_cache_tick: int = 0
 
 var tile_size: float = 40.0
 var _path_points: Array[Vector2] = []
@@ -171,8 +175,6 @@ func _consume_stale_path_points(current_pos: Vector2, goal: Vector2, is_blocked:
 		break
 
 func _tile_walkable(tx: int, ty: int, gx: int, gy: int, is_blocked: Callable) -> bool:
-	if tx == gx and ty == gy:
-		return true
 	var key: int = ((tx + 32768) & 0xFFFF) << 16 | ((ty + 32768) & 0xFFFF)
 	if _walkable_cache.has(key):
 		return bool(_walkable_cache[key])
@@ -204,6 +206,45 @@ func _reconstruct_keys(came_from: Dictionary, current_key: int, start_key: int) 
 func _tile_key(tile: Vector2i) -> int:
 	return ((tile.x + 32768) & 0xFFFF) << 16 | ((tile.y + 32768) & 0xFFFF)
 
+func _path_cache_key(start_tile: Vector2i, goal_tile: Vector2i) -> String:
+	return "%d:%d:%d:%d:%d:%d" % [
+		int(round(tile_size)),
+		_last_obstacle_signature,
+		start_tile.x,
+		start_tile.y,
+		goal_tile.x,
+		goal_tile.y
+	]
+
+func _try_restore_cached_path(cache_key: String) -> bool:
+	if not _path_cache.has(cache_key):
+		return false
+	_path_cache_tick += 1
+	_path_cache_lru[cache_key] = _path_cache_tick
+	var cached: Array = _path_cache.get(cache_key, [])
+	_path_points = cached.duplicate()
+	_path_index = 0
+	return true
+
+func _store_cached_path(cache_key: String, points: Array[Vector2]) -> void:
+	if points.is_empty():
+		return
+	_path_cache_tick += 1
+	_path_cache[cache_key] = points.duplicate()
+	_path_cache_lru[cache_key] = _path_cache_tick
+	while _path_cache.size() > PATH_CACHE_LIMIT:
+		var oldest_key: String = ""
+		var oldest_used: int = 2147483647
+		for key in _path_cache.keys():
+			var used: int = int(_path_cache_lru.get(key, 0))
+			if oldest_key == "" or used < oldest_used:
+				oldest_key = String(key)
+				oldest_used = used
+		if oldest_key == "":
+			return
+		_path_cache.erase(oldest_key)
+		_path_cache_lru.erase(oldest_key)
+
 func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callable) -> void:
 	var start_tile: Vector2i = _world_to_tile_vec(start_world)
 	var goal_tile: Vector2i = _world_to_tile_vec(goal_world)
@@ -215,6 +256,9 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 	_stuck_elapsed = 0.0
 	_stuck_anchor = start_world
 	if start_tile == goal_tile:
+		return
+	var cache_key: String = _path_cache_key(start_tile, goal_tile)
+	if _try_restore_cached_path(cache_key):
 		return
 	var min_x: int = mini(start_tile.x, goal_tile.x) - SEARCH_MARGIN_TILES
 	var max_x: int = maxi(start_tile.x, goal_tile.x) + SEARCH_MARGIN_TILES
@@ -279,6 +323,7 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 		var by: int = (best_key & 0xFFFF) - 32768
 		if bx == gx and by == gy:
 			_path_points = _reconstruct_keys(came_from, best_key, start_key)
+			_store_cached_path(cache_key, _path_points)
 			return
 		var best_g: float = float(g_score.get(best_key, INF))
 		for _dy in range(-1, 2):

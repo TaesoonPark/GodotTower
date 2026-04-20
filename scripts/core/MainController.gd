@@ -13,6 +13,8 @@ const CROP_DEF_DIR := "res://data/crops"
 const RESEARCH_DEF_DIR := "res://data/research"
 const RESEARCH_REQUIRED_POINTS_SCALE: float = 0.1
 const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
+const ENEMY_FLOW_FIELD_SERVICE_SCRIPT: Script = preload("res://scripts/systems/EnemyFlowFieldService.gd")
+const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
 const DEFAULT_LOADOUT: ColonistLoadoutData = preload("res://data/colonists/default_loadout.tres")
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
@@ -56,7 +58,8 @@ var resource_stock: Dictionary = {
 }
 var _free_build_allowance: Dictionary = {
 	&"Wall": 100,
-	&"Gate": 8
+	&"Gate": 8,
+	&"FiringWall": 24
 }
 var target_stock: Dictionary = {
 	&"Wood": 80,
@@ -124,6 +127,7 @@ var _auto_repair_threshold_ratio: float = 0.75
 var _defense_status_text: String = "-"
 var _day_night_cycle_seconds: float = 240.0
 var _pathing_occupancy: PathingOccupancy = null
+var _enemy_flow_field_service: Node = null
 var _cached_alive_enemies: Array = []
 var _hud_dirty: bool = true
 var _cached_research_options: Array = []
@@ -181,6 +185,16 @@ func _ready() -> void:
 		add_child(_pathing_occupancy)
 	_pathing_occupancy.add_to_group("pathing_occupancy")
 	_pathing_occupancy.setup(TILE_SIZE)
+	_enemy_flow_field_service = ENEMY_FLOW_FIELD_SERVICE_SCRIPT.new()
+	_enemy_flow_field_service.name = "EnemyFlowFieldService"
+	_enemy_flow_field_service.add_to_group("enemy_flow_field_service")
+	if systems_node != null:
+		systems_node.add_child(_enemy_flow_field_service)
+	else:
+		add_child(_enemy_flow_field_service)
+	_enemy_flow_field_service.setup(TILE_SIZE, WORLD_SIZE, _pathing_occupancy)
+	if _pathing_occupancy.has_signal("revision_changed"):
+		_pathing_occupancy.connect("revision_changed", Callable(self, "_on_pathing_occupancy_revision_changed"))
 	_init_group_cache()
 	var now_ms: int = Time.get_ticks_msec()
 	_perf_report_next_ms = now_ms + 5000
@@ -472,6 +486,10 @@ func _mark_pathing_dirty() -> void:
 	_structure_maintenance_dirty = true
 	_mark_all_group_cache_dirty()
 	_queue_event_dispatch()
+
+func _on_pathing_occupancy_revision_changed(revision: int) -> void:
+	if _enemy_flow_field_service != null and is_instance_valid(_enemy_flow_field_service):
+		_enemy_flow_field_service.notify_obstacle_revision(revision)
 
 func _mark_jobs_dirty() -> void:
 	_dispatch_jobs_dirty = true
@@ -886,18 +904,6 @@ func _on_left_click(world_pos: Vector2) -> void:
 		_refresh_hud()
 	selected_bed_node = null
 	hud.set_bed_assignment_visible(false)
-	if pending_building_id == &"Gate":
-		var wall_site_target: Node = _find_build_site_near(world_pos, 28.0, &"Wall")
-		if wall_site_target != null:
-			_cancel_build_site(wall_site_target)
-			_try_place_building_by_id(wall_site_target.global_position, &"Gate")
-			_refresh_hud()
-			return
-		var wall_target: Node = _find_structure_by_building_near(world_pos, &"Wall", 32.0)
-		if wall_target != null:
-			_queue_demolish_structure(wall_target, &"Gate")
-			_refresh_hud()
-			return
 
 	if pending_building_id != &"":
 		_try_place_building_by_id(world_pos, pending_building_id)
@@ -1575,6 +1581,8 @@ func _find_structure_by_building_near(world_pos: Vector2, building_id: StringNam
 	for node in get_tree().get_nodes_in_group("structures"):
 		if node == null or not is_instance_valid(node):
 			continue
+		if node.is_queued_for_deletion() or not node.is_inside_tree():
+			continue
 		if not node.has_meta("building_id"):
 			continue
 		if StringName(node.get_meta("building_id")) != building_id:
@@ -1589,6 +1597,8 @@ func _find_build_site_near(world_pos: Vector2, radius: float, required_building_
 	var inside_best_dist: float = INF
 	for site in get_tree().get_nodes_in_group("build_sites"):
 		if site == null or not is_instance_valid(site):
+			continue
+		if site.is_queued_for_deletion() or not site.is_inside_tree():
 			continue
 		if bool(site.get("complete")):
 			continue
@@ -1820,6 +1830,9 @@ func _on_structure_demolished(world_pos: Vector2, replace_building_id: StringNam
 	_mark_maintenance_dirty()
 	if replace_building_id == &"":
 		return
+	call_deferred("_try_place_replacement_building_after_demolish", world_pos, replace_building_id)
+
+func _try_place_replacement_building_after_demolish(world_pos: Vector2, replace_building_id: StringName) -> void:
 	_try_place_building_by_id(world_pos, replace_building_id)
 
 func _on_research_progressed(project_id: StringName, points: float) -> void:
@@ -1979,6 +1992,8 @@ func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> b
 			_mark_jobs_dirty()
 		hud.set_resource_stock(resource_stock)
 		return true
+	if building_id == &"Gate" and _try_queue_gate_wall_replacement(world_pos):
+		return true
 	if _queue_deferred_build_request_if_resource_blocked(world_pos, building_id):
 		return false
 	build_system.set_selected_building(building_id)
@@ -1986,6 +2001,20 @@ func _try_place_building_by_id(world_pos: Vector2, building_id: StringName) -> b
 	if placed:
 		_deferred_build_requests.erase(_deferred_build_key(world_pos, building_id))
 	return placed
+
+func _try_queue_gate_wall_replacement(world_pos: Vector2) -> bool:
+	var snapped_pos: Vector2 = _snap_to_tile(world_pos)
+	var wall_site_target: Node = _find_build_site_near(snapped_pos, TILE_SIZE * 0.75, &"Wall")
+	if wall_site_target != null:
+		var gate_pos: Vector2 = wall_site_target.global_position if wall_site_target is Node2D else snapped_pos
+		_cancel_build_site(wall_site_target)
+		build_system.set_selected_building(&"Gate")
+		return _try_place_selected_building(gate_pos, true)
+	var wall_target: Node = _find_structure_by_building_near(snapped_pos, &"Wall", TILE_SIZE * 0.75)
+	if wall_target == null:
+		return false
+	_queue_demolish_structure(wall_target, &"Gate")
+	return true
 
 func _deferred_build_key(world_pos: Vector2, building_id: StringName) -> String:
 	var snapped: Vector2 = _snap_to_tile(world_pos)
@@ -3171,12 +3200,66 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 
 func _issue_selected_move_command(target_pos: Vector2) -> void:
 	var snapped_target: Vector2 = _snap_to_tile(target_pos)
+	var active_colonists: Array = []
 	for colonist in selected_colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
-		job_system.issue_immediate_move(colonist, snapped_target, _raid_state != &"Active")
+		active_colonists.append(colonist)
+	var formation_slots: Array[Vector2] = _build_formation_slots(snapped_target, active_colonists.size())
+	var used_slots: Dictionary = {}
+	for colonist in active_colonists:
+		var move_target: Vector2 = _select_formation_slot_for_colonist(colonist, formation_slots, used_slots, snapped_target)
+		job_system.issue_immediate_move(colonist, move_target, _raid_state != &"Active")
 	job_system.mark_assign_dirty()
 	_mark_jobs_dirty()
+
+func _build_formation_slots(snapped_target: Vector2, unit_count: int) -> Array[Vector2]:
+	var slots: Array[Vector2] = []
+	var max_ring: int = maxi(2, int(ceil(sqrt(float(unit_count)))) + 3)
+	for ring in range(0, max_ring + 1):
+		if ring == 0:
+			if _is_valid_formation_slot(snapped_target):
+				slots.append(snapped_target)
+			if slots.size() >= unit_count:
+				return slots
+			continue
+		for y in range(-ring, ring + 1):
+			for x in range(-ring, ring + 1):
+				if maxi(absi(x), absi(y)) != ring:
+					continue
+				var candidate: Vector2 = _snap_to_tile(snapped_target + Vector2(float(x) * TILE_SIZE, float(y) * TILE_SIZE))
+				if not _is_valid_formation_slot(candidate):
+					continue
+				if slots.has(candidate):
+					continue
+				slots.append(candidate)
+		if slots.size() >= unit_count:
+			return slots
+	return slots
+
+func _select_formation_slot_for_colonist(colonist: Node, slots: Array[Vector2], used_slots: Dictionary, fallback: Vector2) -> Vector2:
+	if slots.is_empty() or colonist == null or not is_instance_valid(colonist):
+		return fallback
+	var best_index: int = -1
+	var best_dist_sq: float = INF
+	for i in range(slots.size()):
+		if used_slots.has(i):
+			continue
+		var dist_sq: float = colonist.global_position.distance_squared_to(slots[i])
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best_index = i
+	if best_index < 0:
+		return fallback
+	used_slots[best_index] = true
+	return slots[best_index]
+
+func _is_valid_formation_slot(world_pos: Vector2) -> bool:
+	if world_pos.x < 0.0 or world_pos.y < 0.0 or world_pos.x > WORLD_SIZE.x or world_pos.y > WORLD_SIZE.y:
+		return false
+	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("is_blocked_for_friendly"):
+		return not bool(_pathing_occupancy.is_blocked_for_friendly(world_pos))
+	return true
 
 func _spawn_resource_drop(resource_type: StringName, amount: int, world_pos: Vector2) -> Node:
 	if amount <= 0:
@@ -3877,11 +3960,7 @@ func _refresh_structure_integrity() -> void:
 		var hp: float = float(node.get_meta("structure_health")) if node.has_meta("structure_health") else max_hp
 		hp = clampf(hp, 0.0, max_hp)
 		node.set_meta("structure_health", hp)
-		var ratio: float = hp / max_hp
-		for child in node.get_children():
-			if child is Sprite2D:
-				child.modulate = Color(1.0, ratio, ratio, 1.0)
-				break
+		STRUCTURE_HEALTH_BAR.update_bar(node, hp, max_hp)
 
 func _get_damaged_repairable_structures() -> Array:
 	_refresh_structure_maintenance_cache()
@@ -4403,7 +4482,7 @@ func _snap_to_tile(world_pos: Vector2) -> Vector2:
 	return _tile_to_world(_world_to_tile(world_pos))
 
 func _can_drag_line_place(building_id: StringName) -> bool:
-	return building_id == &"Wall" or building_id == &"Gate"
+	return building_id == &"Wall" or building_id == &"Gate" or building_id == &"FiringWall"
 
 func _build_line_tiles_from_world(start_world: Vector2, end_world: Vector2) -> Array[Vector2i]:
 	var start_tile: Vector2i = _world_to_tile(start_world)

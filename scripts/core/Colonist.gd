@@ -1,6 +1,7 @@
 extends Node2D
 
 const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
+const COMBAT_LOS: Script = preload("res://scripts/core/CombatLineOfSight.gd")
 const FRIENDLY_PATHING: Script = preload("res://scripts/core/pathing/FriendlyPathing.gd")
 const COLONIST_STATS_SCRIPT: Script = preload("res://scripts/data/ColonistStatsData.gd")
 const JOB_PRIORITY_SCRIPT: Script = preload("res://scripts/data/JobPriorityData.gd")
@@ -9,6 +10,7 @@ const GATHER_TRANSITION: Script = preload("res://scripts/sim/GatherTransition.gd
 const BUILD_TRANSITION: Script = preload("res://scripts/sim/BuildTransition.gd")
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
 const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
+const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
 
 signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
@@ -74,6 +76,8 @@ const BUILD_WORK_SITE_RANGE_TILES: float = 1.6
 const MOVE_STUCK_REPATH_SEC: float = 0.55
 const MOVE_STUCK_CANCEL_RETRIES: int = 4
 const MOVE_NO_PROGRESS_REPATH_SEC: float = 0.8
+const MOVE_COLLISION_RADIUS: float = 10.0
+const MOVE_SEGMENT_SAMPLE_STEP: float = 8.0
 const BUILD_STALL_RETARGET_SEC: float = 0.45
 const UPDATE_NEAR_RADIUS: float = 900.0
 const UPDATE_FAR_INTERVAL_SEC: float = 0.16
@@ -101,7 +105,7 @@ var _cached_cmd_acc: float = 0.0
 var _cached_cmd_def: float = 0.0
 var _cached_cmd_move: float = 1.0
 var _cached_cmd_ms: int = 0
-var _is_blocked_callable: Callable
+var _is_path_blocked_callable: Callable
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
 @onready var sprite: Sprite2D = $Sprite2D
@@ -134,7 +138,7 @@ func _ready() -> void:
 	_fit_sprite()
 	_friendly_pathing = FRIENDLY_PATHING.new()
 	_friendly_pathing.setup(tile_size)
-	_is_blocked_callable = Callable(self, "_is_blocked_position")
+	_is_path_blocked_callable = Callable(self, "_is_path_blocked_position")
 	_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
 	_main_controller = get_tree().get_first_node_in_group("main_controller")
 	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_signal("revision_changed"):
@@ -236,7 +240,7 @@ func _process_movement(delta: float) -> void:
 			goal,
 			stats.move_speed * speed_mul,
 			move_delta,
-			_is_blocked_callable
+			_is_path_blocked_callable
 		)
 	var blocked: bool = bool(result.get("blocked", false))
 	var next_pos: Vector2 = result.get("position", global_position)
@@ -250,6 +254,10 @@ func _process_movement(delta: float) -> void:
 			if not _is_blocked_position(fallback_pos):
 				next_pos = fallback_pos
 				stalled_without_progress = false
+	if not blocked and next_pos.distance_to(global_position) > 0.1 and _is_move_segment_blocked(global_position, next_pos):
+		blocked = true
+		next_pos = global_position
+		stalled_without_progress = false
 	if is_build_job:
 		if _handle_buildsite_stall(goal, blocked, next_pos, move_delta):
 			return
@@ -291,6 +299,19 @@ func _snap_to_tile(world_pos: Vector2) -> Vector2:
 	)
 
 func _is_blocked_position(world_pos: Vector2) -> bool:
+	if _is_blocked_sample(world_pos):
+		return true
+	var radius: float = minf(MOVE_COLLISION_RADIUS, tile_size * 0.25)
+	return _is_blocked_sample(world_pos + Vector2(radius, 0.0)) \
+		or _is_blocked_sample(world_pos + Vector2(-radius, 0.0)) \
+		or _is_blocked_sample(world_pos + Vector2(0.0, radius)) \
+		or _is_blocked_sample(world_pos + Vector2(0.0, -radius)) \
+		or _is_blocked_sample(world_pos + Vector2(radius, radius)) \
+		or _is_blocked_sample(world_pos + Vector2(radius, -radius)) \
+		or _is_blocked_sample(world_pos + Vector2(-radius, radius)) \
+		or _is_blocked_sample(world_pos + Vector2(-radius, -radius))
+
+func _is_blocked_sample(world_pos: Vector2) -> bool:
 	var query_tile: Vector2 = _snap_to_tile(world_pos)
 	if query_tile.distance_to(_snap_to_tile(global_position)) <= 0.1:
 		return false
@@ -298,6 +319,20 @@ func _is_blocked_position(world_pos: Vector2) -> bool:
 		_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
 	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("is_blocked_for_friendly"):
 		return bool(_pathing_occupancy.is_blocked_for_friendly(world_pos))
+	return false
+
+func _is_path_blocked_position(world_pos: Vector2) -> bool:
+	return _is_blocked_sample(world_pos)
+
+func _is_move_segment_blocked(from_pos: Vector2, to_pos: Vector2) -> bool:
+	var dist: float = from_pos.distance_to(to_pos)
+	if dist <= 0.1:
+		return false
+	var steps: int = maxi(1, int(ceil(dist / MOVE_SEGMENT_SAMPLE_STEP)))
+	for i in range(1, steps + 1):
+		var t: float = float(i) / float(steps)
+		if _is_blocked_position(from_pos.lerp(to_pos, t)):
+			return true
 	return false
 
 func _resolve_move_goal() -> Vector2:
@@ -1052,6 +1087,7 @@ func _complete_repair_job() -> void:
 			var max_hp: float = float(structure.get_meta("structure_max_health")) if structure.has_meta("structure_max_health") else 0.0
 			if max_hp > 0.0:
 				structure.set_meta("structure_health", max_hp)
+				STRUCTURE_HEALTH_BAR.update_bar(structure, max_hp, max_hp)
 			structure.set_meta("repair_job_queued", false)
 	_finish_current_job()
 
@@ -1236,6 +1272,8 @@ func _process_combat_job(job_type: StringName) -> void:
 	var now_ms: int = Time.get_ticks_msec()
 	var next_attack_ms: int = int(current_job.get("next_attack_ms", 0))
 	if now_ms < next_attack_ms:
+		return
+	if effective_job_type == &"CombatRanged" and not bool(COMBAT_LOS.has_ranged_line_of_sight(get_tree(), global_position, target_pos)):
 		return
 	var attacker: Dictionary = {
 		"attack_power": _combat_attack_power(effective_job_type),

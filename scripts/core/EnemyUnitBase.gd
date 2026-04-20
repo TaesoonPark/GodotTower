@@ -2,8 +2,10 @@ extends Node2D
 class_name EnemyUnitBase
 
 const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
+const COMBAT_LOS: Script = preload("res://scripts/core/CombatLineOfSight.gd")
 const ENEMY_PATHING: Script = preload("res://scripts/core/pathing/EnemyPathing.gd")
 const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
+const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
 
 signal died(enemy: Node)
 signal moved(enemy: Node, tile: Vector2i)
@@ -23,6 +25,7 @@ var _target_refresh_left: float = 0.0
 var _ai_phase_left: float = 0.0
 var tile_size: float = 40.0
 var _enemy_pathing: EnemyPathing = null
+var _enemy_flow_field_service: Node = null
 var _pathing_occupancy: Node = null
 var _main_controller: Node = null
 var _sim_accum: float = 0.0
@@ -97,6 +100,7 @@ func _ready() -> void:
 	_is_blocked_callable = Callable(self, "_is_blocked_position")
 	_ai_phase_left = fmod(float(get_instance_id()) * 0.017, AI_STEP_SEC)
 	_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
+	_enemy_flow_field_service = get_tree().get_first_node_in_group("enemy_flow_field_service")
 	_main_controller = get_tree().get_first_node_in_group("main_controller")
 	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_signal("revision_changed"):
 		_pathing_occupancy.connect("revision_changed", Callable(self, "_on_pathing_revision_changed"))
@@ -312,6 +316,9 @@ func _ai_tick(_delta: float) -> void:
 	if dist > attack_range:
 		_move_goal = _snap_to_tile(target.global_position)
 		return
+	if attack_mode == &"Ranged" and not bool(COMBAT_LOS.has_ranged_line_of_sight(get_tree(), global_position, target.global_position)):
+		_move_goal = _snap_to_tile(target.global_position)
+		return
 	_move_goal = global_position
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms < _next_attack_ms:
@@ -397,15 +404,30 @@ func _process_movement(delta: float) -> void:
 			_enemy_pathing.clear()
 		return
 	var result: Dictionary = {}
-	if _enemy_pathing != null:
+	var flow_direction_missing: bool = false
+	var speed: float = move_speed * maxf(0.5, external_move_speed_multiplier)
+	if _enemy_flow_field_service == null or not is_instance_valid(_enemy_flow_field_service):
+		_enemy_flow_field_service = get_tree().get_first_node_in_group("enemy_flow_field_service")
+	if _enemy_flow_field_service != null and is_instance_valid(_enemy_flow_field_service) and _enemy_flow_field_service.has_method("get_flow_direction"):
+		var flow_dir: Vector2 = _enemy_flow_field_service.get_flow_direction(global_position, goal, get_instance_id())
+		if flow_dir != Vector2.ZERO:
+			var flow_delta: float = minf(delta, 0.05)
+			var flow_pos: Vector2 = global_position + flow_dir * speed * flow_delta
+			if not _is_blocked_position(flow_pos):
+				result = {"position": flow_pos, "reached_goal": false, "blocked": false}
+		else:
+			flow_direction_missing = true
+	if result.is_empty() and _enemy_pathing != null:
 		result = _enemy_pathing.move_step(
 			global_position,
 			goal,
-			move_speed * maxf(0.5, external_move_speed_multiplier),
+			speed,
 			delta,
 			_is_blocked_callable
 		)
 	if bool(result.get("reached_goal", false)):
+		return
+	if flow_direction_missing and _try_attack_structure(goal):
 		return
 	if bool(result.get("blocked", false)):
 		if _spawn_unclip_left > 0.0 and _spawn_unclip_retry_left <= 0.0 and _is_blocked_position(global_position):
@@ -420,16 +442,18 @@ func _process_movement(delta: float) -> void:
 				if _enemy_pathing != null:
 					_enemy_pathing.clear()
 				return
-		_try_attack_structure()
+		_try_attack_structure(goal)
 		return
 	var current: Vector2 = global_position
 	var next_pos: Vector2 = result.get("position", current)
 	if next_pos.distance_squared_to(current) <= 0.0001:
 		var fallback_dir: Vector2 = current.direction_to(goal)
 		if fallback_dir != Vector2.ZERO:
-			var fallback_step: Vector2 = current + fallback_dir * move_speed * maxf(0.5, external_move_speed_multiplier) * minf(delta, 0.05)
+			var fallback_step: Vector2 = current + fallback_dir * speed * minf(delta, 0.05)
 			if not _is_blocked_position(fallback_step):
 				next_pos = fallback_step
+			elif _try_attack_structure(goal):
+				return
 	global_position = next_pos
 	_emit_moved_if_needed()
 
@@ -506,40 +530,67 @@ func _is_blocked_position(world_pos: Vector2) -> bool:
 		return bool(_pathing_occupancy.is_blocked_for_enemy(world_pos))
 	return false
 
-func _try_attack_structure() -> void:
+func _try_attack_structure(goal: Vector2 = Vector2.INF) -> bool:
+	var target: Node = _find_blocking_structure_near(global_position, structure_attack_range, goal)
+	if target == null:
+		return false
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms < _next_structure_attack_ms:
-		return
-	var target: Node = _find_blocking_structure_near(global_position, structure_attack_range)
-	if target == null:
-		return
+		return true
 	var max_hp: float = float(target.get_meta("structure_max_health")) if target.has_meta("structure_max_health") else 0.0
 	var hp: float = float(target.get_meta("structure_health")) if target.has_meta("structure_health") else max_hp
 	if max_hp <= 0.0:
-		return
+		return false
 	hp = maxf(0.0, hp - structure_attack_damage)
 	target.set_meta("structure_health", hp)
 	target.set_meta("repair_job_queued", false)
+	STRUCTURE_HEALTH_BAR.update_bar(target, hp, max_hp)
 	if hp <= 0.0:
 		target.queue_free()
+		_grp_blocking_ms = 0
+		if _enemy_pathing != null:
+			_enemy_pathing.clear()
 	_next_structure_attack_ms = now_ms + int(round(1000.0 * maxf(0.2, attack_cooldown_sec)))
+	return true
 
-func _find_blocking_structure_near(center: Vector2, radius: float) -> Node:
+func _find_blocking_structure_near(center: Vector2, radius: float, goal: Vector2 = Vector2.INF) -> Node:
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms >= _grp_blocking_ms:
 		_grp_blocking = get_tree().get_nodes_in_group("blocking_structures")
 		_grp_blocking_ms = now_ms + 300
 	var best: Node = null
-	var best_dist_sq: float = radius * radius
+	var best_score: float = INF
+	var radius_sq: float = radius * radius
+	var goal_dir: Vector2 = center.direction_to(goal) if goal != Vector2.INF else Vector2.ZERO
 	for node in _grp_blocking:
 		if node == null or not is_instance_valid(node):
 			continue
-		var dist_sq: float = center.distance_squared_to(node.global_position)
-		if dist_sq > best_dist_sq:
+		if not (node is Node2D):
 			continue
-		best_dist_sq = dist_sq
+		if not bool(node.get_meta("blocks_movement")):
+			continue
+		var dist_sq: float = _distance_sq_to_structure_footprint(center, node as Node2D)
+		if dist_sq > radius_sq:
+			continue
+		var score: float = dist_sq
+		if goal_dir != Vector2.ZERO:
+			var to_node: Vector2 = center.direction_to((node as Node2D).global_position)
+			score -= goal_dir.dot(to_node) * tile_size * tile_size
+		var building_id: StringName = StringName(node.get_meta("building_id")) if node.has_meta("building_id") else &""
+		if building_id == &"Wall" or building_id == &"Gate":
+			score -= tile_size * tile_size * 0.5
+		if score >= best_score:
+			continue
+		best_score = score
 		best = node
 	return best
+
+func _distance_sq_to_structure_footprint(center: Vector2, structure: Node2D) -> float:
+	var footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(tile_size, tile_size)
+	var half: Vector2 = footprint * 0.5
+	var dx: float = maxf(absf(center.x - structure.global_position.x) - half.x, 0.0)
+	var dy: float = maxf(absf(center.y - structure.global_position.y) - half.y, 0.0)
+	return dx * dx + dy * dy
 
 func _refresh_label() -> void:
 	if label == null:

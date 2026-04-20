@@ -85,6 +85,7 @@ func _place_blueprint(def: Resource, world_pos: Vector2) -> void:
 	if site.has_method("setup_building"):
 		site.setup_building(def, false)
 	_sites.append(site)
+	_connect_tracked_site(site)
 	_structures_cache_dirty = true
 	build_site_added.emit(site)
 
@@ -98,6 +99,24 @@ func cancel_build_site(site: Node) -> bool:
 	build_site_removed.emit(site)
 	site.queue_free()
 	return true
+
+func _connect_tracked_site(site) -> void:
+	if site == null or not is_instance_valid(site):
+		return
+	if not (site is Node):
+		return
+	if not site.has_signal("site_removed"):
+		return
+	var callable := Callable(self, "_on_tracked_site_removed")
+	if not site.is_connected("site_removed", callable):
+		site.connect("site_removed", callable)
+
+func _on_tracked_site_removed(site) -> void:
+	if not _sites.has(site):
+		return
+	_sites.erase(site)
+	_structures_cache_dirty = true
+	build_site_removed.emit(site)
 
 func _place_direct(def: Resource, world_pos: Vector2) -> void:
 	var placed := Node2D.new()
@@ -113,10 +132,6 @@ func _place_direct(def: Resource, world_pos: Vector2) -> void:
 		sprite.texture = _make_block_texture(int(def.footprint_size.x), int(def.footprint_size.y), def.direct_place_color)
 	placed.add_child(sprite)
 
-	var label := Label.new()
-	label.text = def.display_name
-	label.position = Vector2(-def.footprint_size.x * 0.48, -def.footprint_size.y * 0.9)
-	placed.add_child(label)
 	_world_root.add_child(placed)
 	placed.global_position = world_pos
 	_structures_cache_dirty = true
@@ -128,6 +143,7 @@ func _apply_structure_metas(node: Node2D, def: Resource) -> void:
 	node.set_meta("footprint_size", def.footprint_size)
 	node.set_meta("blocks_movement", bool(def.blocks_movement))
 	node.set_meta("passable_for_friendly", bool(def.passable_for_friendly))
+	node.set_meta("blocks_ranged_line_of_sight", bool(def.blocks_ranged_line_of_sight))
 	node.set_meta("cover_bonus", float(def.cover_bonus))
 	node.set_meta("trap_damage", int(def.trap_damage))
 	node.set_meta("trap_cooldown_sec", float(def.trap_cooldown_sec))
@@ -219,7 +235,7 @@ func _has_site_near(pos: Vector2, radius: float) -> bool:
 			return true
 	return false
 
-func _is_active_site(site: Object) -> bool:
+func _is_active_site(site) -> bool:
 	if site == null or not is_instance_valid(site):
 		return false
 	if not (site is Node):
@@ -247,6 +263,10 @@ func _is_footprint_occupied(center: Vector2, footprint_size: Vector2) -> bool:
 	for structure in _cached_structures:
 		if structure == null or not is_instance_valid(structure):
 			continue
+		if structure is Node:
+			var structure_node: Node = structure
+			if structure_node.is_queued_for_deletion() or not structure_node.is_inside_tree():
+				continue
 		var structure_footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(grid_size, grid_size)
 		var structure_rect := Rect2(structure.global_position - structure_footprint * 0.5, structure_footprint)
 		if candidate_rect.intersects(structure_rect):

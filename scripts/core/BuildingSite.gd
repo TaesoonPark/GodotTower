@@ -18,6 +18,7 @@ var complete_color: Color = Color(0.35, 0.75, 0.35, 1.0)
 var blueprint_color: Color = Color(0.45, 0.55, 0.85, 0.7)
 var blocks_movement: bool = false
 var passable_for_friendly: bool = false
+var blocks_ranged_line_of_sight: bool = false
 var cover_bonus: float = 0.0
 var trap_damage: int = 0
 var trap_cooldown_sec: float = 0.0
@@ -57,6 +58,7 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 	blueprint_color = def.blueprint_color
 	blocks_movement = bool(def.blocks_movement)
 	passable_for_friendly = bool(def.passable_for_friendly)
+	blocks_ranged_line_of_sight = bool(def.blocks_ranged_line_of_sight)
 	cover_bonus = float(def.cover_bonus)
 	trap_damage = int(def.trap_damage)
 	trap_cooldown_sec = float(def.trap_cooldown_sec)
@@ -77,6 +79,7 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 	set_meta("footprint_size", footprint_size)
 	set_meta("blocks_movement", blocks_movement)
 	set_meta("passable_for_friendly", passable_for_friendly)
+	set_meta("blocks_ranged_line_of_sight", blocks_ranged_line_of_sight)
 	set_meta("cover_bonus", cover_bonus)
 	set_meta("trap_damage", trap_damage)
 	set_meta("trap_cooldown_sec", trap_cooldown_sec)
@@ -175,11 +178,6 @@ func _build_complete_visual() -> void:
 		roof.texture = _make_texture(int(footprint_size.x), max(6, int(footprint_size.y * 0.25)), complete_color.darkened(0.25))
 		roof.position = Vector2(0, -footprint_size.y * 0.5)
 		add_child(roof)
-
-	var label := Label.new()
-	label.text = building_name
-	label.position = Vector2(-footprint_size.x * 0.48, -footprint_size.y * 1.05)
-	add_child(label)
 
 func _on_completed() -> void:
 	add_to_group("structures")

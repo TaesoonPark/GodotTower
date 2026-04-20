@@ -12,6 +12,7 @@ class_name BuildingDef
 @export var required_research: StringName = &""
 @export var blocks_movement: bool = false
 @export var passable_for_friendly: bool = false
+@export var blocks_ranged_line_of_sight: bool = false
 @export var cover_bonus: float = 0.0
 @export var trap_damage: int = 0
 @export var trap_cooldown_sec: float = 0.0
