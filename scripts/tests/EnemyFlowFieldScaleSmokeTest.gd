@@ -54,11 +54,13 @@ func _run_test() -> void:
 	var service: Node = get_tree().get_first_node_in_group("enemy_flow_field_service")
 	if service != null and is_instance_valid(service) and service.has_method("get_debug_stats"):
 		stats = service.get_debug_stats()
-	if int(stats.get("field_builds", 0)) <= 0:
-		_finish(false, "FLOW_SCALE_TEST_FAIL: flow field did not build stats=%s" % str(stats))
+	var field_builds: int = int(stats.get("field_builds", 0))
+	var direct_clear: int = int(stats.get("direct_clear", 0))
+	if field_builds <= 0 and direct_clear <= 0:
+		_finish(false, "FLOW_SCALE_TEST_FAIL: enemy flow service was not used stats=%s" % str(stats))
 		return
 	if moved_ids.size() < 48:
 		_finish(false, "FLOW_SCALE_TEST_FAIL: moved=%d stats=%s" % [moved_ids.size(), str(stats)])
 		return
 
-	_finish(true, "FLOW_SCALE_TEST_PASS: 64 raiders shared flow fields and advanced")
+	_finish(true, "FLOW_SCALE_TEST_PASS: 64 raiders used shared flow service and advanced")

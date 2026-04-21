@@ -162,6 +162,7 @@ var _outfit_mode: StringName = &"Work"
 var _context_action_id: StringName = &""
 var _last_resource_stock_text: String = ""
 var _defense_status_label: Label = null
+var _work_toggle_signal_mute: bool = false
 func _ready() -> void:
 	_catalog_description = _t("hud.catalog.description.default")
 	_research_status_text = _t("hud.research.status.none")
@@ -196,12 +197,12 @@ func _ready() -> void:
 		action_button_pressed.emit(&"SetRallyFlag")
 	)
 
-	haul_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Haul", v))
-	build_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Build", v))
-	craft_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Craft", v))
-	combat_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Combat", v))
-	gather_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Gather", v))
-	hunt_check.toggled.connect(func(v: bool): work_toggle_changed.emit(&"Hunt", v))
+	haul_check.toggled.connect(func(v: bool): _emit_work_toggle_changed(&"Haul", v))
+	build_check.toggled.connect(func(v: bool): _emit_work_toggle_changed(&"Build", v))
+	craft_check.toggled.connect(func(v: bool): _emit_work_toggle_changed(&"Craft", v))
+	combat_check.toggled.connect(func(v: bool): _emit_work_toggle_changed(&"Combat", v))
+	gather_check.toggled.connect(func(v: bool): _emit_work_toggle_changed(&"Gather", v))
+	hunt_check.toggled.connect(func(v: bool): _emit_work_toggle_changed(&"Hunt", v))
 
 	designation_toggle_button.pressed.connect(func(): designation_toggle_requested.emit())
 	bed_assign_option.item_selected.connect(_on_bed_assign_selected)
@@ -529,12 +530,19 @@ func set_work_toggles(toggle_map: Dictionary) -> void:
 	for key in safe_map.keys():
 		if toggle_map.has(key):
 			safe_map[key] = bool(toggle_map[key])
+	_work_toggle_signal_mute = true
 	haul_check.button_pressed = safe_map[&"Haul"]
 	build_check.button_pressed = safe_map[&"Build"]
 	craft_check.button_pressed = safe_map[&"Craft"]
 	combat_check.button_pressed = safe_map[&"Combat"]
 	gather_check.button_pressed = safe_map[&"Gather"]
 	hunt_check.button_pressed = safe_map[&"Hunt"]
+	_work_toggle_signal_mute = false
+
+func _emit_work_toggle_changed(work_type: StringName, enabled: bool) -> void:
+	if _work_toggle_signal_mute:
+		return
+	work_toggle_changed.emit(work_type, enabled)
 
 func set_selected_status_visible(visible: bool) -> void:
 	selected_status_panel.visible = visible

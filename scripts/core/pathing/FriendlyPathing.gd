@@ -81,9 +81,9 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 	if goal == Vector2.INF:
 		clear()
 		return _set_result(current_pos, true, false)
-	if current_pos.distance_to(goal) <= 6.0:
+	if current_pos.distance_to(goal) <= 10.0:
 		clear()
-		return _set_result(current_pos, true, false)
+		return _set_result(goal, true, false)
 	if _stuck_anchor == Vector2.INF:
 		_stuck_anchor = current_pos
 	if current_pos.distance_squared_to(_stuck_anchor) <= STUCK_REPATH_DISTANCE * STUCK_REPATH_DISTANCE:
@@ -111,7 +111,7 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 			_consume_stale_path_points(current_pos, goal, is_blocked)
 		var direct_dir: Vector2 = current_pos.direction_to(goal)
 		if direct_dir != Vector2.ZERO:
-			var direct_step: Vector2 = current_pos + direct_dir * speed * safe_delta
+			var direct_step: Vector2 = current_pos + direct_dir * minf(current_pos.distance_to(goal), speed * safe_delta)
 			if not bool(is_blocked.call(direct_step)):
 				return _set_result(direct_step, false, false)
 		return _set_result(current_pos, false, true)
@@ -123,21 +123,21 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 		dir = current_pos.direction_to(next_pos)
 	if dir == Vector2.ZERO:
 		return _set_result(current_pos, false, false)
-	var proposed: Vector2 = current_pos + dir * speed * safe_delta
+	var proposed: Vector2 = current_pos + dir * minf(current_pos.distance_to(next_pos), speed * safe_delta)
 	if bool(is_blocked.call(proposed)):
 		if next_pos != goal and _path_index < _path_points.size():
 			_path_index += 1
 			_consume_stale_path_points(current_pos, goal, is_blocked)
 			next_pos = _get_next_path_point(goal)
 			dir = current_pos.direction_to(next_pos)
-			proposed = current_pos + dir * speed * safe_delta
+			proposed = current_pos + dir * minf(current_pos.distance_to(next_pos), speed * safe_delta)
 		if (_repath_left <= 0.0 or stuck_repath) and not rebuilt_this_step and _can_rebuild_this_frame():
 			_rebuild_path(current_pos, goal, is_blocked)
 			rebuilt_this_step = true
 			_consume_stale_path_points(current_pos, goal, is_blocked)
 		next_pos = _get_next_path_point(goal)
 		dir = current_pos.direction_to(next_pos)
-		proposed = current_pos + dir * speed * safe_delta
+		proposed = current_pos + dir * minf(current_pos.distance_to(next_pos), speed * safe_delta)
 		if bool(is_blocked.call(proposed)):
 			return _set_result(current_pos, false, true)
 	var out_pos: Vector2 = proposed

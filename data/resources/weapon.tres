@@ -4,13 +4,13 @@
 
 [resource]
 script = ExtResource("1_resource_def")
-id = &"Sword"
-display_name = "Sword"
+id = &"Weapon"
+display_name = "Weapon"
 stack_limit = 40
 category = "Weapon"
 equipment_weapon_mode = &"Melee"
-equipment_melee_attack = 19.0
+equipment_melee_attack = 15.0
 equipment_ranged_attack = 0.0
 equipment_melee_range = 34.0
-equipment_attack_cooldown_sec = 0.97
-equipment_armor_penetration_bonus = 2.0
+equipment_attack_cooldown_sec = 1.05
+equipment_armor_penetration_bonus = 1.0

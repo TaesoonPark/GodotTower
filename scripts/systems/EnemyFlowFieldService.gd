@@ -7,7 +7,9 @@ const HASH_REFRESH_SEC: float = 0.15
 const HASH_BUCKET_TILES: float = 2.0
 const SEPARATION_RADIUS_TILES: float = 0.9
 const SEPARATION_WEIGHT: float = 0.55
-const FIELD_INF: float = 1.0e20
+const FIELD_INF_COST: int = 2147483647
+const ORTH_COST: int = 10
+const DIAG_COST: int = 14
 
 var tile_size: float = 40.0
 var world_size: Vector2 = Vector2(7680.0, 4320.0)
@@ -29,7 +31,9 @@ var _debug_stats: Dictionary = {
 	"cache_evictions": 0,
 	"hash_units": 0,
 	"last_expansions": 0,
-	"last_field_size": 0
+	"last_field_size": 0,
+	"last_build_ms": 0.0,
+	"direct_clear": 0
 }
 
 func setup(next_tile_size: float, next_world_size: Vector2, occupancy: Node) -> void:
@@ -47,6 +51,10 @@ func notify_obstacle_revision(revision: int) -> void:
 
 func get_flow_direction(current_pos: Vector2, goal_pos: Vector2, self_id: int) -> Vector2:
 	_refresh_unit_hash_if_due()
+	var direct_dir: Vector2 = _direct_direction_if_clear(current_pos, goal_pos)
+	if direct_dir != Vector2.ZERO:
+		_debug_stats["direct_clear"] = int(_debug_stats.get("direct_clear", 0)) + 1
+		return _apply_separation(direct_dir, current_pos, self_id)
 	var goal_tile: Vector2i = _clamp_tile(_world_to_tile(goal_pos))
 	var cache_key: String = _field_cache_key(goal_tile)
 	var field: Dictionary = {}
@@ -70,6 +78,9 @@ func get_flow_direction(current_pos: Vector2, goal_pos: Vector2, self_id: int) -
 	var flow_dir: Vector2 = _direction_from_field(field, current_pos)
 	if flow_dir == Vector2.ZERO:
 		return Vector2.ZERO
+	return _apply_separation(flow_dir, current_pos, self_id)
+
+func _apply_separation(flow_dir: Vector2, current_pos: Vector2, self_id: int) -> Vector2:
 	var separation: Vector2 = _separation_for(current_pos, self_id)
 	var combined: Vector2 = flow_dir + separation * SEPARATION_WEIGHT
 	if combined.length_squared() <= 0.0001:
@@ -108,53 +119,69 @@ func _prune_field_cache() -> void:
 		_debug_stats["cache_evictions"] = int(_debug_stats.get("cache_evictions", 0)) + 1
 
 func _build_field(goal_tile: Vector2i) -> Dictionary:
-	var goal_key: int = _tile_key(goal_tile)
-	var costs: Dictionary = {goal_key: 0.0}
-	var closed: Dictionary = {}
-	var hf := PackedFloat64Array()
-	var hk := PackedInt64Array()
-	hf.append(0.0)
-	hk.append(goal_key)
+	var build_start_us: int = Time.get_ticks_usec()
+	var width: int = _max_tile_x() + 1
+	var height: int = _max_tile_y() + 1
+	var cell_count: int = width * height
+	if cell_count <= 0:
+		return {}
+	var walkable: PackedByteArray = _build_walkable_map(goal_tile, width, height)
+	var costs := PackedInt32Array()
+	costs.resize(cell_count)
+	costs.fill(FIELD_INF_COST)
+	var closed := PackedByteArray()
+	closed.resize(cell_count)
+	var goal_idx: int = _tile_index(goal_tile.x, goal_tile.y, width)
+	costs[goal_idx] = 0
+	var heap_costs := PackedInt32Array()
+	var heap_indexes := PackedInt32Array()
+	_heap_push_index(heap_costs, heap_indexes, goal_idx, 0)
 	var expansions: int = 0
-	while hk.size() > 0:
-		var best_key: int = _heap_pop_key(hf, hk)
-		if closed.has(best_key):
+	var reachable: int = 0
+	while heap_indexes.size() > 0:
+		var best_idx: int = _heap_pop_index(heap_costs, heap_indexes)
+		if closed[best_idx] != 0:
 			continue
-		closed[best_key] = true
+		closed[best_idx] = 1
 		expansions += 1
-		var bx: int = _key_to_x(best_key)
-		var by: int = _key_to_y(best_key)
-		var best_cost: float = float(costs.get(best_key, FIELD_INF))
+		reachable += 1
+		var bx: int = best_idx % width
+		var by: int = int(best_idx / width)
+		var best_cost: int = costs[best_idx]
 		for dy in range(-1, 2):
 			for dx in range(-1, 2):
 				if dx == 0 and dy == 0:
 					continue
 				var nx: int = bx + dx
 				var ny: int = by + dy
-				if not _in_bounds_tile(nx, ny):
+				if nx < 0 or nx >= width or ny < 0 or ny >= height:
 					continue
-				if not _tile_walkable(nx, ny, goal_tile.x, goal_tile.y):
+				var next_idx: int = _tile_index(nx, ny, width)
+				if walkable[next_idx] == 0:
 					continue
 				if dx != 0 and dy != 0:
-					if not _tile_walkable(nx, by, goal_tile.x, goal_tile.y):
+					if walkable[_tile_index(nx, by, width)] == 0:
 						continue
-					if not _tile_walkable(bx, ny, goal_tile.x, goal_tile.y):
+					if walkable[_tile_index(bx, ny, width)] == 0:
 						continue
-				var next_key: int = _tile_key(Vector2i(nx, ny))
-				if closed.has(next_key):
+				if closed[next_idx] != 0:
 					continue
-				var step_cost: float = 1.41421356 if dx != 0 and dy != 0 else 1.0
-				var next_cost: float = best_cost + step_cost
-				if next_cost >= float(costs.get(next_key, FIELD_INF)):
+				var step_cost: int = DIAG_COST if dx != 0 and dy != 0 else ORTH_COST
+				var next_cost: int = best_cost + step_cost
+				if next_cost >= costs[next_idx]:
 					continue
-				costs[next_key] = next_cost
-				_heap_push(hf, hk, next_key, next_cost)
+				costs[next_idx] = next_cost
+				_heap_push_index(heap_costs, heap_indexes, next_idx, next_cost)
 	_debug_stats["last_expansions"] = expansions
-	_debug_stats["last_field_size"] = costs.size()
-	if costs.size() <= 1:
+	_debug_stats["last_field_size"] = reachable
+	_debug_stats["last_build_ms"] = float(Time.get_ticks_usec() - build_start_us) / 1000.0
+	if reachable <= 1:
 		return {}
 	return {
 		"costs": costs,
+		"walkable": walkable,
+		"width": width,
+		"height": height,
 		"goal": goal_tile,
 		"last_used": _lru_tick
 	}
@@ -164,12 +191,17 @@ func _direction_from_field(field: Dictionary, current_pos: Vector2) -> Vector2:
 	var goal_tile: Vector2i = field.get("goal", current_tile)
 	if current_tile == goal_tile:
 		return Vector2.ZERO
-	var costs: Dictionary = field.get("costs", {})
-	if costs.is_empty():
+	var costs: PackedInt32Array = field.get("costs", PackedInt32Array())
+	var walkable: PackedByteArray = field.get("walkable", PackedByteArray())
+	var width: int = int(field.get("width", 0))
+	var height: int = int(field.get("height", 0))
+	if costs.is_empty() or walkable.is_empty() or width <= 0 or height <= 0:
 		return Vector2.ZERO
-	var current_key: int = _tile_key(current_tile)
-	var current_cost: float = float(costs.get(current_key, FIELD_INF))
-	var best_cost: float = FIELD_INF
+	if current_tile.x < 0 or current_tile.x >= width or current_tile.y < 0 or current_tile.y >= height:
+		return Vector2.ZERO
+	var current_idx: int = _tile_index(current_tile.x, current_tile.y, width)
+	var current_cost: int = costs[current_idx]
+	var best_cost: int = FIELD_INF_COST
 	var best_tile: Vector2i = current_tile
 	for dy in range(-1, 2):
 		for dx in range(-1, 2):
@@ -177,20 +209,20 @@ func _direction_from_field(field: Dictionary, current_pos: Vector2) -> Vector2:
 				continue
 			var nx: int = current_tile.x + dx
 			var ny: int = current_tile.y + dy
-			if not _in_bounds_tile(nx, ny):
+			if nx < 0 or nx >= width or ny < 0 or ny >= height:
 				continue
-			if not _tile_walkable(nx, ny, goal_tile.x, goal_tile.y):
+			var next_idx: int = _tile_index(nx, ny, width)
+			if walkable[next_idx] == 0:
 				continue
 			if dx != 0 and dy != 0:
-				if not _tile_walkable(nx, current_tile.y, goal_tile.x, goal_tile.y):
+				if walkable[_tile_index(nx, current_tile.y, width)] == 0:
 					continue
-				if not _tile_walkable(current_tile.x, ny, goal_tile.x, goal_tile.y):
+				if walkable[_tile_index(current_tile.x, ny, width)] == 0:
 					continue
-			var next_key: int = _tile_key(Vector2i(nx, ny))
-			if not costs.has(next_key):
+			var next_cost: int = costs[next_idx]
+			if next_cost >= FIELD_INF_COST:
 				continue
-			var next_cost: float = float(costs[next_key])
-			if current_cost < FIELD_INF and next_cost >= current_cost - 0.001:
+			if current_cost < FIELD_INF_COST and next_cost >= current_cost:
 				continue
 			if next_cost < best_cost:
 				best_cost = next_cost
@@ -198,6 +230,78 @@ func _direction_from_field(field: Dictionary, current_pos: Vector2) -> Vector2:
 	if best_tile == current_tile:
 		return Vector2.ZERO
 	return Vector2(float(best_tile.x - current_tile.x), float(best_tile.y - current_tile.y)).normalized()
+
+func _build_walkable_map(goal_tile: Vector2i, width: int, height: int) -> PackedByteArray:
+	var out := PackedByteArray()
+	out.resize(width * height)
+	if _occupancy != null and is_instance_valid(_occupancy) and _occupancy.has_method("get_enemy_blocked_tile_keys"):
+		out.fill(1)
+		for key_any in _occupancy.get_enemy_blocked_tile_keys():
+			var key: int = int(key_any)
+			var tx: int = _key_to_x(key)
+			var ty: int = _key_to_y(key)
+			if tx < 0 or tx >= width or ty < 0 or ty >= height:
+				continue
+			out[_tile_index(tx, ty, width)] = 0
+		out[_tile_index(goal_tile.x, goal_tile.y, width)] = 1
+	else:
+		for ty in range(height):
+			for tx in range(width):
+				var idx: int = _tile_index(tx, ty, width)
+				out[idx] = 1 if _tile_walkable(tx, ty, goal_tile.x, goal_tile.y) else 0
+	return out
+
+func _direct_direction_if_clear(current_pos: Vector2, goal_pos: Vector2) -> Vector2:
+	if current_pos.distance_squared_to(goal_pos) <= 36.0:
+		return Vector2.ZERO
+	var current_tile: Vector2i = _clamp_tile(_world_to_tile(current_pos))
+	var goal_tile: Vector2i = _clamp_tile(_world_to_tile(goal_pos))
+	if current_tile == goal_tile:
+		return Vector2.ZERO
+	if _enemy_blocked_tile_count() <= 0:
+		return current_pos.direction_to(goal_pos)
+	if _tile_line_clear(current_tile, goal_tile):
+		return current_pos.direction_to(goal_pos)
+	return Vector2.ZERO
+
+func _enemy_blocked_tile_count() -> int:
+	if _occupancy != null and is_instance_valid(_occupancy) and _occupancy.has_method("get_enemy_blocked_tile_count"):
+		return int(_occupancy.get_enemy_blocked_tile_count())
+	return 1
+
+func _tile_line_clear(start: Vector2i, goal: Vector2i) -> bool:
+	var x: int = start.x
+	var y: int = start.y
+	var dx: int = absi(goal.x - start.x)
+	var dy: int = absi(goal.y - start.y)
+	var sx: int = 1 if start.x < goal.x else -1
+	var sy: int = 1 if start.y < goal.y else -1
+	var err: int = dx - dy
+	while true:
+		if x == goal.x and y == goal.y:
+			return true
+		var prev_x: int = x
+		var prev_y: int = y
+		var e2: int = err * 2
+		if e2 > -dy:
+			err -= dy
+			x += sx
+		if e2 < dx:
+			err += dx
+			y += sy
+		if _tile_blocked_for_enemy(Vector2i(x, y)):
+			return false
+		if x != prev_x and y != prev_y:
+			if _tile_blocked_for_enemy(Vector2i(x, prev_y)):
+				return false
+			if _tile_blocked_for_enemy(Vector2i(prev_x, y)):
+				return false
+	return true
+
+func _tile_blocked_for_enemy(tile: Vector2i) -> bool:
+	if _occupancy != null and is_instance_valid(_occupancy) and _occupancy.has_method("is_enemy_tile_blocked"):
+		return bool(_occupancy.is_enemy_tile_blocked(tile))
+	return not _tile_walkable(tile.x, tile.y, 999999, 999999)
 
 func _refresh_unit_hash_if_due() -> void:
 	if get_tree() == null:
@@ -208,7 +312,7 @@ func _refresh_unit_hash_if_due() -> void:
 	_next_hash_refresh_ms = now_ms + int(round(HASH_REFRESH_SEC * 1000.0))
 	_unit_buckets.clear()
 	var count: int = 0
-	for group_name in [&"raiders", &"zombies"]:
+	for group_name in [&"raiders", &"zombies", &"colonists"]:
 		for node in get_tree().get_nodes_in_group(group_name):
 			if node == null or not is_instance_valid(node):
 				continue
@@ -251,36 +355,36 @@ func _separation_for(current_pos: Vector2, self_id: int) -> Vector2:
 		return out.normalized()
 	return out
 
-func _heap_push(hf: PackedFloat64Array, hk: PackedInt64Array, key: int, score: float) -> void:
-	hf.append(score)
-	hk.append(key)
-	var pi: int = hf.size() - 1
+func _heap_push_index(heap_costs: PackedInt32Array, heap_indexes: PackedInt32Array, idx: int, score: int) -> void:
+	heap_costs.append(score)
+	heap_indexes.append(idx)
+	var pi: int = heap_costs.size() - 1
 	while pi > 0:
 		var pp: int = (pi - 1) >> 1
-		if hf[pp] <= score:
+		if heap_costs[pp] <= score:
 			break
-		var ppf: float = hf[pp]
-		var ppk: int = hk[pp]
-		hf[pi] = ppf
-		hk[pi] = ppk
-		hf[pp] = score
-		hk[pp] = key
+		var parent_cost: int = heap_costs[pp]
+		var parent_idx: int = heap_indexes[pp]
+		heap_costs[pi] = parent_cost
+		heap_indexes[pi] = parent_idx
+		heap_costs[pp] = score
+		heap_indexes[pp] = idx
 		pi = pp
 
-func _heap_pop_key(hf: PackedFloat64Array, hk: PackedInt64Array) -> int:
-	var h_size: int = hf.size()
-	var best_key: int = hk[0]
+func _heap_pop_index(heap_costs: PackedInt32Array, heap_indexes: PackedInt32Array) -> int:
+	var h_size: int = heap_costs.size()
+	var best_idx: int = heap_indexes[0]
 	if h_size == 1:
-		hf.resize(0)
-		hk.resize(0)
-		return best_key
+		heap_costs.resize(0)
+		heap_indexes.resize(0)
+		return best_idx
 	h_size -= 1
-	var lf: float = hf[h_size]
-	var lk: int = hk[h_size]
-	hf.resize(h_size)
-	hk.resize(h_size)
-	hf[0] = lf
-	hk[0] = lk
+	var last_cost: int = heap_costs[h_size]
+	var last_idx: int = heap_indexes[h_size]
+	heap_costs.resize(h_size)
+	heap_indexes.resize(h_size)
+	heap_costs[0] = last_cost
+	heap_indexes[0] = last_idx
 	var si: int = 0
 	while true:
 		var sl: int = 2 * si + 1
@@ -288,23 +392,23 @@ func _heap_pop_key(hf: PackedFloat64Array, hk: PackedInt64Array) -> int:
 			break
 		var sr: int = sl + 1
 		var sm: int = si
-		var sf: float = lf
-		var clf: float = hf[sl]
-		if clf < sf:
+		var smallest_cost: int = last_cost
+		var left_cost: int = heap_costs[sl]
+		if left_cost < smallest_cost:
 			sm = sl
-			sf = clf
+			smallest_cost = left_cost
 		if sr < h_size:
-			var crf: float = hf[sr]
-			if crf < sf:
+			var right_cost: int = heap_costs[sr]
+			if right_cost < smallest_cost:
 				sm = sr
 		if sm == si:
 			break
-		hf[si] = hf[sm]
-		hk[si] = hk[sm]
-		hf[sm] = lf
-		hk[sm] = lk
+		heap_costs[si] = heap_costs[sm]
+		heap_indexes[si] = heap_indexes[sm]
+		heap_costs[sm] = last_cost
+		heap_indexes[sm] = last_idx
 		si = sm
-	return best_key
+	return best_idx
 
 func _tile_walkable(tx: int, ty: int, gx: int, gy: int) -> bool:
 	if tx == gx and ty == gy:
@@ -336,8 +440,8 @@ func _max_tile_x() -> int:
 func _max_tile_y() -> int:
 	return maxi(0, int(round(world_size.y / tile_size)))
 
-func _tile_key(tile: Vector2i) -> int:
-	return ((tile.x + 32768) & 0xFFFF) << 16 | ((tile.y + 32768) & 0xFFFF)
+func _tile_index(tx: int, ty: int, width: int) -> int:
+	return ty * width + tx
 
 func _key_to_x(key: int) -> int:
 	return ((key >> 16) & 0xFFFF) - 32768

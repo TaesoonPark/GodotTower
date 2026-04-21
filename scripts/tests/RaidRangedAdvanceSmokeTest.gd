@@ -31,6 +31,8 @@ func _run_test() -> void:
 		_finish(false, "RAID_RANGED_HOLD_TEST_FAIL: no colonists")
 		return
 	var lead = colonists[0]
+	if lead.has_method("set_equipment_slots"):
+		lead.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Bow"})
 
 	main._start_raid_wave()
 	for _step in range(40):

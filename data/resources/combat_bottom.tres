@@ -1,6 +1,6 @@
-[gd_resource type="Resource" script_class="ResourceDef" load_steps=2 format=3]
+[gd_resource type="Resource" script_class="ResourceDef" format=3 uid="uid://brupmytbwl70s"]
 
-[ext_resource type="Script" path="res://scripts/data/ResourceDef.gd" id="1_resource_def"]
+[ext_resource type="Script" uid="uid://dvopc6okawwsa" path="res://scripts/data/ResourceDef.gd" id="1_resource_def"]
 
 [resource]
 script = ExtResource("1_resource_def")
@@ -8,3 +8,4 @@ id = &"CombatBottom"
 display_name = "Combat Bottom"
 stack_limit = 20
 category = "Apparel"
+equipment_defense_bonus = 1.0

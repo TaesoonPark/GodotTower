@@ -8,3 +8,4 @@ id = &"CombatHat"
 display_name = "Combat Hat"
 stack_limit = 20
 category = "Apparel"
+equipment_defense_bonus = 0.5

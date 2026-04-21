@@ -4,8 +4,7 @@
 
 [resource]
 script = ExtResource("1_resource_def")
-id = &"CombatTop"
-display_name = "Combat Top"
+id = &"StrawHat"
+display_name = "Straw Hat"
 stack_limit = 20
 category = "Apparel"
-equipment_defense_bonus = 1.0

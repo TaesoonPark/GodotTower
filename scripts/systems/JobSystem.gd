@@ -3,6 +3,7 @@ class_name JobSystem
 
 const JOB_SCORING: Script = preload("res://scripts/sim/JobScoring.gd")
 const HAUL_RESERVATION_LOGIC: Script = preload("res://scripts/sim/HaulReservationLogic.gd")
+const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
 
 const HAUL_QUEUE_TIMEOUT_MS: int = 5000
 const HAUL_ASSIGN_TIMEOUT_MS: int = 12000
@@ -796,9 +797,11 @@ func _resolve_preferred_combat_job_type(colonist: Node) -> StringName:
 	if colonist.has_method("get_equipment_snapshot"):
 		var gear: Dictionary = colonist.get_equipment_snapshot()
 		var weapon_id: StringName = StringName(gear.get(&"Weapon", &""))
-		if weapon_id == &"Bow":
+		var weapon_def: Resource = EQUIPMENT_STATS.get_resource_def(weapon_id)
+		var weapon_mode: StringName = StringName(weapon_def.get("equipment_weapon_mode")) if weapon_def != null else &""
+		if weapon_mode == &"Ranged":
 			return &"CombatRanged"
-		if weapon_id == &"Sword":
+		if weapon_mode == &"Melee":
 			return &"CombatMelee"
 	if colonist.has_method("get_combat_profile"):
 		var profile: Dictionary = colonist.get_combat_profile()

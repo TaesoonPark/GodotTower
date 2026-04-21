@@ -15,6 +15,7 @@ const RESEARCH_REQUIRED_POINTS_SCALE: float = 0.1
 const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
 const ENEMY_FLOW_FIELD_SERVICE_SCRIPT: Script = preload("res://scripts/systems/EnemyFlowFieldService.gd")
 const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
+const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
 const DEFAULT_LOADOUT: ColonistLoadoutData = preload("res://data/colonists/default_loadout.tres")
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
@@ -130,6 +131,8 @@ var _pathing_occupancy: PathingOccupancy = null
 var _enemy_flow_field_service: Node = null
 var _cached_alive_enemies: Array = []
 var _hud_dirty: bool = true
+var _hud_time_dirty: bool = false
+var _hud_selection_dirty: bool = false
 var _cached_research_options: Array = []
 var _cached_research_options_sig: int = 0
 var _perf_report_next_ms: int = 0
@@ -144,6 +147,7 @@ var _friendly_pathing_budget_scale: float = 1.0
 var _perf_last_ticks_usec: int = 0
 var _combat_log_next_ms: int = 0
 var _combat_window: Dictionary = {}
+var _perf_logging_enabled: bool = false
 var _dispatch_queued: bool = false
 var _dispatch_jobs_dirty: bool = true
 var _dispatch_combat_dirty: bool = true
@@ -176,6 +180,7 @@ var _job_liveness_next_ms: int = 0
 func _ready() -> void:
 	add_to_group("main_controller")
 	randomize()
+	_perf_logging_enabled = _is_perf_logging_enabled()
 	_pathing_occupancy = PATHING_OCCUPANCY_SCRIPT.new()
 	_pathing_occupancy.name = "PathingOccupancy"
 	var systems_node: Node = get_node_or_null("Systems")
@@ -452,7 +457,7 @@ func _process(delta: float) -> void:
 	var time_tick: int = int(floor(_elapsed_game_seconds * 10.0))
 	if time_tick != _last_hud_time_tick:
 		_last_hud_time_tick = time_tick
-		_hud_dirty = true
+		_mark_hud_time_dirty()
 	_update_raid_state(delta)
 	_process_deferred_build_requests()
 	if _raid_state == &"Active":
@@ -478,7 +483,9 @@ func _has_pending_dispatch() -> bool:
 		or _dispatch_maintenance_dirty \
 		or _dispatch_economy_dirty \
 		or _dispatch_jobs_dirty \
-		or _hud_dirty
+		or _hud_dirty \
+		or _hud_time_dirty \
+		or _hud_selection_dirty
 
 func _mark_pathing_dirty() -> void:
 	_dispatch_pathing_dirty = true
@@ -522,6 +529,14 @@ func _mark_maintenance_dirty() -> void:
 
 func _mark_farm_dirty() -> void:
 	_dispatch_farm_dirty = true
+	_queue_event_dispatch()
+
+func _mark_hud_time_dirty() -> void:
+	_hud_time_dirty = true
+	_queue_event_dispatch()
+
+func _mark_hud_selection_dirty() -> void:
+	_hud_selection_dirty = true
 	_queue_event_dispatch()
 
 func _check_job_liveness_watchdog() -> void:
@@ -688,15 +703,24 @@ func _dispatch_event_updates() -> void:
 	if _hud_dirty:
 		var t_us: int = Time.get_ticks_usec()
 		hud.set_craft_queue_preview(job_system.get_craft_queue(selected_workstation_id))
-		hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
-		hud.set_raid_state(_raid_state, _raid_warning_timer, _raid_wave_kind)
+		_refresh_hud_time_status()
 		hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
-		hud.set_defense_status(_defense_status_text)
 		_refresh_hud()
 		_hud_dirty = false
+		_hud_time_dirty = false
+		_hud_selection_dirty = false
+		dt_hud_us = Time.get_ticks_usec() - t_us
+	elif _hud_time_dirty or _hud_selection_dirty:
+		var t_us: int = Time.get_ticks_usec()
+		if _hud_time_dirty:
+			_refresh_hud_time_status()
+			_hud_time_dirty = false
+		if _hud_selection_dirty:
+			_refresh_selected_colonist_hud()
+			_hud_selection_dirty = false
 		dt_hud_us = Time.get_ticks_usec() - t_us
 	var dt_total_us: int = Time.get_ticks_usec() - dispatch_start_us
-	if _raid_state == &"Active" and dt_total_us >= 40000:
+	if _perf_logging_enabled and _raid_state == &"Active" and dt_total_us >= 40000:
 		print("[Perf][Hitch][Dispatch] total=%.2f path=%.2f combat=%.2f traps=%.2f farm=%.2f maint=%.2f econ=%.2f jobs=%.2f hud=%.2f enemies=%d" % [
 			float(dt_total_us) / 1000.0,
 			float(dt_pathing_us) / 1000.0,
@@ -1145,20 +1169,27 @@ func _set_selected(new_selection: Array) -> void:
 	_refresh_hud()
 
 func _maybe_start_auto_raid_benchmark() -> void:
-	var enabled: bool = OS.get_environment("AUTO_RAID_BENCH") == "1"
-	if not enabled:
-		var args: PackedStringArray = OS.get_cmdline_args()
-		for arg in args:
-			if arg == "--auto_raid_bench":
-				enabled = true
-				break
-	if not enabled:
+	if not _is_auto_raid_benchmark_enabled():
 		return
 	var timer: SceneTreeTimer = get_tree().create_timer(2.0)
 	timer.timeout.connect(func():
 		if _raid_state == &"Idle" or _raid_state == &"Resolved":
 			_start_raid_warning()
 	)
+
+func _is_perf_logging_enabled() -> bool:
+	if OS.get_environment("PERF_LOGS") == "1":
+		return true
+	return _is_auto_raid_benchmark_enabled()
+
+func _is_auto_raid_benchmark_enabled() -> bool:
+	if OS.get_environment("AUTO_RAID_BENCH") == "1":
+		return true
+	var args: PackedStringArray = OS.get_cmdline_args()
+	for arg in args:
+		if arg == "--auto_raid_bench":
+			return true
+	return false
 
 func _on_command_move(world_pos: Vector2) -> void:
 	_sanitize_selected_colonists()
@@ -1359,6 +1390,36 @@ func _refresh_hud() -> void:
 	_refresh_bed_assign_ui()
 	_refresh_stockpile_filter_ui()
 
+func _refresh_hud_time_status() -> void:
+	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
+	hud.set_raid_state(_raid_state, _raid_warning_timer, _raid_wave_kind)
+	hud.set_defense_status(_defense_status_text)
+
+func _refresh_selected_colonist_hud() -> void:
+	_sanitize_selected_colonists()
+	var focus: Node = selected_colonists[0] if not selected_colonists.is_empty() else null
+	if focus == null:
+		return
+	hud.set_selected_status_visible(true)
+	hud.set_needs_preview(focus)
+	hud.set_priority_preview(focus)
+	hud.set_current_job_preview(focus)
+	hud.set_carry_capacity_preview(focus)
+	hud.set_equipment_preview(focus)
+	hud.set_stockpile_inventory_preview(null)
+	hud.set_work_toggles(focus.work_enabled)
+
+func _is_selected_colonist(colonist: Node) -> bool:
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	var colonist_id: int = colonist.get_instance_id()
+	for selected_colonist in selected_colonists:
+		if selected_colonist == null or not is_instance_valid(selected_colonist):
+			continue
+		if selected_colonist.get_instance_id() == colonist_id:
+			return true
+	return false
+
 func _on_priority_changed(job_type: StringName, value: int) -> void:
 	for c in colonists:
 		match job_type:
@@ -1413,7 +1474,8 @@ func _on_colonist_status_changed(_colonist: Node) -> void:
 	_sanitize_selected_colonists()
 	if selected_colonists.is_empty():
 		return
-	_hud_dirty = true
+	if _is_selected_colonist(_colonist):
+		_mark_hud_selection_dirty()
 
 func _on_action_changed(action: StringName) -> void:
 	current_action = action
@@ -2603,7 +2665,7 @@ func _start_raid_warning() -> void:
 	_raid_wave_size = mini(20, maxi(2, 2 + int(floor(_elapsed_game_seconds / 120.0))))
 	_raid_wave_kind = _pick_raid_wave_kind()
 	_mark_combat_dirty()
-	_hud_dirty = true
+	_mark_hud_time_dirty()
 
 func _start_raid_wave() -> void:
 	if _raid_wave_size <= 0:
@@ -2632,7 +2694,7 @@ func _start_raid_wave() -> void:
 	_cancel_noncombat_jobs_for_active_raid()
 	_mark_combat_dirty()
 	_mark_jobs_dirty()
-	_hud_dirty = true
+	_mark_hud_time_dirty()
 
 func _resolve_raid(_colony_survived: bool) -> void:
 	_raid_state = &"Resolved"
@@ -2688,14 +2750,11 @@ func _can_colonist_enter_raid_combat(colonist: Node) -> bool:
 func _spawn_raiders(count: int) -> void:
 	if count <= 0:
 		return
-	var center: Vector2 = WORLD_SIZE * 0.5
 	for _i in range(count):
 		var raider: Node2D = RAIDER_SCENE.instantiate()
 		raider.global_position = _resolve_enemy_spawn_position(_random_edge_spawn(140.0))
 		if raider.has_method("set_tile_size"):
 			raider.set_tile_size(TILE_SIZE)
-		if raider.has_method("look_at"):
-			raider.look_at(center)
 		if raider.has_signal("died"):
 			raider.died.connect(_on_raider_died)
 		_connect_enemy_signals(raider)
@@ -2919,45 +2978,26 @@ func _apply_passive_item_bonuses() -> void:
 		var weapon_id: StringName = StringName(_equipped_weapon_kind.get(cid, &""))
 		var has_weapon: bool = weapon_id != &""
 		var has_any_apparel: bool = has_top or has_bottom or has_hat
+		var equipped_slots: Dictionary = {
+			&"Top": (&"CombatTop" if _outfit_mode == &"Combat" else &"GatherTop") if has_top else &"",
+			&"Bottom": (&"CombatBottom" if _outfit_mode == &"Combat" else &"GatherBottom") if has_bottom else &"",
+			&"Hat": (&"CombatHat" if _outfit_mode == &"Combat" else &"StrawHat") if has_hat else &"",
+			&"Weapon": weapon_id if has_weapon else &""
+		}
 		if colonist.has_method("set_wearing_clothes"):
 			colonist.set_wearing_clothes(has_any_apparel)
 		if colonist.has_method("set_equipment_slots"):
-			colonist.set_equipment_slots({
-				&"Top": (&"CombatTop" if _outfit_mode == &"Combat" else &"GatherTop") if has_top else &"",
-				&"Bottom": (&"CombatBottom" if _outfit_mode == &"Combat" else &"GatherBottom") if has_bottom else &"",
-				&"Hat": (&"CombatHat" if _outfit_mode == &"Combat" else &"StrawHat") if has_hat else &"",
-				&"Weapon": weapon_id if has_weapon else &""
-			})
-		var melee_attack: float = float(colonist.stats.base_melee_attack)
-		var ranged_attack: float = float(colonist.stats.base_ranged_attack)
+			colonist.set_equipment_slots(equipped_slots)
 		var armor_pen: float = float(colonist.stats.base_armor_penetration)
 		var defense: float = float(colonist.stats.base_defense)
-		var accuracy_bonus: float = 0.0
-		if weapon_id == &"Sword":
-			melee_attack += 8.0
-			armor_pen += 2.0
-		elif weapon_id == &"Bow":
-			ranged_attack += 7.0
-			accuracy_bonus += 0.08
-		elif weapon_id == &"Weapon":
-			melee_attack += 4.0
-			armor_pen += 1.0
-		accuracy_bonus += _combat_accuracy_bonus_from_research
-		if _outfit_mode == &"Combat" and has_any_apparel:
-			defense += 2.5
 		if colonist.has_method("set_combat_profile"):
-			colonist.set_combat_profile({
-				"base_hit": float(colonist.stats.base_hit_chance),
-				"defense": defense,
-				"melee_attack": melee_attack,
-				"ranged_attack": ranged_attack,
-				"armor_penetration": armor_pen,
-				"melee_range": float(colonist.stats.melee_range),
-				"ranged_range": float(colonist.stats.ranged_range) + (36.0 if weapon_id == &"Bow" else 0.0),
-				"attack_cooldown_sec": maxf(0.25, float(colonist.stats.attack_cooldown_sec) - (0.08 if weapon_id == &"Sword" else 0.0)),
-				"accuracy_bonus": accuracy_bonus,
-				"weapon_mode": (&"Ranged" if weapon_id == &"Bow" else &"Melee")
-			})
+			var profile: Dictionary = EQUIPMENT_STATS.make_colonist_base_profile(
+				float(colonist.stats.base_hit_chance),
+				defense,
+				armor_pen,
+				_combat_accuracy_bonus_from_research
+			)
+			colonist.set_combat_profile(EQUIPMENT_STATS.apply_equipment_to_profile(profile, equipped_slots))
 		if colonist.has_method("set_external_accuracy_bonus"):
 			colonist.set_external_accuracy_bonus(_day_night_combat_accuracy_bonus())
 		if colonist.has_method("set_external_move_speed_multiplier"):
@@ -3209,9 +3249,35 @@ func _issue_selected_move_command(target_pos: Vector2) -> void:
 	var used_slots: Dictionary = {}
 	for colonist in active_colonists:
 		var move_target: Vector2 = _select_formation_slot_for_colonist(colonist, formation_slots, used_slots, snapped_target)
-		job_system.issue_immediate_move(colonist, move_target, _raid_state != &"Active")
+		var preserve_current_job: bool = _raid_state != &"Active" and not _is_colonist_in_combat_job(colonist)
+		_release_melee_locks_for_user_move(colonist)
+		job_system.issue_immediate_move(colonist, move_target, preserve_current_job)
 	job_system.mark_assign_dirty()
 	_mark_jobs_dirty()
+
+func _is_colonist_in_combat_job(colonist: Node) -> bool:
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	var job_variant: Variant = colonist.get("current_job")
+	if not (job_variant is Dictionary):
+		return false
+	var job: Dictionary = job_variant
+	var job_type: StringName = StringName(job.get("type", &""))
+	return job_type == &"CombatMelee" or job_type == &"CombatRanged"
+
+func _release_melee_locks_for_user_move(colonist: Node) -> void:
+	if colonist == null or not is_instance_valid(colonist):
+		return
+	if colonist.has_method("release_melee_combat_lock"):
+		colonist.release_melee_combat_lock()
+	var colonist_id: int = colonist.get_instance_id()
+	var enemies: Array = get_tree().get_nodes_in_group("raiders")
+	enemies.append_array(get_tree().get_nodes_in_group("zombies"))
+	for enemy in enemies:
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		if enemy.has_method("release_melee_lock_if_target"):
+			enemy.release_melee_lock_if_target(colonist_id)
 
 func _build_formation_slots(snapped_target: Vector2, unit_count: int) -> Array[Vector2]:
 	var slots: Array[Vector2] = []
@@ -3790,6 +3856,8 @@ func _get_cached_research_options() -> Array:
 	return _cached_research_options
 
 func _record_frame_profile(delta: float) -> void:
+	if not _perf_logging_enabled:
+		return
 	var now_usec: int = Time.get_ticks_usec()
 	var now_ms: int = Time.get_ticks_msec()
 	_report_combat_window_if_due(now_ms)

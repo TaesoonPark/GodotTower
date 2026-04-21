@@ -18,6 +18,12 @@ func _finish(success: bool, message: String) -> void:
 func _is_combat_job(job_type: StringName) -> bool:
 	return job_type == &"CombatMelee" or job_type == &"CombatRanged"
 
+func _pin_enemy(enemy: Node2D, pos: Vector2) -> void:
+	enemy.global_position = pos
+	enemy.move_speed = 0.0
+	enemy._spawn_unclip_left = 0.0
+	enemy._move_goal = pos
+
 func _run_test() -> void:
 	var main = MAIN_SCENE.instantiate()
 	add_child(main)
@@ -33,23 +39,48 @@ func _run_test() -> void:
 	var lead = colonists[0]
 	main._set_combat_rally_point(lead.global_position + Vector2(200.0, 120.0))
 	main._start_raid_wave()
+	await get_tree().process_frame
 
-	for _step in range(20):
-		await get_tree().process_frame
+	main._mark_group_cache_dirty(&"raiders")
+	main._mark_group_cache_dirty(&"zombies")
+	var far_enemy_pos: Vector2 = Vector2(7440.0, 4160.0)
+	var moved_enemy_count: int = 0
 	for enemy in main._get_alive_raiders():
 		if enemy == null or not is_instance_valid(enemy):
 			continue
-		enemy.global_position = Vector2(7440.0, 4160.0)
+		_pin_enemy(enemy, far_enemy_pos)
+		moved_enemy_count += 1
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if _is_combat_job(StringName(colonist.current_job.get("type", &""))) and colonist.has_method("cancel_current_job"):
+			colonist.cancel_current_job()
+	if main.job_system != null and is_instance_valid(main.job_system):
+		main.job_system._jobs.clear()
 	main._mark_combat_dirty()
 	main._mark_jobs_dirty()
 
+	for _step in range(20):
+		await get_tree().process_frame
+
 	for _step in range(160):
 		await get_tree().process_frame
+		for enemy in main._get_alive_raiders():
+			if enemy == null or not is_instance_valid(enemy):
+				continue
+			_pin_enemy(enemy, far_enemy_pos)
 	for colonist in colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
 		if _is_combat_job(StringName(colonist.current_job.get("type", &""))):
-			_finish(false, "RAID_RALLY_HOLD_TEST_FAIL: combat started before threat entered 160 range")
+			var min_dist: float = INF
+			var enemy_positions: Array[String] = []
+			for enemy in main._get_alive_raiders():
+				if enemy == null or not is_instance_valid(enemy):
+					continue
+				min_dist = minf(min_dist, colonist.global_position.distance_to(enemy.global_position))
+				enemy_positions.append(str(enemy.global_position))
+			_finish(false, "RAID_RALLY_HOLD_TEST_FAIL: combat started before threat entered 160 range job=%s dist=%.1f moved=%d enemies=%s pos=%s" % [str(colonist.current_job.get("type", &"")), min_dist, moved_enemy_count, ",".join(enemy_positions), str(colonist.global_position)])
 			return
 
 	var enemies: Array = main._get_alive_raiders()

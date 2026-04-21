@@ -2,6 +2,7 @@ extends Node2D
 
 const COMBAT_MATH: Script = preload("res://scripts/core/CombatMath.gd")
 const COMBAT_LOS: Script = preload("res://scripts/core/CombatLineOfSight.gd")
+const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
 const FRIENDLY_PATHING: Script = preload("res://scripts/core/pathing/FriendlyPathing.gd")
 const COLONIST_STATS_SCRIPT: Script = preload("res://scripts/data/ColonistStatsData.gd")
 const JOB_PRIORITY_SCRIPT: Script = preload("res://scripts/data/JobPriorityData.gd")
@@ -83,6 +84,8 @@ const UPDATE_NEAR_RADIUS: float = 900.0
 const UPDATE_FAR_INTERVAL_SEC: float = 0.16
 const NEED_TICK_INTERVAL_SEC: float = 0.25
 const COMBAT_TARGET_REFRESH_SEC: float = 0.24
+const MELEE_SLOT_COUNT: int = 8
+const MELEE_SLOT_MAX_RING: int = 8
 
 var _move_stuck_elapsed: float = 0.0
 var _move_repath_fail_streak: int = 0
@@ -105,6 +108,10 @@ var _cached_cmd_acc: float = 0.0
 var _cached_cmd_def: float = 0.0
 var _cached_cmd_move: float = 1.0
 var _cached_cmd_ms: int = 0
+var _melee_slot_cache_target_id: int = 0
+var _melee_slot_cache_index: int = -1
+var _melee_slot_cache_next_ms: int = 0
+var _melee_lock_target_id: int = 0
 var _is_path_blocked_callable: Callable
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
@@ -119,18 +126,7 @@ func _ready() -> void:
 	if priorities == null:
 		priorities = JOB_PRIORITY_SCRIPT.new()
 	health = stats.max_health
-	set_combat_profile({
-		"base_hit": float(stats.base_hit_chance),
-		"defense": float(stats.base_defense),
-		"melee_attack": float(stats.base_melee_attack),
-		"ranged_attack": float(stats.base_ranged_attack),
-		"armor_penetration": float(stats.base_armor_penetration),
-		"melee_range": float(stats.melee_range),
-		"ranged_range": float(stats.ranged_range),
-		"attack_cooldown_sec": float(stats.attack_cooldown_sec),
-		"accuracy_bonus": 0.0,
-		"weapon_mode": &"Melee"
-	})
+	_refresh_equipment_combat_profile()
 	if sprite != null:
 		var sprite_tex: Texture2D = GAME_SPRITE.get_unit_texture(&"colonist")
 		if sprite_tex != null:
@@ -205,6 +201,12 @@ func _compute_local_obstacle_signature() -> int:
 	return sig
 
 func _process_movement(delta: float) -> void:
+	if _is_melee_lock_active():
+		_clear_path_cache()
+		nav.target_position = global_position
+		_move_stuck_elapsed = 0.0
+		_move_repath_fail_streak = 0
+		return
 	var move_delta: float = minf(delta, 0.05)
 	var is_build_job: bool = StringName(current_job.get("type", &"")) == &"BuildSite"
 	if _build_retarget_cooldown > 0.0:
@@ -222,7 +224,8 @@ func _process_movement(delta: float) -> void:
 		_move_stuck_elapsed = 0.0
 		_move_repath_fail_streak = 0
 		return
-	if global_position.distance_to(goal) <= 6.0:
+	if global_position.distance_to(goal) <= 24.0:
+		_anchor_to_cell(goal)
 		_reset_build_stall_watch()
 		_reset_move_progress_watch()
 		_clear_path_cache()
@@ -233,12 +236,15 @@ func _process_movement(delta: float) -> void:
 			_reroute_target_pending = Vector2.INF
 		return
 	var speed_mul: float = (1.5 if food_speed_buff_remaining > 0.0 else 1.0) * maxf(0.5, external_move_speed_multiplier) * _nearby_command_move_multiplier()
+	var move_speed: float = stats.move_speed * speed_mul
+	if _try_process_melee_positioning(goal, move_speed, move_delta):
+		return
 	var result: Dictionary = {}
 	if _friendly_pathing != null:
 		result = _friendly_pathing.move_step(
 			global_position,
 			goal,
-			stats.move_speed * speed_mul,
+			move_speed,
 			move_delta,
 			_is_path_blocked_callable
 		)
@@ -254,6 +260,8 @@ func _process_movement(delta: float) -> void:
 			if not _is_blocked_position(fallback_pos):
 				next_pos = fallback_pos
 				stalled_without_progress = false
+	if next_pos.distance_to(goal) <= 24.0:
+		next_pos = _snap_to_tile(goal)
 	if not blocked and next_pos.distance_to(global_position) > 0.1 and _is_move_segment_blocked(global_position, next_pos):
 		blocked = true
 		next_pos = global_position
@@ -298,6 +306,15 @@ func _snap_to_tile(world_pos: Vector2) -> Vector2:
 		round(world_pos.y / tile_size) * tile_size
 	)
 
+func _anchor_to_cell(world_pos: Vector2) -> bool:
+	var snapped: Vector2 = _snap_to_tile(world_pos)
+	if _snap_to_tile(global_position).distance_to(snapped) > 0.1 and _is_blocked_position(snapped):
+		return false
+	if global_position.distance_to(snapped) <= 0.1:
+		return false
+	global_position = snapped
+	return true
+
 func _is_blocked_position(world_pos: Vector2) -> bool:
 	if _is_blocked_sample(world_pos):
 		return true
@@ -315,6 +332,8 @@ func _is_blocked_sample(world_pos: Vector2) -> bool:
 	var query_tile: Vector2 = _snap_to_tile(world_pos)
 	if query_tile.distance_to(_snap_to_tile(global_position)) <= 0.1:
 		return false
+	if _is_combat_unit_blocking_tile(query_tile):
+		return true
 	if _pathing_occupancy == null or not is_instance_valid(_pathing_occupancy):
 		_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
 	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("is_blocked_for_friendly"):
@@ -323,6 +342,50 @@ func _is_blocked_sample(world_pos: Vector2) -> bool:
 
 func _is_path_blocked_position(world_pos: Vector2) -> bool:
 	return _is_blocked_sample(world_pos)
+
+func _invalidate_dynamic_combat_blockers() -> void:
+	if _pathing_occupancy == null or not is_instance_valid(_pathing_occupancy):
+		_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
+	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("invalidate_dynamic_combat_blockers"):
+		_pathing_occupancy.invalidate_dynamic_combat_blockers()
+
+func _is_combat_unit_blocking_tile(world_pos: Vector2) -> bool:
+	if _pathing_occupancy == null or not is_instance_valid(_pathing_occupancy):
+		_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
+	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("is_dynamic_combat_blocked"):
+		return bool(_pathing_occupancy.is_dynamic_combat_blocked(world_pos, get_instance_id()))
+	var snapped: Vector2 = _snap_to_tile(world_pos)
+	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
+	for group_name in groups:
+		for node in get_tree().get_nodes_in_group(group_name):
+			if node == null or not is_instance_valid(node) or node == self:
+				continue
+			if not (node is Node2D):
+				continue
+			if node.has_method("is_dead") and bool(node.is_dead()):
+				continue
+			if _snap_to_tile((node as Node2D).global_position).distance_to(snapped) > 0.1:
+				continue
+			if _is_node_in_combat_state(node):
+				return true
+	return false
+
+func _is_node_in_combat_state(node: Node) -> bool:
+	if node.has_method("is_melee_combat_locked") and bool(node.is_melee_combat_locked()):
+		return true
+	var job_variant: Variant = node.get("current_job")
+	if job_variant is Dictionary:
+		var job: Dictionary = job_variant
+		var job_type: StringName = StringName(job.get("type", &""))
+		if job_type == &"CombatRanged":
+			return true
+	var enemy_lock_variant: Variant = node.get("_melee_lock_target_id")
+	if enemy_lock_variant != null and int(enemy_lock_variant) != 0:
+		return true
+	var enemy_target_variant: Variant = node.get("_target_colonist_id")
+	if enemy_target_variant != null and int(enemy_target_variant) != 0 and node.has_method("get_current_weapon_mode") and StringName(node.get_current_weapon_mode()) == &"Ranged":
+		return true
+	return false
 
 func _is_move_segment_blocked(from_pos: Vector2, to_pos: Vector2) -> bool:
 	var dist: float = from_pos.distance_to(to_pos)
@@ -342,17 +405,21 @@ func _resolve_move_goal() -> Vector2:
 	if jt == &"CombatMelee" or jt == &"CombatRanged":
 		var target_pos: Vector2 = current_job.get("target", global_position)
 		var target_id: int = int(current_job.get("target_id", 0))
+		var target_node: Node2D = null
 		if target_id != 0:
 			var target_obj: Object = instance_from_id(target_id)
 			if target_obj != null and is_instance_valid(target_obj) and target_obj is Node2D:
-				target_pos = (target_obj as Node2D).global_position
+				target_node = target_obj as Node2D
+				target_pos = target_node.global_position
 				current_job["target"] = target_pos
-		target_pos = _snap_to_tile(target_pos)
 		if selected:
 			return _snap_to_tile(global_position)
 		var effective_type: StringName = _resolve_combat_job_type(jt)
 		if effective_type == &"CombatRanged":
 			return _snap_to_tile(global_position)
+		var attack_range: float = _combat_attack_range(effective_type)
+		if target_node != null:
+			return _resolve_melee_engagement_goal(target_node, target_pos, attack_range)
 		return target_pos
 	if current_job.has("target"):
 		return _snap_to_tile(current_job.get("target", global_position))
@@ -464,7 +531,128 @@ func _track_non_build_move_progress(goal: Vector2, delta: float) -> void:
 		cancel_current_job()
 
 func _is_at_goal(goal: Vector2) -> bool:
-	return global_position.distance_to(goal) <= 6.0
+	return global_position.distance_to(goal) <= 10.0
+
+func _try_process_melee_positioning(goal: Vector2, speed: float, delta: float) -> bool:
+	if selected:
+		return false
+	var job_type: StringName = StringName(current_job.get("type", &""))
+	if job_type != &"CombatMelee" and job_type != &"CombatRanged":
+		return false
+	var effective_type: StringName = _resolve_combat_job_type(job_type)
+	if effective_type != &"CombatMelee":
+		return false
+	var target_node: Node2D = _get_current_combat_target_node()
+	if target_node == null:
+		return false
+	var attack_range: float = _combat_attack_range(effective_type)
+	var target_pos: Vector2 = target_node.global_position
+	var distance_to_target: float = global_position.distance_to(target_pos)
+	var positioning_radius: float = maxf(tile_size * (float(_melee_required_ring(target_node.get_instance_id())) + 1.2), attack_range + tile_size * 1.4)
+	if distance_to_target > positioning_radius:
+		return false
+	var desired: Vector2 = _resolve_melee_engagement_goal(target_node, target_pos, attack_range)
+	if desired == Vector2.INF:
+		desired = goal
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	if not _is_melee_cell_available(own_cell) and _is_melee_cell_available(desired):
+		global_position = desired
+		_move_stuck_elapsed = 0.0
+		_move_repath_fail_streak = 0
+		_reset_move_progress_watch()
+		return true
+	var to_desired: Vector2 = desired - global_position
+	if to_desired.length() <= 24.0:
+		_anchor_to_cell(desired)
+		return true
+	var next_pos: Vector2 = global_position + to_desired.normalized() * minf(to_desired.length(), speed * delta)
+	if not _is_blocked_position(next_pos) and not _is_move_segment_blocked(global_position, next_pos):
+		global_position = next_pos
+		_move_stuck_elapsed = 0.0
+		_move_repath_fail_streak = 0
+		_reset_move_progress_watch()
+		return true
+	return distance_to_target <= attack_range
+
+func _get_current_combat_target_node() -> Node2D:
+	var target_id: int = int(current_job.get("target_id", 0))
+	if target_id == 0:
+		return null
+	var target_obj: Object = instance_from_id(target_id)
+	if target_obj == null or not is_instance_valid(target_obj):
+		return null
+	if not (target_obj is Node2D):
+		return null
+	return target_obj as Node2D
+
+func _resolve_melee_engagement_goal(target_node: Node2D, target_pos: Vector2, _attack_range: float) -> Vector2:
+	var target_cell: Vector2 = _snap_to_tile(target_pos)
+	var slots: Array[Vector2] = _build_melee_slot_cells(target_cell)
+	var start_idx: int = _melee_slot_index(target_node.get_instance_id(), slots.size())
+	for offset in range(slots.size()):
+		var idx: int = (start_idx + offset) % slots.size()
+		var candidate: Vector2 = slots[idx]
+		if _is_melee_cell_available(candidate):
+			return candidate
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	if _is_melee_cell_available(own_cell):
+		return own_cell
+	return slots[start_idx] if not slots.is_empty() else own_cell
+
+func _build_melee_slot_cells(target_cell: Vector2) -> Array[Vector2]:
+	var slots: Array[Vector2] = []
+	for ring in range(1, MELEE_SLOT_MAX_RING + 1):
+		for y in range(-ring, ring + 1):
+			for x in range(-ring, ring + 1):
+				if maxi(absi(x), absi(y)) != ring:
+					continue
+				slots.append(_snap_to_tile(target_cell + Vector2(float(x) * tile_size, float(y) * tile_size)))
+	return slots
+
+func _is_melee_cell_available(cell: Vector2) -> bool:
+	var snapped: Vector2 = _snap_to_tile(cell)
+	if _is_blocked_position(snapped):
+		return false
+	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
+	for group_name in groups:
+		for node in get_tree().get_nodes_in_group(group_name):
+			if node == null or not is_instance_valid(node) or node == self:
+				continue
+			if not (node is Node2D):
+				continue
+			if node.has_method("is_dead") and bool(node.is_dead()):
+				continue
+			if _snap_to_tile((node as Node2D).global_position).distance_to(snapped) <= 0.1:
+				return false
+	return true
+
+func _melee_slot_index(target_id: int, slot_count: int) -> int:
+	var now_ms: int = Time.get_ticks_msec()
+	if _melee_slot_cache_target_id == target_id and _melee_slot_cache_index >= 0 and now_ms < _melee_slot_cache_next_ms:
+		return _melee_slot_cache_index % maxi(1, slot_count)
+	var attacker_ids: Array[int] = []
+	for node in get_tree().get_nodes_in_group("colonists"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var job: Dictionary = node.get("current_job")
+		var job_type: StringName = StringName(job.get("type", &""))
+		if job_type != &"CombatMelee":
+			continue
+		if int(job.get("target_id", 0)) != target_id:
+			continue
+		attacker_ids.append(node.get_instance_id())
+	attacker_ids.sort()
+	var self_id: int = get_instance_id()
+	var found: int = attacker_ids.find(self_id)
+	if found >= 0:
+		_melee_slot_cache_target_id = target_id
+		_melee_slot_cache_index = found % maxi(1, slot_count)
+		_melee_slot_cache_next_ms = now_ms + 250
+		return _melee_slot_cache_index
+	_melee_slot_cache_target_id = target_id
+	_melee_slot_cache_index = absi(self_id + target_id) % maxi(1, slot_count)
+	_melee_slot_cache_next_ms = now_ms + 250
+	return _melee_slot_cache_index
 
 func _clear_path_cache() -> void:
 	if _friendly_pathing != null:
@@ -502,6 +690,12 @@ func get_priority(job_type: StringName) -> int:
 func assign_job(job: Dictionary) -> void:
 	current_job = job
 	var job_type: StringName = job.get("type", &"")
+	if job_type == &"MoveTo":
+		release_melee_combat_lock()
+	elif job_type != &"CombatMelee" and job_type != &"CombatRanged":
+		_clear_melee_combat_lock()
+	elif job_type == &"CombatRanged":
+		_invalidate_dynamic_combat_blockers()
 	if job_type != &"MoveTo" or not bool(job.get("__resume_after_move", false)):
 		_resume_job_after_move.clear()
 		_resume_after_move_enabled = false
@@ -577,6 +771,7 @@ func assign_job(job: Dictionary) -> void:
 			current_job["target"] = combat_target
 			nav.target_position = combat_target
 			current_job["next_attack_ms"] = 0
+			current_job["melee_locked"] = false
 		&"EatStub":
 			current_job["work_started"] = true
 			current_job["work_elapsed"] = 0.0
@@ -596,6 +791,8 @@ func capture_current_job_for_resume() -> void:
 	var job_type: StringName = StringName(current_job.get("type", &""))
 	if job_type == &"MoveTo":
 		return
+	if job_type == &"CombatMelee" or job_type == &"CombatRanged":
+		return
 	_resume_job_after_move = current_job.duplicate(true)
 	_resume_after_move_enabled = true
 
@@ -604,6 +801,7 @@ func clear_resume_job_after_move() -> void:
 	_resume_after_move_enabled = false
 
 func cancel_current_job() -> void:
+	_clear_melee_combat_lock()
 	_resume_job_after_move.clear()
 	_resume_after_move_enabled = false
 	if current_job.is_empty():
@@ -883,6 +1081,7 @@ func set_equipment_slots(next_slots: Dictionary) -> void:
 		equipment_slots[k] = next_value
 		changed = true
 	if changed:
+		_refresh_equipment_combat_profile()
 		emit_status()
 
 func get_equipment_snapshot() -> Dictionary:
@@ -890,6 +1089,16 @@ func get_equipment_snapshot() -> Dictionary:
 
 func get_preferred_combat_job_type() -> StringName:
 	return _resolve_combat_job_type(&"CombatMelee")
+
+func _refresh_equipment_combat_profile() -> void:
+	if stats == null:
+		return
+	var base_profile: Dictionary = EQUIPMENT_STATS.make_colonist_base_profile(
+		float(stats.base_hit_chance),
+		float(stats.base_defense),
+		float(stats.base_armor_penetration)
+	)
+	set_combat_profile(EQUIPMENT_STATS.apply_equipment_to_profile(base_profile, equipment_slots))
 
 func can_do_job(job_type: StringName) -> bool:
 	if selected:
@@ -935,8 +1144,11 @@ func _fit_sprite() -> void:
 	sprite.scale = Vector2(scale_factor, scale_factor)
 
 func _is_job_target_reached(threshold: float) -> bool:
-	var target: Vector2 = current_job.get("target", global_position)
-	return global_position.distance_to(target) <= threshold
+	var target: Vector2 = _snap_to_tile(current_job.get("target", global_position))
+	if global_position.distance_to(target) > threshold:
+		return false
+	_anchor_to_cell(target)
+	return true
 
 func _can_start_build_site_work(site_obj: Object) -> bool:
 	if site_obj == null or not is_instance_valid(site_obj):
@@ -1256,19 +1468,35 @@ func _process_combat_job(job_type: StringName) -> void:
 		_finish_current_job()
 		return
 	var target_node: Node2D = target_obj
+	var effective_job_type: StringName = _resolve_combat_job_type(job_type)
+	var locked_melee: bool = effective_job_type == &"CombatMelee" and _melee_lock_target_id == target_id
 	var target_pos: Vector2 = target_node.global_position
-	if _combat_target_refresh_left <= 0.0:
+	if locked_melee:
+		current_job["target"] = global_position
+		nav.target_position = global_position
+	elif _combat_target_refresh_left <= 0.0:
 		current_job["target"] = target_pos
 		nav.target_position = target_pos
 		_clear_path_cache()
 		_combat_target_refresh_left = COMBAT_TARGET_REFRESH_SEC
 	else:
 		target_pos = current_job.get("target", target_pos)
-	var effective_job_type: StringName = _resolve_combat_job_type(job_type)
 	var attack_range: float = _combat_attack_range(effective_job_type)
 	var dist: float = global_position.distance_to(target_pos)
-	if dist > attack_range:
+	var melee_engaged: bool = effective_job_type == &"CombatMelee" and _is_melee_engaged_with_target(target_node, attack_range)
+	if effective_job_type == &"CombatMelee":
+		if not locked_melee and not melee_engaged:
+			return
+	elif dist > attack_range:
 		return
+	if effective_job_type == &"CombatMelee" and _melee_lock_target_id == 0 and _can_start_melee_combat_lock(target_node, attack_range):
+		_melee_lock_target_id = target_id
+		current_job["melee_locked"] = true
+		current_job["target"] = global_position
+		nav.target_position = global_position
+		_clear_path_cache()
+		_invalidate_dynamic_combat_blockers()
+		locked_melee = true
 	var now_ms: int = Time.get_ticks_msec()
 	var next_attack_ms: int = int(current_job.get("next_attack_ms", 0))
 	if now_ms < next_attack_ms:
@@ -1285,7 +1513,8 @@ func _process_combat_job(job_type: StringName) -> void:
 	var defender: Dictionary = {"defense": 0.0}
 	if target_obj.has_method("get_combat_defender_profile"):
 		defender = target_obj.get_combat_defender_profile()
-	var result: Dictionary = COMBAT_MATH.resolve_attack(attacker, defender, dist)
+	var attack_dist: float = minf(dist, attack_range) if _melee_lock_target_id == target_id and effective_job_type == &"CombatMelee" else dist
+	var result: Dictionary = COMBAT_MATH.resolve_attack(attacker, defender, attack_dist)
 	var hit: bool = bool(result.get("hit", false))
 	var damage: int = maxi(0, int(result.get("damage", 0)))
 	if hit and target_obj.has_method("apply_combat_damage"):
@@ -1340,17 +1569,14 @@ func _combat_attack_power(job_type: StringName) -> float:
 	return maxf(1.0, float(combat_profile.get("melee_attack", 8.0)))
 
 func _resolve_combat_job_type(job_type: StringName) -> StringName:
-	var weapon_id: StringName = StringName(equipment_slots.get(&"Weapon", &""))
-	if weapon_id == &"Bow":
+	var profile_mode: StringName = StringName(combat_profile.get("weapon_mode", &"Melee"))
+	if profile_mode == &"Ranged":
 		return &"CombatRanged"
-	if weapon_id == &"Sword":
+	if profile_mode == &"Melee":
 		return &"CombatMelee"
 	var ranged_attack: float = float(combat_profile.get("ranged_attack", 0.0))
 	var melee_attack: float = float(combat_profile.get("melee_attack", 0.0))
 	if ranged_attack > melee_attack:
-		return &"CombatRanged"
-	var profile_mode: StringName = StringName(combat_profile.get("weapon_mode", &"Melee"))
-	if profile_mode == &"Ranged":
 		return &"CombatRanged"
 	if job_type == &"CombatRanged":
 		return &"CombatRanged"
@@ -1361,6 +1587,79 @@ func _die() -> void:
 		cancel_current_job()
 	died.emit(self)
 	queue_free()
+
+func is_melee_combat_locked() -> bool:
+	return _is_melee_lock_active()
+
+func release_melee_combat_lock() -> void:
+	_clear_melee_combat_lock()
+	_combat_target_refresh_left = 0.0
+	_clear_path_cache()
+
+func _can_start_melee_combat_lock(target_node: Node2D, attack_range: float) -> bool:
+	return _is_melee_engaged_with_target(target_node, attack_range)
+
+func _is_melee_engaged_with_target(target_node: Node2D, attack_range: float) -> bool:
+	var desired: Vector2 = _resolve_melee_engagement_goal(target_node, target_node.global_position, attack_range)
+	if desired == Vector2.INF:
+		return true
+	if global_position.distance_to(desired) <= 24.0:
+		_anchor_to_cell(desired)
+		return true
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	var target_cell: Vector2 = _snap_to_tile(target_node.global_position)
+	var cell_dx: int = absi(int(round((own_cell.x - target_cell.x) / tile_size)))
+	var cell_dy: int = absi(int(round((own_cell.y - target_cell.y) / tile_size)))
+	var ring: int = maxi(cell_dx, cell_dy)
+	if ring >= 1 and ring <= _melee_required_ring(target_node.get_instance_id()) and _is_melee_cell_available(own_cell):
+		_anchor_to_cell(global_position)
+		return true
+	return false
+
+func _melee_required_ring(target_id: int) -> int:
+	var attacker_count: int = 0
+	for node in get_tree().get_nodes_in_group("colonists"):
+		if node == null or not is_instance_valid(node):
+			continue
+		var job: Dictionary = node.get("current_job")
+		if StringName(job.get("type", &"")) != &"CombatMelee":
+			continue
+		if int(job.get("target_id", 0)) == target_id:
+			attacker_count += 1
+	for ring in range(1, MELEE_SLOT_MAX_RING + 1):
+		if attacker_count <= 4 * ring * (ring + 1):
+			return ring
+	return MELEE_SLOT_MAX_RING
+
+func _clear_melee_combat_lock() -> void:
+	var had_lock: bool = _melee_lock_target_id != 0
+	_melee_lock_target_id = 0
+	if not current_job.is_empty():
+		current_job["melee_locked"] = false
+	if had_lock:
+		_invalidate_dynamic_combat_blockers()
+
+func _is_melee_lock_active() -> bool:
+	if _melee_lock_target_id == 0:
+		return false
+	if current_job.is_empty():
+		_clear_melee_combat_lock()
+		return false
+	var job_type: StringName = StringName(current_job.get("type", &""))
+	if _resolve_combat_job_type(job_type) != &"CombatMelee":
+		_clear_melee_combat_lock()
+		return false
+	if int(current_job.get("target_id", 0)) != _melee_lock_target_id:
+		_clear_melee_combat_lock()
+		return false
+	var target_obj: Object = instance_from_id(_melee_lock_target_id)
+	if target_obj == null or not is_instance_valid(target_obj):
+		_finish_current_job()
+		return false
+	if target_obj.has_method("is_dead") and bool(target_obj.is_dead()):
+		_finish_current_job()
+		return false
+	return true
 
 func _try_supply_build_site(site_obj: Object) -> bool:
 	if site_obj == null or not is_instance_valid(site_obj):
@@ -1417,6 +1716,7 @@ func _nearby_command_move_multiplier() -> float:
 	return _cached_cmd_move
 
 func _finish_current_job() -> void:
+	_clear_melee_combat_lock()
 	current_job.clear()
 	_reroute_target_pending = Vector2.INF
 	_move_stuck_elapsed = 0.0

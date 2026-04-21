@@ -7,8 +7,11 @@ signal revision_changed(revision: int)
 
 var _blocked_friendly: Dictionary = {}
 var _blocked_enemy: Dictionary = {}
+var _combat_blocked_tiles: Dictionary = {}
+var _combat_blocked_next_refresh_ms: int = 0
 var _layout_signature: int = 0
 var _revision: int = 1
+const COMBAT_BLOCKED_REFRESH_MS: int = 50
 
 func _ready() -> void:
 	_rebuild_maps()
@@ -28,6 +31,29 @@ func is_blocked_for_friendly(world_pos: Vector2) -> bool:
 
 func is_blocked_for_enemy(world_pos: Vector2) -> bool:
 	return _blocked_enemy.has(_tile_key(_world_to_tile(world_pos)))
+
+func is_dynamic_combat_blocked(world_pos: Vector2, self_id: int = 0) -> bool:
+	_refresh_combat_blocked_tiles()
+	var ids: Array = _combat_blocked_tiles.get(_tile_key(_world_to_tile(world_pos)), [])
+	if ids.is_empty():
+		return false
+	for id_any in ids:
+		if int(id_any) != self_id:
+			return true
+	return false
+
+func invalidate_dynamic_combat_blockers() -> void:
+	_combat_blocked_tiles.clear()
+	_combat_blocked_next_refresh_ms = 0
+
+func is_enemy_tile_blocked(tile: Vector2i) -> bool:
+	return _blocked_enemy.has(_tile_key(tile))
+
+func get_enemy_blocked_tile_count() -> int:
+	return _blocked_enemy.size()
+
+func get_enemy_blocked_tile_keys() -> Array:
+	return _blocked_enemy.keys()
 
 func get_revision() -> int:
 	return _revision
@@ -62,6 +88,44 @@ func _rebuild_maps() -> void:
 	_layout_signature = sig
 	_revision += 1
 	revision_changed.emit(_revision)
+
+func _refresh_combat_blocked_tiles() -> void:
+	var now_ms: int = Time.get_ticks_msec()
+	if now_ms < _combat_blocked_next_refresh_ms:
+		return
+	_combat_blocked_next_refresh_ms = now_ms + COMBAT_BLOCKED_REFRESH_MS
+	_combat_blocked_tiles.clear()
+	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
+	for group_name in groups:
+		for node in get_tree().get_nodes_in_group(group_name):
+			if node == null or not is_instance_valid(node):
+				continue
+			if not (node is Node2D):
+				continue
+			if node.has_method("is_dead") and bool(node.is_dead()):
+				continue
+			if not _is_node_in_combat_blocking_state(node):
+				continue
+			var key: int = _tile_key(_world_to_tile((node as Node2D).global_position))
+			var ids: Array = _combat_blocked_tiles.get(key, [])
+			ids.append(node.get_instance_id())
+			_combat_blocked_tiles[key] = ids
+
+func _is_node_in_combat_blocking_state(node: Node) -> bool:
+	if node.has_method("is_melee_combat_locked") and bool(node.is_melee_combat_locked()):
+		return true
+	var job_variant: Variant = node.get("current_job")
+	if job_variant is Dictionary:
+		var job: Dictionary = job_variant
+		if StringName(job.get("type", &"")) == &"CombatRanged":
+			return true
+	var enemy_lock_variant: Variant = node.get("_melee_lock_target_id")
+	if enemy_lock_variant != null and int(enemy_lock_variant) != 0:
+		return true
+	var enemy_target_variant: Variant = node.get("_target_colonist_id")
+	if enemy_target_variant != null and int(enemy_target_variant) != 0 and node.has_method("get_current_weapon_mode") and StringName(node.get_current_weapon_mode()) == &"Ranged":
+		return true
+	return false
 
 func _mark_footprint(center: Vector2, footprint: Vector2, target_map: Dictionary) -> void:
 	var half: Vector2 = footprint * 0.5
