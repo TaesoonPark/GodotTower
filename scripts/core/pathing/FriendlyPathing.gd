@@ -3,7 +3,9 @@ class_name FriendlyPathing
 
 const REPATH_INTERVAL_SEC: float = 0.6
 const SEARCH_MARGIN_TILES: int = 14
+const EXPANDED_SEARCH_MARGIN_TILES: int = 40
 const MAX_EXPANSIONS: int = 400
+const EXPANDED_MAX_EXPANSIONS: int = 1800
 const GOAL_REPATH_DISTANCE_TILES: float = 1.4
 const STUCK_REPATH_DISTANCE: float = 8.0
 const STUCK_REPATH_TIME_SEC: float = 1.4
@@ -81,7 +83,7 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 	if goal == Vector2.INF:
 		clear()
 		return _set_result(current_pos, true, false)
-	if current_pos.distance_to(goal) <= 10.0:
+	if current_pos.distance_to(goal) <= 0.75:
 		clear()
 		return _set_result(goal, true, false)
 	if _stuck_anchor == Vector2.INF:
@@ -110,7 +112,7 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 			rebuilt_this_step = true
 			_consume_stale_path_points(current_pos, goal, is_blocked)
 		var direct_dir: Vector2 = current_pos.direction_to(goal)
-		if direct_dir != Vector2.ZERO:
+		if direct_dir != Vector2.ZERO and _is_segment_clear(current_pos, goal, is_blocked):
 			var direct_step: Vector2 = current_pos + direct_dir * minf(current_pos.distance_to(goal), speed * safe_delta)
 			if not bool(is_blocked.call(direct_step)):
 				return _set_result(direct_step, false, false)
@@ -145,6 +147,17 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 		out_pos = next_pos
 		_path_index += 1
 	return _set_result(out_pos, false, false)
+
+func _is_segment_clear(from_pos: Vector2, to_pos: Vector2, is_blocked: Callable) -> bool:
+	var dist: float = from_pos.distance_to(to_pos)
+	if dist <= 0.1:
+		return true
+	var steps: int = maxi(1, int(ceil(dist / (tile_size * 0.5))))
+	for i in range(1, steps + 1):
+		var t: float = float(i) / float(steps)
+		if bool(is_blocked.call(from_pos.lerp(to_pos, t))):
+			return false
+	return true
 
 func _snap_to_tile(world_pos: Vector2) -> Vector2:
 	return Vector2(
@@ -260,10 +273,25 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 	var cache_key: String = _path_cache_key(start_tile, goal_tile)
 	if _try_restore_cached_path(cache_key):
 		return
-	var min_x: int = mini(start_tile.x, goal_tile.x) - SEARCH_MARGIN_TILES
-	var max_x: int = maxi(start_tile.x, goal_tile.x) + SEARCH_MARGIN_TILES
-	var min_y: int = mini(start_tile.y, goal_tile.y) - SEARCH_MARGIN_TILES
-	var max_y: int = maxi(start_tile.y, goal_tile.y) + SEARCH_MARGIN_TILES
+	var path: Array[Vector2] = _find_path_points(start_tile, goal_tile, SEARCH_MARGIN_TILES, _max_expansions_runtime, is_blocked)
+	if path.is_empty() and not _is_segment_clear(start_world, goal_world, is_blocked):
+		path = _find_path_points(
+			start_tile,
+			goal_tile,
+			EXPANDED_SEARCH_MARGIN_TILES,
+			maxi(EXPANDED_MAX_EXPANSIONS, _max_expansions_runtime * 4),
+			is_blocked
+		)
+	if path.is_empty():
+		return
+	_path_points = path
+	_store_cached_path(cache_key, _path_points)
+
+func _find_path_points(start_tile: Vector2i, goal_tile: Vector2i, margin_tiles: int, max_exp: int, is_blocked: Callable) -> Array[Vector2]:
+	var min_x: int = mini(start_tile.x, goal_tile.x) - margin_tiles
+	var max_x: int = maxi(start_tile.x, goal_tile.x) + margin_tiles
+	var min_y: int = mini(start_tile.y, goal_tile.y) - margin_tiles
+	var max_y: int = maxi(start_tile.y, goal_tile.y) + margin_tiles
 	var gx: int = goal_tile.x
 	var gy: int = goal_tile.y
 	var start_key: int = _tile_key(start_tile)
@@ -275,7 +303,6 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 	hf.append(_heuristic(start_tile, goal_tile))
 	hk.append(start_key)
 	var expansions: int = 0
-	var max_exp: int = _max_expansions_runtime
 	while hf.size() > 0 and expansions < max_exp:
 		var h_size: int = hf.size()
 		var best_key: int
@@ -322,9 +349,7 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 		var bx: int = ((best_key >> 16) & 0xFFFF) - 32768
 		var by: int = (best_key & 0xFFFF) - 32768
 		if bx == gx and by == gy:
-			_path_points = _reconstruct_keys(came_from, best_key, start_key)
-			_store_cached_path(cache_key, _path_points)
-			return
+			return _reconstruct_keys(came_from, best_key, start_key)
 		var best_g: float = float(g_score.get(best_key, INF))
 		for _dy in range(-1, 2):
 			for _dx in range(-1, 2):
@@ -365,3 +390,5 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 					hf[pp] = fv
 					hk[pp] = nk
 					pi = pp
+	var empty: Array[Vector2] = []
+	return empty

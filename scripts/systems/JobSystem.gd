@@ -95,7 +95,8 @@ func process_dirty(
 	traps: Array = [],
 	gatherables: Array = [],
 	huntables: Array = [],
-	raid_active_mode: bool = false
+	raid_active_mode: bool = false,
+	rally_slot_validator: Callable = Callable()
 ) -> void:
 	process_producers(
 		colonists,
@@ -117,7 +118,8 @@ func process_dirty(
 		traps,
 		gatherables,
 		huntables,
-		raid_active_mode
+		raid_active_mode,
+		rally_slot_validator
 	)
 	process_assignment(colonists)
 
@@ -141,7 +143,8 @@ func process_producers(
 	traps: Array = [],
 	gatherables: Array = [],
 	huntables: Array = [],
-	raid_active_mode: bool = false
+	raid_active_mode: bool = false,
+	rally_slot_validator: Callable = Callable()
 ) -> void:
 	if _dirty_designation:
 		request_designated_gather_jobs(gatherables)
@@ -161,7 +164,7 @@ func process_producers(
 		request_research_jobs(colonists, research_target, research_project_id, 6.0)
 		_dirty_research = false
 	if _dirty_combat:
-		request_combat_jobs(colonists, enemies, rally_pos, rally_radius, max_combatants, raid_active_mode)
+		request_combat_jobs(colonists, enemies, rally_pos, rally_radius, max_combatants, raid_active_mode, rally_slot_validator)
 		_dirty_combat = false
 
 func process_assignment(colonists: Array) -> void:
@@ -663,7 +666,15 @@ func request_trap_maintenance_jobs(structures: Array) -> void:
 			continue
 		queue_trap_maint_job(structure, 3.0)
 
-func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = Vector2.INF, rally_radius: float = 120.0, max_assignments: int = -1, raid_active_mode: bool = false) -> void:
+func request_combat_jobs(
+	colonists: Array,
+	enemies: Array,
+	rally_pos: Vector2 = Vector2.INF,
+	rally_radius: float = 120.0,
+	max_assignments: int = -1,
+	raid_active_mode: bool = false,
+	rally_slot_validator: Callable = Callable()
+) -> void:
 	if enemies.is_empty():
 		return
 	if colonists.is_empty():
@@ -671,6 +682,10 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 	var assigned_count: int = 0
 	var size: int = colonists.size()
 	var start_idx: int = posmod(_combat_assign_cursor, maxi(1, size))
+	var rally_slot_claims: Dictionary = {}
+	var rally_slots: Array[Vector2] = []
+	var rally_slots_ready: bool = false
+	var rally_slot_count: int = size if max_assignments < 0 else mini(size, maxi(1, max_assignments))
 	for offset in range(size):
 		if max_assignments >= 0 and assigned_count >= max_assignments:
 			break
@@ -729,16 +744,12 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 				continue
 			if has_pending_move:
 				continue
-			var dir_to_rally: Vector2 = rally_pos - colonist.global_position
-			var rally_normalized: Vector2 = dir_to_rally.normalized() if dir_to_rally.length() > 0.001 else Vector2.RIGHT
-			var rally_move_target: Vector2 = rally_pos - rally_normalized * minf(rally_radius * 0.55, 72.0)
-			_jobs.append({
-				"type": &"MoveTo",
-				"target": rally_move_target,
-				"base_priority": 14,
-				"assigned_to": colonist_id
-			})
-			_dirty_assign = true
+			if not rally_slots_ready:
+				rally_slot_claims = _collect_rally_slot_claims(colonists, rally_pos, rally_radius)
+				rally_slots = _build_rally_formation_slots(rally_pos, rally_radius, rally_slot_count, rally_slot_claims, rally_slot_validator)
+				rally_slots_ready = true
+			var rally_move_target: Vector2 = _select_rally_slot_for_colonist(colonist, rally_slots, rally_slot_claims, rally_pos, rally_radius, rally_slot_validator)
+			_assign_rally_move_job(colonist, rally_move_target)
 			assigned_count += 1
 			continue
 		if has_pending_move and not enemy_is_close:
@@ -761,21 +772,141 @@ func request_combat_jobs(colonists: Array, enemies: Array, rally_pos: Vector2 = 
 				_rallied_colonist_ids[colonist_id] = true
 			else:
 				_rallied_colonist_ids[colonist_id] = true
-				var dir: Vector2 = rally_pos - colonist.global_position
-				var normalized: Vector2 = dir.normalized() if dir.length() > 0.001 else Vector2.RIGHT
-				var move_target: Vector2 = rally_pos - normalized * minf(rally_radius * 0.55, 72.0)
-				_jobs.append({
-					"type": &"MoveTo",
-					"target": move_target,
-					"base_priority": 14,
-					"assigned_to": colonist_id
-				})
+				if not rally_slots_ready:
+					rally_slot_claims = _collect_rally_slot_claims(colonists, rally_pos, rally_radius)
+					rally_slots = _build_rally_formation_slots(rally_pos, rally_radius, rally_slot_count, rally_slot_claims, rally_slot_validator)
+					rally_slots_ready = true
+				var move_target: Vector2 = _select_rally_slot_for_colonist(colonist, rally_slots, rally_slot_claims, rally_pos, rally_radius, rally_slot_validator)
+				_assign_rally_move_job(colonist, move_target)
 				assigned_count += 1
 				continue
 		var use_ranged: bool = preferred_job_type == &"CombatRanged"
 		queue_combat_job(colonist, nearest_enemy, use_ranged, preferred_job_type)
 		assigned_count += 1
 	_combat_assign_cursor = (start_idx + assigned_count + 1) % maxi(1, size)
+
+func _assign_rally_move_job(colonist: Node, target: Vector2) -> void:
+	if colonist == null or not is_instance_valid(colonist):
+		return
+	var colonist_id: int = colonist.get_instance_id()
+	_remove_pending_move_jobs_for_colonist(colonist_id)
+	colonist.assign_job({
+		"type": &"MoveTo",
+		"target": target,
+		"base_priority": 14,
+		"assigned_to": colonist_id
+	})
+
+func _collect_rally_slot_claims(colonists: Array, rally_pos: Vector2, rally_radius: float) -> Dictionary:
+	var claims: Dictionary = {}
+	for job in _jobs:
+		if StringName(job.get("type", &"")) != &"MoveTo":
+			continue
+		_claim_rally_slot_target(claims, job.get("target", Vector2.INF), rally_pos, rally_radius)
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist) or not (colonist is Node2D):
+			continue
+		var current_cell: Vector2 = _snap_to_job_tile((colonist as Node2D).global_position)
+		if current_cell.distance_to(rally_pos) <= maxf(20.0, rally_radius):
+			claims[_rally_slot_key(current_cell)] = true
+		var active_job_variant: Variant = colonist.get("current_job")
+		if active_job_variant is Dictionary:
+			var active_job: Dictionary = active_job_variant
+			if StringName(active_job.get("type", &"")) == &"MoveTo":
+				_claim_rally_slot_target(claims, active_job.get("target", Vector2.INF), rally_pos, rally_radius)
+	return claims
+
+func _claim_rally_slot_target(claims: Dictionary, target_variant: Variant, rally_pos: Vector2, rally_radius: float) -> void:
+	if not (target_variant is Vector2):
+		return
+	var target: Vector2 = _snap_to_job_tile(target_variant)
+	if target == Vector2.INF:
+		return
+	if target.distance_to(rally_pos) > maxf(rally_radius + WORK_ADJACENT_OFFSET * 4.0, WORK_ADJACENT_OFFSET * 6.0):
+		return
+	claims[_rally_slot_key(target)] = true
+
+func _build_rally_formation_slots(rally_pos: Vector2, _rally_radius: float, unit_count: int, claims: Dictionary, rally_slot_validator: Callable) -> Array[Vector2]:
+	var slots: Array[Vector2] = []
+	var seen: Dictionary = {}
+	var center: Vector2 = _snap_to_job_tile(rally_pos)
+	var max_ring: int = maxi(2, int(ceil(sqrt(float(maxi(1, unit_count + claims.size()))))) + 4)
+	for ring in range(0, max_ring + 1):
+		if ring == 0:
+			var center_key: String = _rally_slot_key(center)
+			if not claims.has(center_key) and _is_rally_slot_valid(center, rally_slot_validator):
+				slots.append(center)
+				seen[center_key] = true
+			if slots.size() >= unit_count:
+				return slots
+			continue
+		for y in range(-ring, ring + 1):
+			for x in range(-ring, ring + 1):
+				if maxi(absi(x), absi(y)) != ring:
+					continue
+				var candidate: Vector2 = _snap_to_job_tile(center + Vector2(float(x) * WORK_ADJACENT_OFFSET, float(y) * WORK_ADJACENT_OFFSET))
+				var candidate_key: String = _rally_slot_key(candidate)
+				if claims.has(candidate_key) or seen.has(candidate_key):
+					continue
+				if not _is_rally_slot_valid(candidate, rally_slot_validator):
+					continue
+				slots.append(candidate)
+				seen[candidate_key] = true
+		if slots.size() >= unit_count:
+			return slots
+	return slots
+
+func _select_rally_slot_for_colonist(colonist: Node, slots: Array[Vector2], claims: Dictionary, rally_pos: Vector2, rally_radius: float, rally_slot_validator: Callable) -> Vector2:
+	var selected: Vector2 = _pick_nearest_rally_slot(colonist, slots, claims)
+	if selected == Vector2.INF:
+		var expanded_slots: Array[Vector2] = _build_rally_formation_slots(rally_pos, rally_radius, claims.size() + 8, claims, rally_slot_validator)
+		selected = _pick_nearest_rally_slot(colonist, expanded_slots, claims)
+	if selected == Vector2.INF:
+		selected = _fallback_rally_move_target(colonist, rally_pos, rally_radius, rally_slot_validator)
+	claims[_rally_slot_key(selected)] = true
+	return selected
+
+func _pick_nearest_rally_slot(colonist: Node, slots: Array[Vector2], claims: Dictionary) -> Vector2:
+	if slots.is_empty() or colonist == null or not is_instance_valid(colonist) or not (colonist is Node2D):
+		return Vector2.INF
+	var best: Vector2 = Vector2.INF
+	var best_dist_sq: float = INF
+	for slot in slots:
+		if claims.has(_rally_slot_key(slot)):
+			continue
+		var dist_sq: float = (colonist as Node2D).global_position.distance_squared_to(slot)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best = slot
+	return best
+
+func _fallback_rally_move_target(colonist: Node, rally_pos: Vector2, rally_radius: float, rally_slot_validator: Callable) -> Vector2:
+	var from_pos: Vector2 = rally_pos
+	if colonist != null and is_instance_valid(colonist) and colonist is Node2D:
+		from_pos = (colonist as Node2D).global_position
+	var dir: Vector2 = rally_pos - from_pos
+	var normalized: Vector2 = dir.normalized() if dir.length() > 0.001 else Vector2.RIGHT
+	var target: Vector2 = _snap_to_job_tile(rally_pos - normalized * minf(rally_radius * 0.55, 72.0))
+	if _is_rally_slot_valid(target, rally_slot_validator):
+		return target
+	return _snap_to_job_tile(rally_pos)
+
+func _is_rally_slot_valid(world_pos: Vector2, rally_slot_validator: Callable) -> bool:
+	if rally_slot_validator.is_valid():
+		return bool(rally_slot_validator.call(world_pos))
+	return not _is_blocked_by_structure(world_pos)
+
+func _snap_to_job_tile(world_pos: Vector2) -> Vector2:
+	if world_pos == Vector2.INF:
+		return Vector2.INF
+	return Vector2(
+		round(world_pos.x / WORK_ADJACENT_OFFSET) * WORK_ADJACENT_OFFSET,
+		round(world_pos.y / WORK_ADJACENT_OFFSET) * WORK_ADJACENT_OFFSET
+	)
+
+func _rally_slot_key(world_pos: Vector2) -> String:
+	var snapped: Vector2 = _snap_to_job_tile(world_pos)
+	return "%d,%d" % [int(round(snapped.x)), int(round(snapped.y))]
 
 func _combat_attack_range_for(colonist: Node, preferred_job_type: StringName) -> float:
 	if colonist != null and is_instance_valid(colonist) and colonist.has_method("get_combat_profile"):

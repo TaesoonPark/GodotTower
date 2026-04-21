@@ -44,9 +44,10 @@ func _run_test() -> void:
 		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: no colonist spawned")
 		return
 	var colonist: Node = colonists[0]
+	colonist.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Bow"})
 	var bow_profile: Dictionary = colonist.get_combat_profile()
 	if StringName(bow_profile.get("weapon_mode", &"")) != &"Ranged":
-		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: starting bow did not set ranged mode")
+		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: bow did not set ranged mode")
 		return
 	if not is_equal_approx(float(bow_profile.get("ranged_range", 0.0)), float(bow_def.get("equipment_ranged_range"))):
 		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: colonist bow range was not resource-driven")

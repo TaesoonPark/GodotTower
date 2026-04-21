@@ -87,7 +87,7 @@ func move_step(current_pos: Vector2, goal_world: Vector2, speed: float, delta: f
 	if goal == Vector2.INF:
 		clear()
 		return _set_result(current_pos, true, false)
-	if current_pos.distance_to(goal) <= 10.0:
+	if current_pos.distance_to(goal) <= 0.75:
 		clear()
 		return _set_result(goal, true, false)
 	if _stuck_anchor == Vector2.INF:

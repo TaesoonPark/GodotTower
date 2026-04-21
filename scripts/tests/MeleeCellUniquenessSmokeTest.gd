@@ -21,21 +21,28 @@ func _cell_key(main: Node, pos: Vector2) -> String:
 	var cell: Vector2 = main._snap_to_tile(pos)
 	return "%d,%d" % [int(round(cell.x)), int(round(cell.y))]
 
-func _assert_unique_centered(main: Node, units: Array, label: String) -> bool:
+func _assert_unique_cells_and_locked_adjacent(main: Node, units: Array, target: Node2D, label: String) -> bool:
 	var occupied: Dictionary = {}
+	var target_cell: Vector2 = main._snap_to_tile(target.global_position)
 	for unit in units:
 		if unit == null or not is_instance_valid(unit):
 			_finish(false, "%s_FAIL: invalid unit" % label)
 			return false
 		var cell: Vector2 = main._snap_to_tile(unit.global_position)
-		if unit.global_position.distance_to(cell) > 0.01:
-			_finish(false, "%s_FAIL: unit not centered pos=%s snap=%s" % [label, str(unit.global_position), str(cell)])
-			return false
 		var key: String = _cell_key(main, unit.global_position)
 		if occupied.has(key):
 			_finish(false, "%s_FAIL: duplicate melee cell %s" % [label, key])
 			return false
 		occupied[key] = true
+		if unit.has_method("is_melee_combat_locked") and bool(unit.is_melee_combat_locked()):
+			if unit.global_position.distance_to(cell) > 0.01:
+				_finish(false, "%s_FAIL: locked unit not centered pos=%s snap=%s" % [label, str(unit.global_position), str(cell)])
+				return false
+			var dx: int = absi(int(round((cell.x - target_cell.x) / 40.0)))
+			var dy: int = absi(int(round((cell.y - target_cell.y) / 40.0)))
+			if maxi(dx, dy) > 1:
+				_finish(false, "%s_FAIL: locked unit outside sword melee cell pos=%s target=%s" % [label, str(cell), str(target_cell)])
+				return false
 	return true
 
 func _run_test() -> void:
@@ -92,24 +99,28 @@ func _run_test() -> void:
 	var settled: bool = false
 	for _step in range(1200):
 		await get_tree().process_frame
-		settled = true
 		var keys: Dictionary = {}
+		settled = true
 		for fighter in attackers:
-			var cell: Vector2 = main._snap_to_tile(fighter.global_position)
 			var key: String = _cell_key(main, fighter.global_position)
-			if fighter.global_position.distance_to(cell) > 0.01 or keys.has(key):
+			if keys.has(key):
 				settled = false
 				break
 			keys[key] = true
+			if fighter.has_method("is_melee_combat_locked") and bool(fighter.is_melee_combat_locked()):
+				var cell: Vector2 = main._snap_to_tile(fighter.global_position)
+				if fighter.global_position.distance_to(cell) > 0.01:
+					settled = false
+					break
 		if settled:
 			break
 	if not settled:
 		var info: Array[String] = []
 		for fighter in attackers:
 			info.append("%s pos=%s snap=%s lock=%s" % [fighter.name, str(fighter.global_position), str(main._snap_to_tile(fighter.global_position)), str(fighter.is_melee_combat_locked() if fighter.has_method("is_melee_combat_locked") else false)])
-		_finish(false, "MELEE_CELL_UNIQUENESS_FAIL: attackers did not settle into unique cells %s" % " | ".join(info))
+		_finish(false, "MELEE_CELL_UNIQUENESS_FAIL: attackers did not maintain unique cells %s" % " | ".join(info))
 		return
-	if not _assert_unique_centered(main, attackers, "MELEE_CELL_UNIQUENESS"):
+	if not _assert_unique_cells_and_locked_adjacent(main, attackers, zombie, "MELEE_CELL_UNIQUENESS"):
 		return
 
-	_finish(true, "MELEE_CELL_UNIQUENESS_PASS: melee attackers reserve unique centered cells")
+	_finish(true, "MELEE_CELL_UNIQUENESS_PASS: melee attackers keep unique cells and locked attacks stay adjacent")

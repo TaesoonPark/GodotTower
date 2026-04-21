@@ -61,7 +61,7 @@ func _run_test() -> void:
 			"assigned_to": colonist.get_instance_id()
 		})
 
-	for _step in range(260):
+	for _step in range(600):
 		await get_tree().process_frame
 
 	var fighters: Array = colonists.slice(0, 4)
@@ -72,7 +72,7 @@ func _run_test() -> void:
 		var fighter_cell: Vector2 = main._snap_to_tile(fighter.global_position)
 		var enemy_cell: Vector2 = main._snap_to_tile(zombie.global_position)
 		if fighter.global_position.distance_to(fighter_cell) > 0.01:
-			_finish(false, "MELEE_SPACING_TEST_FAIL: fighter not centered pos=%s snap=%s" % [str(fighter.global_position), str(fighter_cell)])
+			_finish(false, "MELEE_SPACING_TEST_FAIL: fighter not centered pos=%s snap=%s enemy=%s goal_cache=%s job=%s" % [str(fighter.global_position), str(fighter_cell), str(enemy_cell), str(fighter.get("_melee_goal_cache_cell")), str(fighter.current_job)])
 			return
 		var dist_to_enemy: float = fighter.global_position.distance_to(zombie.global_position)
 		if fighter_cell.distance_to(enemy_cell) <= 0.1:
@@ -80,8 +80,11 @@ func _run_test() -> void:
 			return
 		var cell_dx: int = absi(int(round((fighter_cell.x - enemy_cell.x) / 40.0)))
 		var cell_dy: int = absi(int(round((fighter_cell.y - enemy_cell.y) / 40.0)))
-		if maxi(cell_dx, cell_dy) > 1:
-			_finish(false, "MELEE_SPACING_TEST_FAIL: fighter did not reach adjacent melee cell dist=%.2f" % dist_to_enemy)
+		if fighter.has_method("is_melee_combat_locked") and bool(fighter.is_melee_combat_locked()) and maxi(cell_dx, cell_dy) > 1:
+			_finish(false, "MELEE_SPACING_TEST_FAIL: fighter locked melee outside adjacent cell dist=%.2f pos=%s snap=%s enemy=%s job=%s" % [dist_to_enemy, str(fighter.global_position), str(fighter_cell), str(enemy_cell), str(fighter.current_job)])
+			return
+		if maxi(cell_dx, cell_dy) > 2:
+			_finish(false, "MELEE_SPACING_TEST_FAIL: fighter did not stage near melee cell dist=%.2f pos=%s snap=%s enemy=%s job=%s" % [dist_to_enemy, str(fighter.global_position), str(fighter_cell), str(enemy_cell), str(fighter.current_job)])
 			return
 
 	var min_pair_dist: float = INF

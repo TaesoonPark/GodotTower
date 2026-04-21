@@ -670,7 +670,8 @@ func _dispatch_event_updates() -> void:
 					traps,
 					gatherables,
 					huntables,
-					_raid_state == &"Active"
+					_raid_state == &"Active",
+					Callable(self, "_is_valid_formation_slot")
 				)
 				job_system.process_assignment(colonists)
 				if job_system.has_method("has_pending_assignment"):
@@ -696,7 +697,8 @@ func _dispatch_event_updates() -> void:
 					traps,
 					gatherables,
 					huntables,
-					_raid_state == &"Active"
+					_raid_state == &"Active",
+					Callable(self, "_is_valid_formation_slot")
 				)
 			_dispatch_jobs_dirty = keep_jobs_dirty
 		dt_jobs_us = Time.get_ticks_usec() - t_us

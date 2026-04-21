@@ -4,6 +4,9 @@
 
 [resource]
 script = ExtResource("1_loadout_script")
+top = &"CombatTop"
+bottom = &"CombatBottom"
+hat = &"CombatHat"
 starting_inventory = {
 &"FoodRaw": 40,
 &"Meal": 20,

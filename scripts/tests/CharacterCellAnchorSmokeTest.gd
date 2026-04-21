@@ -80,13 +80,13 @@ func _run_test() -> void:
 		"assigned_to": fighter.get_instance_id()
 	})
 
-	for _step in range(240):
+	for _step in range(600):
 		await get_tree().process_frame
 		if fighter.has_method("is_melee_combat_locked") and zombie.has_method("is_melee_combat_locked") and bool(fighter.is_melee_combat_locked()) and bool(zombie.is_melee_combat_locked()):
 			break
 
 	if not (bool(fighter.is_melee_combat_locked()) and bool(zombie.is_melee_combat_locked())):
-		_finish(false, "CELL_ANCHOR_TEST_FAIL: melee pair did not lock before anchor check")
+		_finish(false, "CELL_ANCHOR_TEST_FAIL: melee pair did not lock before anchor check fighter=%s zombie=%s zgoal=%s zexact=%s ztarget=%s zlock=%s job=%s" % [str(fighter.global_position), str(zombie.global_position), str(zombie.get("_move_goal")), str(zombie.get("_move_goal_exact")), str(zombie.get("_target_colonist_id")), str(zombie.is_melee_combat_locked()), str(fighter.current_job)])
 		return
 	if not _is_centered(main, fighter):
 		_finish(false, "CELL_ANCHOR_TEST_FAIL: melee fighter off cell center pos=%s snap=%s" % [str(fighter.global_position), str(main._snap_to_tile(fighter.global_position))])

@@ -17,12 +17,19 @@ const UPDATE_FAR_INTERVAL_SEC: float = 0.24
 const TARGET_REFRESH_SEC: float = 0.35
 const AI_STEP_SEC: float = 0.16
 const LOD_REFRESH_SEC: float = 0.3
+const CELL_CENTER_EPSILON: float = 0.75
+const MELEE_GOAL_CACHE_MS: int = 1600
 const MELEE_SLOT_COUNT: int = 8
 const MELEE_SLOT_MAX_RING: int = 8
 
 var health: float = 0.0
 var _target_colonist_id: int = 0
 var _melee_lock_target_id: int = 0
+var _melee_goal_cache_target_id: int = 0
+var _melee_goal_cache_cell: Vector2 = Vector2.INF
+var _melee_goal_cache_next_ms: int = 0
+var _melee_step_claim_cell: Vector2 = Vector2.INF
+var _melee_step_claim_next_ms: int = 0
 var _next_attack_ms: int = 0
 var _next_structure_attack_ms: int = 0
 var _target_refresh_left: float = 0.0
@@ -284,11 +291,28 @@ func _anchor_to_cell(world_pos: Vector2) -> bool:
 	var snapped: Vector2 = _snap_to_tile(world_pos)
 	if _snap_to_tile(global_position).distance_to(snapped) > 0.1 and _is_blocked_position(snapped):
 		return false
-	if global_position.distance_to(snapped) <= 0.1:
+	if global_position.distance_to(snapped) <= CELL_CENTER_EPSILON:
+		global_position = snapped
 		return false
 	global_position = snapped
 	_emit_moved_if_needed()
 	return true
+
+func _move_toward_cell(world_pos: Vector2, speed: float, delta: float) -> bool:
+	var snapped: Vector2 = _snap_to_tile(world_pos)
+	if _snap_to_tile(global_position).distance_to(snapped) > 0.1 and _is_blocked_position(snapped):
+		return false
+	var to_center: Vector2 = snapped - global_position
+	var dist: float = to_center.length()
+	if dist <= CELL_CENTER_EPSILON:
+		global_position = snapped
+		_emit_moved_if_needed()
+		return true
+	var step_len: float = minf(dist, maxf(1.0, speed) * minf(delta, 0.05))
+	var next_pos: Vector2 = global_position + to_center.normalized() * step_len
+	global_position = snapped if step_len >= dist else next_pos
+	_emit_moved_if_needed()
+	return global_position.distance_to(snapped) <= CELL_CENTER_EPSILON
 
 func get_combat_defender_profile() -> Dictionary:
 	return _get_combat_defender_profile()
@@ -327,6 +351,7 @@ func _ai_tick(_delta: float) -> void:
 			_target_refresh_left = TARGET_REFRESH_SEC
 	if target == null:
 		_target_colonist_id = 0
+		_clear_melee_goal_cache()
 		_try_attack_structure()
 		var structure_target: Node2D = _resolve_structure_target()
 		if structure_target != null:
@@ -339,24 +364,32 @@ func _ai_tick(_delta: float) -> void:
 	var previous_target_id: int = _target_colonist_id
 	_target_colonist_id = target.get_instance_id()
 	var attack_mode: StringName = get_current_weapon_mode()
-	if attack_mode == &"Ranged" and previous_target_id != _target_colonist_id:
-		_invalidate_dynamic_combat_blockers()
+	if attack_mode == &"Ranged":
+		_clear_melee_goal_cache()
+		if previous_target_id != _target_colonist_id:
+			_invalidate_dynamic_combat_blockers()
+	elif previous_target_id != _target_colonist_id:
+		_clear_melee_goal_cache()
 	var attack_range: float = _resolve_attack_range(attack_mode)
 	var dist: float = global_position.distance_to(target.global_position)
 	if attack_mode != &"Ranged":
 		var melee_goal: Vector2 = _resolve_melee_engagement_goal(target, attack_range)
 		var melee_engaged: bool = _is_melee_engaged_with_target(target, attack_range)
 		if not melee_engaged and not _is_melee_cell_available(_snap_to_tile(global_position)) and _is_melee_cell_available(melee_goal):
-			global_position = melee_goal
-			_emit_moved_if_needed()
+			if _can_step_toward_melee_cell(melee_goal):
+				_move_toward_cell(melee_goal, move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
+			else:
+				_move_toward_cell(_snap_to_tile(global_position), move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
 			dist = global_position.distance_to(target.global_position)
-			melee_engaged = true
+			melee_engaged = _is_melee_engaged_with_target(target, attack_range)
 		if not melee_engaged and _snap_to_tile(global_position).distance_to(_snap_to_tile(target.global_position)) <= 0.1 and not _is_blocked_position(melee_goal):
-			global_position = melee_goal
-			_emit_moved_if_needed()
+			if _can_step_toward_melee_cell(melee_goal):
+				_move_toward_cell(melee_goal, move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
+			else:
+				_move_toward_cell(_snap_to_tile(global_position), move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
 			dist = global_position.distance_to(target.global_position)
-			melee_engaged = true
-		var local_positioning: bool = dist <= maxf(tile_size * 2.4, attack_range + tile_size * 1.2)
+			melee_engaged = _is_melee_engaged_with_target(target, attack_range)
+		var local_positioning: bool = dist <= maxf(tile_size * (float(_melee_allowed_ring(target.get_instance_id())) + 2.4), attack_range + tile_size * 2.4)
 		if not melee_engaged:
 			_move_goal = melee_goal if local_positioning else _snap_to_tile(melee_goal)
 			_move_goal_exact = local_positioning
@@ -402,6 +435,8 @@ func _try_process_melee_combat_lock() -> bool:
 	_move_goal_exact = false
 	var attack_mode: StringName = &"Melee"
 	var attack_range: float = _resolve_attack_range(attack_mode)
+	if not _is_melee_engaged_with_target(target, attack_range):
+		return true
 	var dist: float = global_position.distance_to(target.global_position)
 	_try_attack_target(target, attack_mode, attack_range, minf(dist, attack_range))
 	return true
@@ -420,18 +455,27 @@ func _can_start_melee_combat_lock(target: Node2D, attack_range: float) -> bool:
 
 func _is_melee_engaged_with_target(target: Node2D, attack_range: float) -> bool:
 	var desired: Vector2 = _resolve_melee_engagement_goal(target, attack_range)
-	if global_position.distance_to(desired) <= 24.0:
-		_anchor_to_cell(desired)
+	var target_cell: Vector2 = _snap_to_tile(target.global_position)
+	var engagement_ring: int = _melee_engagement_ring(target.get_instance_id(), attack_range)
+	var desired_ring: int = _melee_cell_ring(desired, target_cell)
+	if desired_ring >= 1 and desired_ring <= engagement_ring and _melee_cell_in_weapon_range(desired, target_cell, attack_range) and global_position.distance_to(desired) <= CELL_CENTER_EPSILON:
+		global_position = desired
+		_emit_moved_if_needed()
 		return true
 	var own_cell: Vector2 = _snap_to_tile(global_position)
-	var target_cell: Vector2 = _snap_to_tile(target.global_position)
-	var cell_dx: int = absi(int(round((own_cell.x - target_cell.x) / tile_size)))
-	var cell_dy: int = absi(int(round((own_cell.y - target_cell.y) / tile_size)))
-	var ring: int = maxi(cell_dx, cell_dy)
-	if ring >= 1 and ring <= _melee_required_ring(target.get_instance_id()) and _is_melee_cell_available(own_cell):
-		_anchor_to_cell(own_cell)
+	var ring: int = _melee_cell_ring(own_cell, target_cell)
+	if ring >= 1 and ring <= engagement_ring and _melee_cell_in_weapon_range(own_cell, target_cell, attack_range) and _is_melee_cell_available(own_cell) and global_position.distance_to(own_cell) <= CELL_CENTER_EPSILON:
+		global_position = own_cell
+		_emit_moved_if_needed()
 		return true
 	return false
+
+func _melee_cell_ring(cell: Vector2, target_cell: Vector2) -> int:
+	if cell == Vector2.INF:
+		return MELEE_SLOT_MAX_RING + 1
+	var cell_dx: int = absi(int(round((cell.x - target_cell.x) / tile_size)))
+	var cell_dy: int = absi(int(round((cell.y - target_cell.y) / tile_size)))
+	return maxi(cell_dx, cell_dy)
 
 func _melee_required_ring(target_id: int) -> int:
 	var attacker_count: int = 0
@@ -454,6 +498,19 @@ func _melee_required_ring(target_id: int) -> int:
 			return ring
 	return MELEE_SLOT_MAX_RING
 
+func _melee_allowed_ring(target_id: int) -> int:
+	var required: int = _melee_required_ring(target_id)
+	return mini(MELEE_SLOT_MAX_RING, required + 1)
+
+func _melee_engagement_ring(_target_id: int, attack_range: float) -> int:
+	return clampi(int(ceil(maxf(1.0, attack_range) / tile_size)), 1, MELEE_SLOT_MAX_RING)
+
+func _melee_cell_in_weapon_range(cell: Vector2, target_cell: Vector2, attack_range: float) -> bool:
+	if cell == Vector2.INF:
+		return false
+	var ring: int = _melee_cell_ring(cell, target_cell)
+	return ring >= 1 and ring <= _melee_engagement_ring(0, attack_range)
+
 func is_melee_combat_locked() -> bool:
 	return _melee_lock_target_id != 0
 
@@ -469,6 +526,7 @@ func release_melee_lock_if_target(target_id: int) -> void:
 func _clear_melee_combat_lock() -> void:
 	var had_lock: bool = _melee_lock_target_id != 0
 	_melee_lock_target_id = 0
+	_clear_melee_goal_cache()
 	if had_lock:
 		_invalidate_dynamic_combat_blockers()
 
@@ -566,12 +624,15 @@ func _process_movement(delta: float) -> void:
 		if _enemy_pathing != null:
 			_enemy_pathing.clear()
 		return
-	if global_position.distance_to(goal) <= 24.0:
-		_anchor_to_cell(goal)
-		if _enemy_pathing != null:
-			_enemy_pathing.clear()
-		return
 	var speed: float = move_speed * maxf(0.5, external_move_speed_multiplier)
+	if global_position.distance_to(goal) <= 24.0:
+		var before_center_step: Vector2 = global_position
+		var reached_center: bool = _move_toward_cell(goal, speed, delta)
+		if reached_center and _enemy_pathing != null:
+			_enemy_pathing.clear()
+			return
+		if global_position.distance_squared_to(before_center_step) > 0.0001:
+			return
 	if _move_goal_exact and _try_process_exact_combat_positioning(goal, speed, minf(delta, 0.05)):
 		return
 	var result: Dictionary = {}
@@ -617,7 +678,7 @@ func _process_movement(delta: float) -> void:
 		return
 	var current: Vector2 = global_position
 	var next_pos: Vector2 = result.get("position", current)
-	if next_pos.distance_to(goal) <= 24.0:
+	if next_pos.distance_to(goal) <= CELL_CENTER_EPSILON:
 		next_pos = _snap_to_tile(goal)
 	if next_pos.distance_squared_to(current) <= 0.0001:
 		var fallback_dir: Vector2 = current.direction_to(goal)
@@ -634,22 +695,63 @@ func _try_process_exact_combat_positioning(goal: Vector2, speed: float, delta: f
 	if goal == Vector2.INF:
 		return false
 	var to_goal: Vector2 = goal - global_position
-	var target: Node2D = _get_current_target_node()
 	var steer: Vector2 = to_goal.normalized() if to_goal.length() > 0.001 else Vector2.ZERO
 	if steer == Vector2.ZERO:
 		return true
 	var step_goal_len: float = maxf(0.0, to_goal.length())
 	var step_len: float = minf(step_goal_len, speed * delta)
-	if to_goal.length() <= 24.0:
-		_anchor_to_cell(goal)
+	if to_goal.length() <= tile_size or _snap_to_tile(global_position).distance_to(_snap_to_tile(goal)) <= 0.1:
+		if not _can_step_toward_melee_cell(goal):
+			_move_toward_cell(_snap_to_tile(global_position), speed, delta)
+			return true
+		_move_toward_cell(goal, speed, delta)
 		return true
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	var step_cell: Vector2 = _next_melee_step_cell_toward(goal, own_cell)
+	if step_cell.distance_to(own_cell) > 0.1 and not _can_step_toward_melee_cell(step_cell):
+		return false
 	var next_pos: Vector2 = global_position + steer * step_len
-	if next_pos.distance_to(goal) <= 24.0:
+	if next_pos.distance_to(goal) <= CELL_CENTER_EPSILON:
 		next_pos = _snap_to_tile(goal)
+	if not _can_step_toward_melee_cell(next_pos):
+		return false
 	if _is_blocked_position(next_pos):
-		return target != null and global_position.distance_to(target.global_position) <= _resolve_attack_range(get_current_weapon_mode())
+		return false
 	global_position = next_pos
 	_emit_moved_if_needed()
+	return true
+
+func _next_melee_step_cell_toward(desired: Vector2, own_cell: Vector2) -> Vector2:
+	var desired_cell: Vector2 = _snap_to_tile(desired)
+	var step_x: float = 0.0
+	var step_y: float = 0.0
+	if desired_cell.x > own_cell.x + 0.1:
+		step_x = tile_size
+	elif desired_cell.x < own_cell.x - 0.1:
+		step_x = -tile_size
+	if desired_cell.y > own_cell.y + 0.1:
+		step_y = tile_size
+	elif desired_cell.y < own_cell.y - 0.1:
+		step_y = -tile_size
+	return _snap_to_tile(own_cell + Vector2(step_x, step_y))
+
+func _is_melee_goal_step_available(desired: Vector2, own_cell: Vector2) -> bool:
+	var step_cell: Vector2 = _next_melee_step_cell_toward(desired, own_cell)
+	return step_cell.distance_to(own_cell) <= 0.1 or _is_melee_cell_available(step_cell)
+
+func _should_require_melee_step_available(own_cell: Vector2, target_cell: Vector2, allowed_ring: int) -> bool:
+	var own_ring: int = _melee_cell_ring(own_cell, target_cell)
+	return own_ring <= allowed_ring + 2
+
+func _can_step_toward_melee_cell(next_pos: Vector2) -> bool:
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	var next_cell: Vector2 = _snap_to_tile(next_pos)
+	if next_cell.distance_to(own_cell) <= 0.1:
+		return true
+	if not _is_melee_cell_available(next_cell):
+		return false
+	_melee_step_claim_cell = next_cell
+	_melee_step_claim_next_ms = Time.get_ticks_msec() + 120
 	return true
 
 func _get_current_target_node() -> Node2D:
@@ -664,19 +766,101 @@ func _invalidate_dynamic_combat_blockers() -> void:
 	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("invalidate_dynamic_combat_blockers"):
 		_pathing_occupancy.invalidate_dynamic_combat_blockers()
 
-func _resolve_melee_engagement_goal(target: Node2D, _attack_range: float) -> Vector2:
+func _resolve_melee_engagement_goal(target: Node2D, attack_range: float) -> Vector2:
+	var target_id: int = target.get_instance_id()
 	var target_cell: Vector2 = _snap_to_tile(target.global_position)
-	var slots: Array[Vector2] = _build_melee_slot_cells(target_cell)
-	var start_idx: int = _melee_slot_index(target.get_instance_id(), slots.size())
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	var own_dx: int = absi(int(round((own_cell.x - target_cell.x) / tile_size)))
+	var own_dy: int = absi(int(round((own_cell.y - target_cell.y) / tile_size)))
+	var own_ring: int = maxi(own_dx, own_dy)
+	var engagement_ring: int = _melee_engagement_ring(target_id, attack_range)
+	var allowed_ring: int = maxi(_melee_allowed_ring(target_id), engagement_ring)
+	var require_step_available: bool = _should_require_melee_step_available(own_cell, target_cell, allowed_ring)
+	if own_ring >= 1 and own_ring <= engagement_ring and _melee_cell_in_weapon_range(own_cell, target_cell, attack_range) and _is_melee_cell_available(own_cell):
+		_cache_melee_goal(target_id, own_cell)
+		return own_cell
+	var now_ms: int = Time.get_ticks_msec()
+	if _melee_goal_cache_target_id == target_id and _melee_goal_cache_cell != Vector2.INF and now_ms < _melee_goal_cache_next_ms:
+		var cached_cell: Vector2 = _melee_goal_cache_cell
+		var cached_dx: int = absi(int(round((cached_cell.x - target_cell.x) / tile_size)))
+		var cached_dy: int = absi(int(round((cached_cell.y - target_cell.y) / tile_size)))
+		var cached_ring: int = maxi(cached_dx, cached_dy)
+		if cached_ring >= 1 and cached_ring <= engagement_ring and _melee_cell_in_weapon_range(cached_cell, target_cell, attack_range) and (not require_step_available or _is_melee_goal_step_available(cached_cell, own_cell)) and _is_melee_cell_available(cached_cell):
+			_cache_melee_goal(target_id, cached_cell)
+			return cached_cell
+		if cached_ring >= 1 and cached_ring <= allowed_ring and (not require_step_available or _is_melee_goal_step_available(cached_cell, own_cell)) and _is_melee_cell_available(cached_cell):
+			_cache_melee_goal(target_id, cached_cell)
+			return cached_cell
+	var slots: Array[Vector2] = _order_melee_slots_by_distance(_build_melee_slot_cells(target_cell))
+	var start_idx: int = _melee_slot_index(target_id, slots.size())
 	for offset in range(slots.size()):
 		var idx: int = (start_idx + offset) % slots.size()
 		var candidate: Vector2 = slots[idx]
-		if _is_melee_cell_available(candidate):
+		var candidate_dx: int = absi(int(round((candidate.x - target_cell.x) / tile_size)))
+		var candidate_dy: int = absi(int(round((candidate.y - target_cell.y) / tile_size)))
+		if maxi(candidate_dx, candidate_dy) > engagement_ring:
+			continue
+		if not _melee_cell_in_weapon_range(candidate, target_cell, attack_range):
+			continue
+		if (not require_step_available or _is_melee_goal_step_available(candidate, own_cell)) and _is_melee_cell_available(candidate):
+			_cache_melee_goal(target_id, candidate)
 			return candidate
-	var own_cell: Vector2 = _snap_to_tile(global_position)
-	if _is_melee_cell_available(own_cell):
+	if own_ring >= 1 and own_ring <= allowed_ring and _is_melee_cell_available(own_cell):
+		_cache_melee_goal(target_id, own_cell)
 		return own_cell
-	return slots[start_idx] if not slots.is_empty() else own_cell
+	for offset in range(slots.size()):
+		var idx: int = (start_idx + offset) % slots.size()
+		var candidate: Vector2 = slots[idx]
+		var candidate_dx: int = absi(int(round((candidate.x - target_cell.x) / tile_size)))
+		var candidate_dy: int = absi(int(round((candidate.y - target_cell.y) / tile_size)))
+		if maxi(candidate_dx, candidate_dy) > allowed_ring:
+			continue
+		if (not require_step_available or _is_melee_goal_step_available(candidate, own_cell)) and _is_melee_cell_available(candidate):
+			_cache_melee_goal(target_id, candidate)
+			return candidate
+	var fallback: Vector2 = own_cell
+	for candidate in slots:
+		var candidate_dx: int = absi(int(round((candidate.x - target_cell.x) / tile_size)))
+		var candidate_dy: int = absi(int(round((candidate.y - target_cell.y) / tile_size)))
+		if maxi(candidate_dx, candidate_dy) <= engagement_ring:
+			if not _melee_cell_in_weapon_range(candidate, target_cell, attack_range):
+				continue
+			fallback = candidate
+			break
+	for candidate in slots:
+		var candidate_dx: int = absi(int(round((candidate.x - target_cell.x) / tile_size)))
+		var candidate_dy: int = absi(int(round((candidate.y - target_cell.y) / tile_size)))
+		if maxi(candidate_dx, candidate_dy) <= allowed_ring:
+			fallback = candidate
+			break
+	_cache_melee_goal(target_id, fallback)
+	return fallback
+
+func _cache_melee_goal(target_id: int, cell: Vector2) -> void:
+	_melee_goal_cache_target_id = target_id
+	_melee_goal_cache_cell = _snap_to_tile(cell)
+	_melee_goal_cache_next_ms = Time.get_ticks_msec() + MELEE_GOAL_CACHE_MS
+
+func _clear_melee_goal_cache() -> void:
+	_melee_goal_cache_target_id = 0
+	_melee_goal_cache_cell = Vector2.INF
+	_melee_goal_cache_next_ms = 0
+	_melee_step_claim_cell = Vector2.INF
+	_melee_step_claim_next_ms = 0
+
+func _order_melee_slots_by_distance(slots: Array[Vector2]) -> Array[Vector2]:
+	var ordered: Array[Vector2] = slots.duplicate()
+	ordered.sort_custom(Callable(self, "_compare_melee_slot_distance"))
+	return ordered
+
+func _compare_melee_slot_distance(a: Vector2, b: Vector2) -> bool:
+	var dist_a: float = global_position.distance_squared_to(a)
+	var dist_b: float = global_position.distance_squared_to(b)
+	if not is_equal_approx(dist_a, dist_b):
+		return dist_a < dist_b
+	if not is_equal_approx(a.y, b.y):
+		return a.y < b.y
+	return a.x < b.x
 
 func _build_melee_slot_cells(target_cell: Vector2) -> Array[Vector2]:
 	var slots: Array[Vector2] = []
@@ -692,6 +876,8 @@ func _is_melee_cell_available(cell: Vector2) -> bool:
 	var snapped: Vector2 = _snap_to_tile(cell)
 	if _is_blocked_position(snapped):
 		return false
+	var self_on_cell: bool = _snap_to_tile(global_position).distance_to(snapped) <= 0.1
+	var now_ms: int = Time.get_ticks_msec()
 	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
 	for group_name in groups:
 		for node in get_tree().get_nodes_in_group(group_name):
@@ -703,6 +889,46 @@ func _is_melee_cell_available(cell: Vector2) -> bool:
 				continue
 			if _snap_to_tile((node as Node2D).global_position).distance_to(snapped) <= 0.1:
 				return false
+			if not self_on_cell and _node_has_fresh_melee_goal_claim(node, snapped, now_ms):
+				return false
+	return true
+
+func _node_has_fresh_melee_goal_claim(node: Node, snapped: Vector2, now_ms: int) -> bool:
+	var step_next_ms: int = int(node.get("_melee_step_claim_next_ms"))
+	if step_next_ms > now_ms:
+		var step_cell_variant: Variant = node.get("_melee_step_claim_cell")
+		if step_cell_variant is Vector2 and _node_has_active_melee_goal(node):
+			var step_cell: Vector2 = _snap_to_tile(step_cell_variant)
+			if step_cell.distance_to(snapped) <= 0.1:
+				return true
+	var cache_next_ms: int = int(node.get("_melee_goal_cache_next_ms"))
+	if cache_next_ms <= now_ms:
+		return false
+	var cache_target_id: int = int(node.get("_melee_goal_cache_target_id"))
+	if cache_target_id == 0:
+		return false
+	var cache_cell_variant: Variant = node.get("_melee_goal_cache_cell")
+	if not (cache_cell_variant is Vector2):
+		return false
+	if not _node_has_active_melee_goal(node):
+		return false
+	var cache_cell: Vector2 = _snap_to_tile(cache_cell_variant)
+	return cache_cell.distance_to(snapped) <= 0.1
+
+func _node_has_active_melee_goal(node: Node) -> bool:
+	var job_variant: Variant = node.get("current_job")
+	if job_variant is Dictionary:
+		var job: Dictionary = job_variant
+		if StringName(job.get("type", &"")) == &"CombatMelee":
+			return true
+	var lock_id: int = int(node.get("_melee_lock_target_id"))
+	if lock_id != 0:
+		return true
+	var target_id: int = int(node.get("_target_colonist_id"))
+	if target_id == 0:
+		return false
+	if node.has_method("get_current_weapon_mode"):
+		return StringName(node.get_current_weapon_mode()) != &"Ranged"
 	return true
 
 func _melee_slot_index(target_id: int, slot_count: int) -> int:
