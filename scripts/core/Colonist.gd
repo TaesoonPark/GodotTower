@@ -269,7 +269,7 @@ func _process_movement(delta: float) -> void:
 	if stalled_without_progress:
 		var to_goal: Vector2 = goal - global_position
 		var dist_to_goal: float = to_goal.length()
-		if dist_to_goal > 0.001:
+		if dist_to_goal > 0.001 and not _is_move_segment_blocked(global_position, goal):
 			var max_step: float = stats.move_speed * speed_mul * move_delta
 			var fallback_pos: Vector2 = global_position + to_goal.normalized() * minf(dist_to_goal, max_step)
 			if not _is_blocked_position(fallback_pos):

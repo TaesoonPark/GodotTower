@@ -229,12 +229,17 @@ func _path_cache_key(start_tile: Vector2i, goal_tile: Vector2i) -> String:
 		goal_tile.y
 	]
 
-func _try_restore_cached_path(cache_key: String) -> bool:
+func _try_restore_cached_path(cache_key: String, is_blocked: Callable) -> bool:
 	if not _path_cache.has(cache_key):
 		return false
+	var cached: Array = _path_cache.get(cache_key, [])
+	for point in cached:
+		if point is Vector2 and bool(is_blocked.call(point)):
+			_path_cache.erase(cache_key)
+			_path_cache_lru.erase(cache_key)
+			return false
 	_path_cache_tick += 1
 	_path_cache_lru[cache_key] = _path_cache_tick
-	var cached: Array = _path_cache.get(cache_key, [])
 	_path_points = cached.duplicate()
 	_path_index = 0
 	return true
@@ -271,7 +276,7 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 	if start_tile == goal_tile:
 		return
 	var cache_key: String = _path_cache_key(start_tile, goal_tile)
-	if _try_restore_cached_path(cache_key):
+	if _try_restore_cached_path(cache_key, is_blocked):
 		return
 	var path: Array[Vector2] = _find_path_points(start_tile, goal_tile, SEARCH_MARGIN_TILES, _max_expansions_runtime, is_blocked)
 	if path.is_empty() and not _is_segment_clear(start_world, goal_world, is_blocked):
