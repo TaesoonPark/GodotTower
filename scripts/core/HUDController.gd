@@ -379,7 +379,7 @@ func set_command_button_states(mode: StringName) -> void:
 func set_resource_stock(stock: Dictionary) -> void:
 	var keys := [
 		&"Wood", &"Stone", &"Steel", &"FoodRaw", &"Meal", &"Bed",
-		&"GatherTop", &"GatherBottom", &"StrawHat",
+		&"Handcart", &"GatherTop", &"GatherBottom", &"StrawHat",
 		&"CombatTop", &"CombatBottom", &"CombatHat", &"Sword", &"Bow"
 	]
 	var chunks: Array[String] = []

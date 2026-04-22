@@ -7,3 +7,4 @@ class_name RecipeDef
 @export var work_required: float = 5.0
 @export var ingredients: Dictionary = {}
 @export var products: Dictionary = {}
+@export var required_research: StringName = &""

@@ -80,8 +80,8 @@ func _run_test() -> void:
 			var is_craft_supply: bool = bool(drop.get_meta("craft_supply")) if drop.has_meta("craft_supply") else false
 			if is_craft_supply and StringName(drop.get("resource_type")) == &"FoodRaw":
 				observed_craft_supply = true
-				if drop.global_position.distance_to(campfire_pos) > 0.1:
-					_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: craft supply drop spawned outside campfire tile")
+				if drop.global_position.distance_to(campfire_pos) <= 0.1:
+					_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: craft supply drop teleported directly to campfire tile")
 					return
 			if StringName(drop.get("resource_type")) == &"Meal":
 				meal_drops += int(drop.get("amount"))

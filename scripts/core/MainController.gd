@@ -16,6 +16,7 @@ const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingO
 const ENEMY_FLOW_FIELD_SERVICE_SCRIPT: Script = preload("res://scripts/systems/EnemyFlowFieldService.gd")
 const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
 const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
+const HANDCART_SCRIPT: Script = preload("res://scripts/core/Handcart.gd")
 const DEFAULT_LOADOUT: ColonistLoadoutData = preload("res://data/colonists/default_loadout.tres")
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
@@ -49,6 +50,7 @@ var resource_stock: Dictionary = {
 	&"Bed": 0,
 	&"GatherTop": 0,
 	&"GatherBottom": 0,
+	&"Handcart": 0,
 	&"StrawHat": 0,
 	&"Weapon": 0,
 	&"CombatTop": 0,
@@ -111,6 +113,11 @@ var _equipped_hat_ids: Dictionary = {}
 var _equipped_weapon_ids: Dictionary = {}
 var _context_gather_target_id: int = 0
 var _context_workstation_id: StringName = &""
+var _context_handcart_id: int = 0
+var _context_handcart_release_pos: Vector2 = Vector2.INF
+var _context_stockpile_zone_id: int = 0
+var _context_stockpile_use_pos: Vector2 = Vector2.INF
+var _pending_handcart_use_by_colonist: Dictionary = {}
 var _selected_object_kind: StringName = &""
 var _selected_object_resource: StringName = &""
 var _selected_object_zone: Node = null
@@ -460,6 +467,7 @@ func _process(delta: float) -> void:
 		_mark_hud_time_dirty()
 	_update_raid_state(delta)
 	_process_deferred_build_requests()
+	_resolve_pending_handcart_use_requests()
 	if _raid_state == &"Active":
 		_trap_update_accum += delta
 		if _trap_update_accum >= TRAP_UPDATE_INTERVAL_SEC:
@@ -671,7 +679,8 @@ func _dispatch_event_updates() -> void:
 					gatherables,
 					huntables,
 					_raid_state == &"Active",
-					Callable(self, "_is_valid_formation_slot")
+					Callable(self, "_is_valid_formation_slot"),
+					_find_research_bench_positions()
 				)
 				job_system.process_assignment(colonists)
 				if job_system.has_method("has_pending_assignment"):
@@ -698,7 +707,8 @@ func _dispatch_event_updates() -> void:
 					gatherables,
 					huntables,
 					_raid_state == &"Active",
-					Callable(self, "_is_valid_formation_slot")
+					Callable(self, "_is_valid_formation_slot"),
+					_find_research_bench_positions()
 				)
 			_dispatch_jobs_dirty = keep_jobs_dirty
 		dt_jobs_us = Time.get_ticks_usec() - t_us
@@ -947,13 +957,15 @@ func _on_left_click(world_pos: Vector2) -> void:
 		return
 
 	var drop: Node = _find_resource_drop_near(world_pos, 40.0)
-	if drop != null and StringName(drop.get("resource_type")) == &"Bed":
-		_clear_selected_object()
-		pending_install_item = &"Bed"
-		pending_install_drop_id = drop.get_instance_id()
-		hud.set_active_action(&"InstallBed")
-		_close_bottom_catalog_if_supported()
-		return
+	if drop != null:
+		var drop_type: StringName = StringName(drop.get("resource_type"))
+		if drop_type == &"Bed" or drop_type == &"Handcart":
+			_clear_selected_object()
+			pending_install_item = drop_type
+			pending_install_drop_id = drop.get_instance_id()
+			hud.set_active_action(&"Install%s" % String(drop_type))
+			_close_bottom_catalog_if_supported()
+			return
 
 	var gatherable: Node = _find_gatherable_near(world_pos, 48.0)
 	if gatherable != null:
@@ -1381,6 +1393,8 @@ func _refresh_hud() -> void:
 			var actions: Array = []
 			if _selected_object_resource == &"Bed" and amount > 0:
 				actions.append({"id": &"PlaceBedFromStockpile", "label": _t("main.action.place_bed")})
+			elif _selected_object_resource == &"Handcart" and amount > 0:
+				actions.append({"id": &"PlaceHandcartFromStockpile", "label": "Place Handcart"})
 			hud.set_selected_object_preview(title, detail, actions)
 	else:
 		hud.set_stockpile_inventory_preview(stockpile_focus)
@@ -1636,6 +1650,14 @@ func _find_installed_bed_near(world_pos: Vector2, radius: float) -> Node:
 		if not node.has_meta("building_id"):
 			continue
 		if node.get_meta("building_id") != &"InstalledBed":
+			continue
+		if node.global_position.distance_to(world_pos) <= radius:
+			return node
+	return null
+
+func _find_handcart_near(world_pos: Vector2, radius: float) -> Node:
+	for node in get_tree().get_nodes_in_group("handcarts"):
+		if node == null or not is_instance_valid(node):
 			continue
 		if node.global_position.distance_to(world_pos) <= radius:
 			return node
@@ -1916,6 +1938,8 @@ func _on_research_progressed(project_id: StringName, points: float) -> void:
 	_active_research_id = &""
 	_research_running = false
 	_refresh_building_catalog()
+	if selected_workstation_id != &"" and not _is_research_workstation(selected_workstation_id):
+		hud.set_recipe_catalog(_filter_recipes_for_workstation(selected_workstation_id))
 	hud.set_research_catalog(
 		_get_research_catalog(),
 		_active_research_id,
@@ -1961,6 +1985,8 @@ func _on_craft_recipe_queued(recipe_id: StringName, workstation_id: StringName) 
 	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
 	if ws_id == &"":
 		return
+	if not _can_enqueue_recipe(recipe_id):
+		return
 	selected_workstation_id = ws_id
 	job_system.enqueue_craft_recipe(recipe_id, ws_id)
 	job_system.mark_craft_dirty()
@@ -1971,6 +1997,8 @@ func _on_craft_recipe_repeat_queued(recipe_id: StringName, workstation_id: Strin
 	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
 	if ws_id == &"":
 		return
+	if not _can_enqueue_recipe(recipe_id):
+		return
 	selected_workstation_id = ws_id
 	job_system.enqueue_craft_recipe(recipe_id, ws_id, true)
 	job_system.mark_craft_dirty()
@@ -1980,6 +2008,8 @@ func _on_craft_recipe_repeat_queued(recipe_id: StringName, workstation_id: Strin
 func _on_craft_recipe_front_queued(recipe_id: StringName, workstation_id: StringName) -> void:
 	var ws_id: StringName = workstation_id if workstation_id != &"" else selected_workstation_id
 	if ws_id == &"":
+		return
+	if not _can_enqueue_recipe(recipe_id):
 		return
 	selected_workstation_id = ws_id
 	job_system.enqueue_craft_recipe_front(recipe_id, ws_id)
@@ -2012,6 +2042,13 @@ func _on_craft_queue_pause_toggled(workstation_id: StringName, paused: bool) -> 
 	job_system.mark_craft_dirty()
 	_mark_jobs_dirty()
 	hud.set_craft_queue_paused_state(job_system.is_craft_queue_paused(ws_id))
+
+func _can_enqueue_recipe(recipe_id: StringName) -> bool:
+	if recipe_id == &"":
+		return false
+	if not recipe_lookup.has(recipe_id):
+		return false
+	return _is_recipe_unlocked(recipe_lookup[recipe_id])
 
 func _on_haul_job_released(drop_id: int) -> void:
 	job_system.release_haul_reservation(drop_id)
@@ -2274,32 +2311,44 @@ func _consume_build_cost(cost: Dictionary) -> void:
 		_consume_resource_stock(key, need)
 
 func _try_install_pending_item(world_pos: Vector2) -> bool:
-	if pending_install_item != &"Bed":
+	if pending_install_item != &"Bed" and pending_install_item != &"Handcart":
 		return false
-	var consumed: bool = false
+	var install_item: StringName = pending_install_item
+	if not _try_consume_pending_install_source(install_item):
+		return false
+	var snapped_pos := Vector2(
+		round(world_pos.x / 40.0) * 40.0,
+		round(world_pos.y / 40.0) * 40.0
+	)
+	match install_item:
+		&"Bed":
+			_spawn_installed_bed(snapped_pos)
+		&"Handcart":
+			_spawn_installed_handcart(snapped_pos)
+		_:
+			return false
+	hud.set_resource_stock(resource_stock)
+	return true
+
+func _try_consume_pending_install_source(item_type: StringName) -> bool:
+	if item_type == &"":
+		return false
 	if pending_install_drop_id == -1:
-		consumed = true
-	elif pending_install_drop_id != 0:
+		return true
+	if pending_install_drop_id != 0:
 		var drop_obj: Object = instance_from_id(pending_install_drop_id)
 		if drop_obj != null and is_instance_valid(drop_obj) and drop_obj.has_method("take_amount"):
 			var taken: int = int(drop_obj.take_amount(1))
 			if taken > 0:
 				if drop_obj.has_method("is_empty") and drop_obj.is_empty():
 					drop_obj.queue_free()
-				consumed = true
-	if not consumed:
-		if not _consume_resource_stock(&"Bed", 1):
-			return false
-		consumed = true
-	if not consumed:
-		return false
-	var snapped_pos := Vector2(
-		round(world_pos.x / 40.0) * 40.0,
-		round(world_pos.y / 40.0) * 40.0
-	)
+				return true
+	return _consume_resource_stock(item_type, 1)
+
+func _spawn_installed_bed(world_pos: Vector2) -> void:
 	var placed := Node2D.new()
 	placed.name = "Installed_Bed"
-	placed.global_position = snapped_pos
+	placed.global_position = world_pos
 	placed.add_to_group("structures")
 	placed.set_meta("building_id", &"InstalledBed")
 	placed.set_meta("assigned_colonist_id", 0)
@@ -2313,8 +2362,35 @@ func _try_install_pending_item(world_pos: Vector2) -> bool:
 	txt.position = Vector2(-24, -28)
 	placed.add_child(txt)
 	world_root.add_child(placed)
-	hud.set_resource_stock(resource_stock)
-	return true
+
+func _spawn_installed_handcart(world_pos: Vector2) -> Node2D:
+	var placed: Node2D = null
+	if HANDCART_SCRIPT != null:
+		var inst: Object = HANDCART_SCRIPT.new()
+		if inst is Node2D:
+			placed = inst
+	if placed == null:
+		placed = Node2D.new()
+		placed.add_to_group("structures")
+		placed.add_to_group("handcarts")
+		placed.set_meta("building_id", &"InstalledHandcart")
+		placed.set_meta("carry_bonus", 80)
+		placed.set_meta("assigned_colonist_id", 0)
+		var sprite := Sprite2D.new()
+		var image := Image.create(30, 18, false, Image.FORMAT_RGBA8)
+		image.fill(Color(0.58, 0.44, 0.28, 1.0))
+		sprite.texture = ImageTexture.create_from_image(image)
+		placed.add_child(sprite)
+		var txt := Label.new()
+		txt.text = "Handcart"
+		txt.position = Vector2(-18.0, -20.0)
+		placed.add_child(txt)
+	placed.name = "Installed_Handcart"
+	placed.global_position = world_pos
+	world_root.add_child(placed)
+	if not placed.is_in_group("handcarts"):
+		placed.add_to_group("handcarts")
+	return placed
 
 func _can_start_recipe_at_workstation(workstation_id: StringName, recipe: Resource) -> bool:
 	if recipe == null:
@@ -2360,12 +2436,20 @@ func _update_workstation_supply_requests() -> void:
 			var deficit: int = maxi(0, need - ready)
 			if deficit <= 0:
 				continue
-			var withdrawn: int = _withdraw_from_stockpiles_for_supply(resource_type, deficit)
-			if withdrawn <= 0:
+			var withdrawn_chunks: Array[Dictionary] = _withdraw_from_stockpiles_for_supply(resource_type, deficit)
+			if withdrawn_chunks.is_empty():
 				continue
-			depot.mark_supply_spawned(resource_type, withdrawn)
-			var depot_pos: Vector2 = depot.global_position if depot is Node2D else ws_pos
-			_spawn_supply_drop_for_workstation(resource_type, withdrawn, depot_pos)
+			var spawned_total: int = 0
+			for chunk in withdrawn_chunks:
+				var chunk_amount: int = maxi(0, int(chunk.get("amount", 0)))
+				if chunk_amount <= 0:
+					continue
+				var source_pos: Vector2 = chunk.get("source_pos", ws_pos)
+				_spawn_supply_drop_for_workstation(resource_type, chunk_amount, source_pos, depot)
+				spawned_total += chunk_amount
+			if spawned_total <= 0:
+				continue
+			depot.mark_supply_spawned(resource_type, spawned_total)
 
 func _ensure_workstation_depot(workstation_id: StringName, pos: Vector2) -> Node:
 	if _workstation_depots.has(workstation_id):
@@ -2381,10 +2465,9 @@ func _ensure_workstation_depot(workstation_id: StringName, pos: Vector2) -> Node
 	_workstation_depots[workstation_id] = depot
 	return depot
 
-func _spawn_supply_drop_for_workstation(resource_type: StringName, amount: int, workstation_pos: Vector2 = Vector2.INF) -> void:
+func _spawn_supply_drop_for_workstation(resource_type: StringName, amount: int, spawn_pos: Vector2 = Vector2.INF, target_zone: Node = null) -> void:
 	if amount <= 0:
 		return
-	var spawn_pos: Vector2 = workstation_pos
 	if spawn_pos == Vector2.INF:
 		spawn_pos = camera.global_position if camera != null else Vector2.ZERO
 	var drop: Node = _spawn_resource_drop(resource_type, amount, spawn_pos)
@@ -2392,11 +2475,14 @@ func _spawn_supply_drop_for_workstation(resource_type: StringName, amount: int, 
 		if drop is Node2D:
 			drop.global_position = _snap_to_tile(spawn_pos)
 		drop.set_meta("craft_supply", true)
+		if target_zone != null and is_instance_valid(target_zone):
+			drop.set_meta("preferred_zone_id", target_zone.get_instance_id())
 
-func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int) -> int:
+func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int) -> Array[Dictionary]:
 	var remain: int = maxi(0, amount)
+	var withdrawn_chunks: Array[Dictionary] = []
 	if remain <= 0:
-		return 0
+		return withdrawn_chunks
 	var removed_total: int = 0
 	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if remain <= 0:
@@ -2408,6 +2494,13 @@ func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int
 		var removed: int = int(zone.remove_resource(resource_type, remain))
 		if removed <= 0:
 			continue
+		var source_pos: Vector2 = zone.global_position if zone is Node2D else Vector2.ZERO
+		if zone.has_method("get_drop_point"):
+			source_pos = zone.get_drop_point()
+		withdrawn_chunks.append({
+			"amount": removed,
+			"source_pos": source_pos
+		})
 		removed_total += removed
 		remain -= removed
 	if removed_total > 0:
@@ -2415,7 +2508,7 @@ func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int
 		hud.set_resource_stock(resource_stock)
 		_mark_economy_dirty()
 		_mark_jobs_dirty()
-	return removed_total
+	return withdrawn_chunks
 
 func _consume_stockpile_by_delta(before_stock: Dictionary, after_stock: Dictionary) -> void:
 	for key_any in before_stock.keys():
@@ -2591,8 +2684,63 @@ func _on_context_action_requested(action_id: StringName) -> void:
 					if work_pos != Vector2.INF:
 						_issue_selected_move_command(work_pos)
 				_mark_jobs_dirty()
+		&"UseHandcart":
+			var handcart_obj: Object = instance_from_id(_context_handcart_id)
+			var primary_colonist: Node = _get_primary_selected_colonist()
+			if handcart_obj != null and is_instance_valid(handcart_obj) and primary_colonist != null and is_instance_valid(primary_colonist):
+				if _request_handcart_use(handcart_obj, primary_colonist):
+					_mark_jobs_dirty()
+					_hud_dirty = true
+		&"ReleaseHandcart":
+			var handcart_obj: Object = instance_from_id(_context_handcart_id)
+			var primary_colonist: Node = _get_primary_selected_colonist()
+			if handcart_obj != null and is_instance_valid(handcart_obj) and primary_colonist != null and is_instance_valid(primary_colonist):
+				var owner_id: int = _get_handcart_owner_id(handcart_obj)
+				var colonist_id: int = primary_colonist.get_instance_id()
+				if owner_id == colonist_id:
+					_clear_pending_handcart_use_for_colonist(colonist_id)
+					if handcart_obj is Node2D:
+						var release_pos: Vector2 = _context_handcart_release_pos if _context_handcart_release_pos != Vector2.INF else (handcart_obj as Node2D).global_position
+						(handcart_obj as Node2D).global_position = _snap_to_tile(release_pos)
+					_clear_handcart_owner(handcart_obj, colonist_id)
+					_mark_jobs_dirty()
+					_hud_dirty = true
+		&"UseHandcartFromStockpile":
+			var zone_obj: Object = instance_from_id(_context_stockpile_zone_id)
+			var primary_colonist: Node = _get_primary_selected_colonist()
+			if zone_obj != null and is_instance_valid(zone_obj) and primary_colonist != null and is_instance_valid(primary_colonist):
+				if zone_obj.has_method("remove_resource"):
+					var removed: int = int(zone_obj.remove_resource(&"Handcart", 1))
+					if removed > 0:
+						resource_stock[&"Handcart"] = maxi(0, int(resource_stock.get(&"Handcart", 0)) - removed)
+						var spawn_pos: Vector2 = _context_stockpile_use_pos
+						if spawn_pos == Vector2.INF:
+							if zone_obj.has_method("get_drop_point"):
+								spawn_pos = _snap_to_tile(zone_obj.get_drop_point())
+							elif zone_obj is Node2D:
+								spawn_pos = _snap_to_tile((zone_obj as Node2D).global_position)
+							else:
+								spawn_pos = Vector2.ZERO
+						var handcart_node: Node2D = _spawn_installed_handcart(spawn_pos)
+						if handcart_node == null or not is_instance_valid(handcart_node):
+							if zone_obj.has_method("add_resource"):
+								zone_obj.add_resource(&"Handcart", removed)
+							resource_stock[&"Handcart"] = int(resource_stock.get(&"Handcart", 0)) + removed
+						elif not _request_handcart_use(handcart_node, primary_colonist):
+							handcart_node.queue_free()
+							if zone_obj.has_method("add_resource"):
+								zone_obj.add_resource(&"Handcart", removed)
+							resource_stock[&"Handcart"] = int(resource_stock.get(&"Handcart", 0)) + removed
+						hud.set_resource_stock(resource_stock)
+						_mark_economy_dirty()
+						_mark_jobs_dirty()
+						_hud_dirty = true
 	_context_gather_target_id = 0
 	_context_workstation_id = &""
+	_context_handcart_id = 0
+	_context_handcart_release_pos = Vector2.INF
+	_context_stockpile_zone_id = 0
+	_context_stockpile_use_pos = Vector2.INF
 
 func _on_designation_toggle_requested() -> void:
 	if selected_designation_target == null or not is_instance_valid(selected_designation_target):
@@ -3077,6 +3225,10 @@ func _clear_pending_placement() -> void:
 	pending_building_id = &""
 	pending_install_item = &""
 	pending_install_drop_id = 0
+	_context_handcart_id = 0
+	_context_handcart_release_pos = Vector2.INF
+	_context_stockpile_zone_id = 0
+	_context_stockpile_use_pos = Vector2.INF
 	selected_designation_target = null
 	selected_stockpile_zone = null
 	selected_farm_zone = null
@@ -3109,25 +3261,9 @@ func _find_stockpile_item_at(world_pos: Vector2) -> Dictionary:
 
 func _on_selected_object_action_requested(action_id: StringName) -> void:
 	if action_id == &"PlaceBedFromStockpile":
-		if _selected_object_kind != &"StockpileItem" or _selected_object_resource != &"Bed":
-			return
-		if _selected_object_zone == null or not is_instance_valid(_selected_object_zone):
-			return
-		if not _selected_object_zone.has_method("remove_resource"):
-			return
-		var removed: int = int(_selected_object_zone.remove_resource(&"Bed", 1))
-		if removed <= 0:
-			return
-		resource_stock[&"Bed"] = maxi(0, int(resource_stock.get(&"Bed", 0)) - removed)
-		_clear_selected_object()
-		selected_stockpile_zone = null
-		pending_install_item = &"Bed"
-		pending_install_drop_id = -1
-		hud.set_resource_stock(resource_stock)
-		hud.set_active_action(&"InstallBed")
-		hud.set_selected_status_visible(false)
-		_mark_economy_dirty()
-		_mark_jobs_dirty()
+		_prepare_install_from_selected_stockpile(&"Bed")
+	elif action_id == &"PlaceHandcartFromStockpile":
+		_prepare_install_from_selected_stockpile(&"Handcart")
 	elif String(action_id).begins_with("SetFarmCrop:"):
 		var target_zone: Node = null
 		if selected_farm_zone != null and is_instance_valid(selected_farm_zone):
@@ -3175,6 +3311,7 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		_on_action_changed(&"Interact")
 		_close_bottom_catalog_if_supported()
 		_refresh_hud()
+
 	elif action_id == &"StartResearch":
 		if _selected_object_kind != &"ResearchBench":
 			return
@@ -3213,6 +3350,29 @@ func _on_selected_object_action_requested(action_id: StringName) -> void:
 		_mark_pathing_dirty()
 		_mark_maintenance_dirty()
 
+func _prepare_install_from_selected_stockpile(resource_type: StringName) -> void:
+	if resource_type == &"":
+		return
+	if _selected_object_kind != &"StockpileItem" or _selected_object_resource != resource_type:
+		return
+	if _selected_object_zone == null or not is_instance_valid(_selected_object_zone):
+		return
+	if not _selected_object_zone.has_method("remove_resource"):
+		return
+	var removed: int = int(_selected_object_zone.remove_resource(resource_type, 1))
+	if removed <= 0:
+		return
+	resource_stock[resource_type] = maxi(0, int(resource_stock.get(resource_type, 0)) - removed)
+	_clear_selected_object()
+	selected_stockpile_zone = null
+	pending_install_item = resource_type
+	pending_install_drop_id = -1
+	hud.set_resource_stock(resource_stock)
+	hud.set_active_action(StringName("Install%s" % String(resource_type)))
+	hud.set_selected_status_visible(false)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
+
 func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	var world_pos: Vector2 = world_root.get_global_mouse_position()
 	if pending_building_id != &"" or pending_install_item != &"" or current_action == &"StockpileZone" or current_action == &"FarmZone" or current_action == &"SetRallyFlag" or current_action == &"DragGather":
@@ -3222,16 +3382,61 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 		return
 	_sanitize_selected_colonists()
 	if not selected_colonists.is_empty():
+		var stockpile_item: Dictionary = _find_stockpile_item_at(world_pos)
+		if not stockpile_item.is_empty():
+			var stock_resource: StringName = StringName(stockpile_item.get("resource_type", &""))
+			var stock_zone: Node = stockpile_item.get("zone", null)
+			if stock_resource == &"Handcart" and stock_zone != null and is_instance_valid(stock_zone):
+				_context_stockpile_zone_id = stock_zone.get_instance_id()
+				_context_stockpile_use_pos = _snap_to_tile(world_pos)
+				_context_handcart_id = 0
+				_context_handcart_release_pos = Vector2.INF
+				_context_gather_target_id = 0
+				_context_workstation_id = &""
+				hud.show_context_action_button(&"UseHandcartFromStockpile", _t("main.context.handcart.use", {}, "사용하기"), event.position)
+				return
+		var handcart: Node = _find_handcart_near(world_pos, 48.0)
+		if handcart != null:
+			var primary_colonist: Node = _get_primary_selected_colonist()
+			if primary_colonist != null and is_instance_valid(primary_colonist):
+				var owner_id: int = _get_handcart_owner_id(handcart)
+				var colonist_id: int = primary_colonist.get_instance_id()
+				if owner_id == colonist_id:
+					_context_handcart_id = handcart.get_instance_id()
+					_context_handcart_release_pos = _snap_to_tile(world_pos)
+					_context_gather_target_id = 0
+					_context_workstation_id = &""
+					_context_stockpile_zone_id = 0
+					_context_stockpile_use_pos = Vector2.INF
+					hud.show_context_action_button(&"ReleaseHandcart", _t("main.context.handcart.release", {}, "해제하기"), event.position)
+					return
+				if owner_id == 0:
+					_context_handcart_id = handcart.get_instance_id()
+					_context_handcart_release_pos = _snap_to_tile(world_pos)
+					_context_gather_target_id = 0
+					_context_workstation_id = &""
+					_context_stockpile_zone_id = 0
+					_context_stockpile_use_pos = Vector2.INF
+					hud.show_context_action_button(&"UseHandcart", _t("main.context.handcart.use", {}, "사용하기"), event.position)
+					return
 		var gatherable: Node = _find_gatherable_near(world_pos, 48.0)
 		if gatherable != null:
 			_context_gather_target_id = gatherable.get_instance_id()
 			_context_workstation_id = &""
+			_context_handcart_id = 0
+			_context_handcart_release_pos = Vector2.INF
+			_context_stockpile_zone_id = 0
+			_context_stockpile_use_pos = Vector2.INF
 			hud.show_context_action_button(&"Gather", _t("main.context.gather"), event.position)
 			return
 		var ws_id: StringName = _find_workstation_id_near(world_pos, 56.0)
 		if ws_id != &"":
 			_context_workstation_id = ws_id
 			_context_gather_target_id = 0
+			_context_handcart_id = 0
+			_context_handcart_release_pos = Vector2.INF
+			_context_stockpile_zone_id = 0
+			_context_stockpile_use_pos = Vector2.INF
 			hud.show_context_action_button(&"Workstation", _t("main.context.workstation"), event.position)
 			return
 		_issue_selected_move_command(world_pos)
@@ -3239,6 +3444,155 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	_clear_pending_placement()
 	_on_action_changed(&"Interact")
 	_close_bottom_catalog_if_supported()
+
+func _get_primary_selected_colonist() -> Node:
+	_sanitize_selected_colonists()
+	if selected_colonists.is_empty():
+		return null
+	var primary: Node = selected_colonists[0]
+	if primary == null or not is_instance_valid(primary):
+		return null
+	return primary
+
+func _get_handcart_owner_id(handcart: Object) -> int:
+	if handcart == null or not is_instance_valid(handcart):
+		return 0
+	if handcart.has_meta("assigned_colonist_id"):
+		return int(handcart.get_meta("assigned_colonist_id"))
+	return 0
+
+func _clear_handcart_owner(handcart: Object, owner_id: int = 0) -> void:
+	if handcart == null or not is_instance_valid(handcart):
+		return
+	if handcart.has_method("clear_owner"):
+		handcart.clear_owner(owner_id)
+	elif handcart.has_meta("assigned_colonist_id"):
+		var current_owner: int = int(handcart.get_meta("assigned_colonist_id"))
+		if owner_id == 0 or owner_id == current_owner:
+			handcart.set_meta("assigned_colonist_id", 0)
+
+func _clear_pending_handcart_use_for_colonist(colonist_id: int) -> void:
+	if colonist_id == 0:
+		return
+	if _pending_handcart_use_by_colonist.has(colonist_id):
+		_pending_handcart_use_by_colonist.erase(colonist_id)
+
+func _request_handcart_use(handcart: Object, colonist: Node) -> bool:
+	if handcart == null or not is_instance_valid(handcart):
+		return false
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	var handcart_node: Node2D = handcart as Node2D
+	var colonist_node: Node2D = colonist as Node2D
+	if handcart_node == null or colonist_node == null:
+		return false
+	var colonist_id: int = colonist.get_instance_id()
+	var handcart_id: int = handcart_node.get_instance_id()
+	var current_owner: int = _get_handcart_owner_id(handcart)
+	if current_owner != 0 and current_owner != colonist_id:
+		return false
+	_clear_pending_handcart_use_for_colonist(colonist_id)
+	for pending_colonist_any in _pending_handcart_use_by_colonist.keys():
+		var pending_colonist_id: int = int(pending_colonist_any)
+		if int(_pending_handcart_use_by_colonist[pending_colonist_any]) != handcart_id:
+			continue
+		_pending_handcart_use_by_colonist.erase(pending_colonist_id)
+	if colonist_node.global_position.distance_to(handcart_node.global_position) <= 28.0:
+		return _assign_handcart_to_colonist(handcart, colonist)
+	_pending_handcart_use_by_colonist[colonist_id] = handcart_id
+	if job_system != null and is_instance_valid(job_system) and job_system.has_method("issue_immediate_move"):
+		job_system.issue_immediate_move(colonist, handcart_node.global_position, true)
+	elif colonist.has_method("assign_job"):
+		colonist.assign_job({
+			"type": &"MoveTo",
+			"target": handcart_node.global_position,
+			"base_priority": 100,
+			"assigned_to": colonist_id
+		})
+	return true
+
+func _resolve_pending_handcart_use_requests() -> void:
+	if _pending_handcart_use_by_colonist.is_empty():
+		return
+	var resolved_or_stale: Array[int] = []
+	var resolved_any: bool = false
+	for colonist_id_any in _pending_handcart_use_by_colonist.keys():
+		var colonist_id: int = int(colonist_id_any)
+		var handcart_id: int = int(_pending_handcart_use_by_colonist[colonist_id_any])
+		var colonist_obj: Object = instance_from_id(colonist_id)
+		var handcart_obj: Object = instance_from_id(handcart_id)
+		if colonist_obj == null or not is_instance_valid(colonist_obj):
+			resolved_or_stale.append(colonist_id)
+			continue
+		if handcart_obj == null or not is_instance_valid(handcart_obj):
+			resolved_or_stale.append(colonist_id)
+			continue
+		var colonist_node: Node2D = colonist_obj as Node2D
+		var handcart_node: Node2D = handcart_obj as Node2D
+		if colonist_node == null or handcart_node == null:
+			resolved_or_stale.append(colonist_id)
+			continue
+		var owner_id: int = _get_handcart_owner_id(handcart_obj)
+		if owner_id != 0 and owner_id != colonist_id:
+			resolved_or_stale.append(colonist_id)
+			continue
+		if colonist_node.global_position.distance_to(handcart_node.global_position) > 28.0:
+			continue
+		if _assign_handcart_to_colonist(handcart_obj, colonist_node):
+			_finish_pending_handcart_use_move(colonist_node)
+			resolved_any = true
+		resolved_or_stale.append(colonist_id)
+	for colonist_id in resolved_or_stale:
+		_pending_handcart_use_by_colonist.erase(colonist_id)
+	if resolved_any:
+		_mark_jobs_dirty()
+		_hud_dirty = true
+
+func _finish_pending_handcart_use_move(colonist: Node) -> void:
+	if colonist == null or not is_instance_valid(colonist):
+		return
+	if not ("current_job" in colonist):
+		return
+	var job: Dictionary = colonist.current_job
+	if job.is_empty():
+		return
+	if StringName(job.get("type", &"")) != &"MoveTo":
+		return
+	if not bool(job.get("__resume_after_move", false)):
+		return
+	if colonist.has_method("_finish_current_job"):
+		colonist.call("_finish_current_job")
+	elif colonist.has_method("cancel_current_job"):
+		colonist.cancel_current_job()
+
+func _assign_handcart_to_colonist(handcart: Object, colonist: Node) -> bool:
+	if handcart == null or not is_instance_valid(handcart):
+		return false
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	if not (colonist is Node2D):
+		return false
+	var colonist_id: int = colonist.get_instance_id()
+	var current_owner: int = _get_handcart_owner_id(handcart)
+	if current_owner != 0 and current_owner != colonist_id:
+		return false
+	for node in get_tree().get_nodes_in_group("handcarts"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node == handcart:
+			continue
+		if _get_handcart_owner_id(node) != colonist_id:
+			continue
+		_clear_handcart_owner(node, colonist_id)
+	var assigned: bool = false
+	if handcart.has_method("assign_owner"):
+		assigned = bool(handcart.assign_owner(colonist_id))
+	elif handcart.has_meta("assigned_colonist_id"):
+		handcart.set_meta("assigned_colonist_id", colonist_id)
+		assigned = true
+	if not assigned:
+		return false
+	return true
 
 func _issue_selected_move_command(target_pos: Vector2) -> void:
 	var snapped_target: Vector2 = _snap_to_tile(target_pos)
@@ -3467,12 +3821,14 @@ func _filter_recipes_for_workstation(workstation_id: StringName) -> Array:
 		var ws: Resource = workstation_lookup[workstation_id]
 		for recipe_id in ws.recipe_ids:
 			if recipe_lookup.has(recipe_id):
-				out.append(recipe_lookup[recipe_id])
+				var recipe: Resource = recipe_lookup[recipe_id]
+				if _is_recipe_unlocked(recipe):
+					out.append(recipe)
 		out.sort_custom(func(a, b): return String(a.id) < String(b.id))
 		return out
 	for recipe_id in recipe_lookup.keys():
 		var recipe: Resource = recipe_lookup[recipe_id]
-		if recipe.workstation_id == workstation_id:
+		if recipe.workstation_id == workstation_id and _is_recipe_unlocked(recipe):
 			out.append(recipe)
 	out.sort_custom(func(a, b): return String(a.id) < String(b.id))
 	return out
@@ -3499,6 +3855,14 @@ func _is_building_unlocked(def: Resource) -> bool:
 	if def == null:
 		return false
 	var required: StringName = StringName(def.required_research)
+	if required == &"":
+		return true
+	return bool(_research_completed.get(required, false))
+
+func _is_recipe_unlocked(def: Resource) -> bool:
+	if def == null:
+		return false
+	var required: StringName = StringName(def.get("required_research"))
 	if required == &"":
 		return true
 	return bool(_research_completed.get(required, false))
@@ -3660,17 +4024,47 @@ func _apply_research_bonus(research_id: StringName) -> void:
 			pass
 
 func _find_research_bench_pos() -> Vector2:
+	var positions: Array[Vector2] = _find_research_bench_positions()
+	if not positions.is_empty():
+		return positions[0]
+	return Vector2.INF
+
+func _find_research_bench_positions() -> Array[Vector2]:
+	var positions: Array[Vector2] = []
+	var seen: Dictionary = {}
 	var pos: Vector2 = _find_workstation_pos(&"ResearchBench")
 	if pos != Vector2.INF:
-		return pos
+		seen[pos] = true
+		positions.append(pos)
 	for node in _get_group_nodes_cached(&"structures"):
 		if node == null or not is_instance_valid(node):
 			continue
 		if not node.has_meta("building_id"):
 			continue
 		if StringName(node.get_meta("building_id")) == &"ResearchBench":
-			return node.global_position
-	return Vector2.INF
+			var bench_pos: Vector2 = node.global_position
+			if seen.has(bench_pos):
+				continue
+			seen[bench_pos] = true
+			positions.append(bench_pos)
+	for site in _get_group_nodes_cached(&"build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		if not bool(site.get("complete")):
+			continue
+		if StringName(site.get("building_id")) != &"ResearchBench":
+			continue
+		var site_pos: Vector2 = site.global_position
+		if seen.has(site_pos):
+			continue
+		seen[site_pos] = true
+		positions.append(site_pos)
+	positions.sort_custom(func(a: Vector2, b: Vector2):
+		if not is_equal_approx(a.x, b.x):
+			return a.x < b.x
+		return a.y < b.y
+	)
+	return positions
 
 func _select_stockpile_zone_near(world_pos: Vector2) -> void:
 	selected_stockpile_zone = _find_stockpile_zone_near(world_pos, 40.0)

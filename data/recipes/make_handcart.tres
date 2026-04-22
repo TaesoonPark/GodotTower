@@ -1,0 +1,18 @@
+[gd_resource type="Resource" script_class="RecipeDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/RecipeDef.gd" id="1_recipe_def"]
+
+[resource]
+script = ExtResource("1_recipe_def")
+id = &"MakeHandcart"
+display_name = "Make Handcart"
+workstation_id = &"SimpleBenchStation"
+work_required = 2.0
+ingredients = {
+&"Steel": 1,
+&"Wood": 2
+}
+products = {
+&"Handcart": 1
+}
+required_research = &"HandcartI"

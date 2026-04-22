@@ -96,7 +96,8 @@ func process_dirty(
 	gatherables: Array = [],
 	huntables: Array = [],
 	raid_active_mode: bool = false,
-	rally_slot_validator: Callable = Callable()
+	rally_slot_validator: Callable = Callable(),
+	research_targets: Array = []
 ) -> void:
 	process_producers(
 		colonists,
@@ -119,7 +120,8 @@ func process_dirty(
 		gatherables,
 		huntables,
 		raid_active_mode,
-		rally_slot_validator
+		rally_slot_validator,
+		research_targets
 	)
 	process_assignment(colonists)
 
@@ -144,7 +146,8 @@ func process_producers(
 	gatherables: Array = [],
 	huntables: Array = [],
 	raid_active_mode: bool = false,
-	rally_slot_validator: Callable = Callable()
+	rally_slot_validator: Callable = Callable(),
+	research_targets: Array = []
 ) -> void:
 	if _dirty_designation:
 		request_designated_gather_jobs(gatherables)
@@ -161,7 +164,7 @@ func process_producers(
 		request_craft_jobs(recipe_lookup, workstation_slots, colonists, can_start_callback, on_start_callback)
 		_dirty_craft = false
 	if _dirty_research:
-		request_research_jobs(colonists, research_target, research_project_id, 6.0)
+		request_research_jobs(colonists, research_target, research_project_id, 6.0, research_targets)
 		_dirty_research = false
 	if _dirty_combat:
 		request_combat_jobs(colonists, enemies, rally_pos, rally_radius, max_combatants, raid_active_mode, rally_slot_validator)
@@ -528,7 +531,9 @@ func request_haul_jobs(drops: Array, stockpile_zones: Array, current_stock: Dict
 			continue
 		var resource_type: StringName = StringName(drop_node.get("resource_type"))
 		var drop_amount: int = int(drop_node.get("amount"))
-		var nearest_zone: Node = _find_nearest_zone(drop_node.global_position, stockpile_zones, resource_type, drop_amount)
+		var nearest_zone: Node = _resolve_preferred_zone(drop_node, stockpile_zones, resource_type, drop_amount)
+		if nearest_zone == null:
+			nearest_zone = _find_nearest_zone(drop_node.global_position, stockpile_zones, resource_type, drop_amount)
 		if nearest_zone == null:
 			continue
 		var need: int = int(target_stock.get(resource_type, 0))
@@ -610,13 +615,20 @@ func request_craft_jobs(recipe_lookup: Dictionary, workstation_slots: Dictionary
 				queue.remove_at(0)
 			_craft_queues[workstation_id] = queue
 
-func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: StringName, work_duration: float = 6.0) -> void:
+func request_research_jobs(
+	colonists: Array,
+	target_pos: Vector2,
+	project_id: StringName,
+	work_duration: float = 6.0,
+	target_positions: Array = []
+) -> void:
 	if project_id == &"":
 		return
-	if target_pos == Vector2.INF:
+	var targets: Array[Vector2] = _collect_research_target_positions(target_pos, target_positions)
+	if targets.is_empty():
 		return
-	if _has_any_active_or_pending_research_job(colonists):
-		return
+	var reserved_targets: Dictionary = _collect_reserved_research_targets(colonists)
+	var available_colonists: Array = []
 	for colonist in colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
@@ -627,17 +639,88 @@ func request_research_jobs(colonists: Array, target_pos: Vector2, project_id: St
 		var colonist_id: int = colonist.get_instance_id()
 		if _has_pending_research_job(colonist_id):
 			continue
+		available_colonists.append(colonist)
+	if available_colonists.is_empty():
+		return
+	var queued_count: int = 0
+	for target in targets:
+		if target == Vector2.INF:
+			continue
+		if bool(reserved_targets.get(target, false)):
+			continue
+		var nearest_idx: int = _find_closest_colonist_index(available_colonists, target)
+		if nearest_idx < 0:
+			break
+		var colonist = available_colonists[nearest_idx]
+		var colonist_id: int = colonist.get_instance_id()
 		_jobs.append({
 			"type": &"ResearchTask",
-			"target": target_pos,
+			"target": target,
 			"project_id": project_id,
 			"work_duration": maxf(0.5, work_duration),
 			"research_points": 1.0,
 			"base_priority": 9,
 			"assigned_to": colonist_id
 		})
+		queued_count += 1
+		reserved_targets[target] = true
+		available_colonists.remove_at(nearest_idx)
+		if available_colonists.is_empty():
+			break
+	if queued_count > 0:
 		_dirty_assign = true
-		return
+
+func _collect_research_target_positions(primary_target: Vector2, extra_targets: Array) -> Array[Vector2]:
+	var targets: Array[Vector2] = []
+	var seen: Dictionary = {}
+	for pos_any in extra_targets:
+		if not pos_any is Vector2:
+			continue
+		var pos: Vector2 = pos_any
+		if pos == Vector2.INF:
+			continue
+		if seen.has(pos):
+			continue
+		seen[pos] = true
+		targets.append(pos)
+	if targets.is_empty() and primary_target != Vector2.INF:
+		targets.append(primary_target)
+	return targets
+
+func _collect_reserved_research_targets(colonists: Array) -> Dictionary:
+	var reserved: Dictionary = {}
+	for job in _jobs:
+		if StringName(job.get("type", &"")) != &"ResearchTask":
+			continue
+		var target: Vector2 = job.get("target", Vector2.INF)
+		if target == Vector2.INF:
+			continue
+		reserved[target] = true
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if colonist.current_job.is_empty():
+			continue
+		if StringName(colonist.current_job.get("type", &"")) != &"ResearchTask":
+			continue
+		var target: Vector2 = colonist.current_job.get("target", Vector2.INF)
+		if target == Vector2.INF:
+			continue
+		reserved[target] = true
+	return reserved
+
+func _find_closest_colonist_index(colonists: Array, target: Vector2) -> int:
+	var best_idx: int = -1
+	var best_dist_sq: float = INF
+	for i in range(colonists.size()):
+		var colonist = colonists[i]
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		var dist_sq: float = colonist.global_position.distance_squared_to(target)
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best_idx = i
+	return best_idx
 
 func request_repair_jobs(structures: Array) -> void:
 	for structure in structures:
@@ -1080,6 +1163,30 @@ func _remove_pending_move_jobs_for_colonist(colonist_id: int) -> void:
 			continue
 		filtered.append(job)
 	_jobs = filtered
+
+func _resolve_preferred_zone(drop_node: Node, zones: Array, resource_type: StringName, amount: int) -> Node:
+	if drop_node == null or not is_instance_valid(drop_node):
+		return null
+	if not drop_node.has_meta("preferred_zone_id"):
+		return null
+	var preferred_zone_id: int = int(drop_node.get_meta("preferred_zone_id"))
+	if preferred_zone_id == 0:
+		return null
+	var preferred_obj: Object = instance_from_id(preferred_zone_id)
+	if preferred_obj == null or not is_instance_valid(preferred_obj):
+		return null
+	var preferred_zone: Node = preferred_obj as Node
+	if preferred_zone == null:
+		return null
+	if not zones.has(preferred_zone):
+		return null
+	if preferred_zone.has_method("accepts_resource") and not preferred_zone.accepts_resource(resource_type):
+		return null
+	if preferred_zone.has_method("preview_acceptable_amount"):
+		var can_take: int = int(preferred_zone.preview_acceptable_amount(resource_type, amount))
+		if can_take <= 0:
+			return null
+	return preferred_zone
 
 func _find_nearest_zone(world_pos: Vector2, zones: Array, resource_type: StringName, amount: int) -> Node:
 	var best_zone: Node = null

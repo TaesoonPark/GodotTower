@@ -97,6 +97,7 @@ var _reroute_target_pending: Vector2 = Vector2.INF
 var _friendly_pathing: FriendlyPathing = null
 var _pathing_occupancy: Node = null
 var _main_controller: Node = null
+var _last_move_direction: Vector2 = Vector2.RIGHT
 var _sim_accum: float = 0.0
 var _need_tick_left: float = 0.0
 var _combat_target_refresh_left: float = 0.0
@@ -166,7 +167,12 @@ func _physics_process(delta: float) -> void:
 		if _need_tick_left <= 0.0:
 			tick_needs(NEED_TICK_INTERVAL_SEC)
 			_need_tick_left = NEED_TICK_INTERVAL_SEC
+		var before_move: Vector2 = global_position
 		_process_movement(sim_delta)
+		var move_delta: Vector2 = global_position - before_move
+		if move_delta.length_squared() > 0.0001:
+			_last_move_direction = move_delta
+		_update_haul_handcart_follow(move_delta)
 		update_job_completion(sim_delta)
 		_process_active_work(sim_delta)
 	_sim_accum = sim_remaining
@@ -951,6 +957,8 @@ func assign_job(job: Dictionary) -> void:
 			drop_target = _snap_to_tile(drop_target)
 			current_job["target"] = drop_target
 			nav.target_position = drop_target
+			_ensure_haul_handcart_assigned()
+			_update_haul_handcart_follow(Vector2.ZERO)
 		&"CraftRecipe":
 			var craft_target: Vector2 = job.get("target", global_position)
 			craft_target = _snap_to_tile(craft_target)
@@ -1173,12 +1181,13 @@ func update_job_completion(_delta: float = 0.0) -> void:
 				zone_node = z
 
 		if phase == &"to_drop":
+			_ensure_haul_handcart_assigned()
 			var drop_obj: Object = instance_from_id(drop_id) if drop_id != 0 else null
 			var haul_result: Dictionary = HAUL_TRANSITION.execute_pickup(
 				current_job,
 				drop_obj,
 				zone_node,
-				maxi(1, int(stats.haul_carry_capacity)),
+				_effective_haul_capacity(current_job),
 				Callable(self, "_pickup_additional_nearby_drops")
 			)
 			if StringName(haul_result.get("status", &"empty")) != &"to_zone":
@@ -1620,6 +1629,78 @@ func _pickup_additional_nearby_drops(resource_type: StringName, remaining_capaci
 		if drop.has_method("is_empty") and drop.is_empty():
 			drop.queue_free()
 	return picked_total
+
+func _effective_haul_capacity(job: Dictionary) -> int:
+	var base_capacity: int = maxi(1, int(stats.haul_carry_capacity))
+	if StringName(job.get("type", &"")) != &"HaulResource":
+		return base_capacity
+	var bonus: int = maxi(0, int(job.get("handcart_bonus", 0)))
+	if bonus <= 0:
+		var owned: Object = _find_owned_handcart(get_instance_id())
+		if owned != null and is_instance_valid(owned):
+			bonus = _handcart_carry_bonus(owned)
+	return maxi(1, base_capacity + bonus)
+
+func _ensure_haul_handcart_assigned() -> void:
+	if current_job.is_empty():
+		return
+	if StringName(current_job.get("type", &"")) != &"HaulResource":
+		return
+	var owner_id: int = get_instance_id()
+	var owned: Object = _find_owned_handcart(owner_id)
+	if owned == null or not is_instance_valid(owned):
+		current_job["handcart_id"] = 0
+		current_job["handcart_bonus"] = 0
+		return
+	current_job["handcart_id"] = owned.get_instance_id()
+	current_job["handcart_bonus"] = _handcart_carry_bonus(owned)
+
+func _update_haul_handcart_follow(move_delta: Vector2) -> void:
+	var owner_id: int = get_instance_id()
+	var handcart_obj: Object = _find_owned_handcart(owner_id)
+	if handcart_obj == null or not is_instance_valid(handcart_obj):
+		return
+	var follow_dir: Vector2 = move_delta
+	if follow_dir.length_squared() <= 0.0001:
+		var goal: Vector2 = _resolve_move_goal()
+		if goal != Vector2.INF:
+			follow_dir = goal - global_position
+	if follow_dir.length_squared() <= 0.0001:
+		follow_dir = _last_move_direction
+	if follow_dir.length_squared() <= 0.0001:
+		follow_dir = Vector2.RIGHT
+	if handcart_obj.has_method("update_follow"):
+		handcart_obj.update_follow(global_position, follow_dir)
+	elif handcart_obj is Node2D:
+		var handcart_node: Node2D = handcart_obj
+		handcart_node.global_position = global_position - follow_dir.normalized() * 16.0
+
+func _find_owned_handcart(owner_id: int) -> Object:
+	if owner_id == 0:
+		return null
+	for handcart in get_tree().get_nodes_in_group("handcarts"):
+		if handcart == null or not is_instance_valid(handcart):
+			continue
+		if not (handcart is Node2D):
+			continue
+		if _get_handcart_owner_id(handcart) != owner_id:
+			continue
+		return handcart
+	return null
+
+func _get_handcart_owner_id(handcart: Object) -> int:
+	if handcart == null or not is_instance_valid(handcart):
+		return 0
+	if handcart.has_meta("assigned_colonist_id"):
+		return int(handcart.get_meta("assigned_colonist_id"))
+	return 0
+
+func _handcart_carry_bonus(handcart: Object) -> int:
+	if handcart.has_method("get_carry_bonus"):
+		return maxi(0, int(handcart.get_carry_bonus()))
+	if handcart.has_meta("carry_bonus"):
+		return maxi(0, int(handcart.get_meta("carry_bonus")))
+	return 0
 
 func set_combat_profile(profile: Dictionary) -> void:
 	var keys := [

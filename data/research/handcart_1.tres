@@ -4,10 +4,6 @@
 
 [resource]
 script = ExtResource("1_research_def")
-id = &"AgronomyIII"
-display_name = "Agronomy III"
-required_points = 220.0
-prerequisite_research_id = &"AgronomyII"
-unlock_buildings = Array[StringName]([&"Greenhouse"])
-bonus_type = &"FarmYieldBoost"
-bonus_value = 1.32
+id = &"HandcartI"
+display_name = "Handcart"
+required_points = 5.0
