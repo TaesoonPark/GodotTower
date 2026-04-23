@@ -694,7 +694,7 @@ func _resolve_melee_engagement_goal(target_node: Node2D, target_pos: Vector2, at
 		if cached_ring >= 1 and cached_ring <= allowed_ring and (not require_step_available or _is_melee_goal_step_available(cached_cell, own_cell)) and _is_melee_cell_available(cached_cell):
 			_cache_melee_goal(target_id, cached_cell)
 			return cached_cell
-	var slots: Array[Vector2] = _order_melee_slots_by_distance(_build_melee_slot_cells(target_cell))
+	var slots: Array[Vector2] = _order_melee_slots_by_distance(_build_melee_slot_cells(target_cell, allowed_ring))
 	var start_idx: int = _melee_slot_index(target_id, slots.size())
 	for offset in range(slots.size()):
 		var idx: int = (start_idx + offset) % slots.size()
@@ -765,9 +765,10 @@ func _compare_melee_slot_distance(a: Vector2, b: Vector2) -> bool:
 		return a.y < b.y
 	return a.x < b.x
 
-func _build_melee_slot_cells(target_cell: Vector2) -> Array[Vector2]:
+func _build_melee_slot_cells(target_cell: Vector2, max_ring: int = MELEE_SLOT_MAX_RING) -> Array[Vector2]:
 	var slots: Array[Vector2] = []
-	for ring in range(1, MELEE_SLOT_MAX_RING + 1):
+	var capped_ring: int = clampi(max_ring, 1, MELEE_SLOT_MAX_RING)
+	for ring in range(1, capped_ring + 1):
 		for y in range(-ring, ring + 1):
 			for x in range(-ring, ring + 1):
 				if maxi(absi(x), absi(y)) != ring:
@@ -1840,13 +1841,17 @@ func _process_combat_job(job_type: StringName) -> void:
 		target_pos = current_job.get("target", target_pos)
 	var attack_range: float = _combat_attack_range(effective_job_type)
 	var dist: float = global_position.distance_to(target_pos)
-	var melee_engaged: bool = effective_job_type == &"CombatMelee" and _is_melee_engaged_with_target(target_node, attack_range)
+	var melee_goal: Vector2 = Vector2.INF
+	var melee_engaged: bool = false
+	if effective_job_type == &"CombatMelee":
+		melee_goal = _resolve_melee_engagement_goal(target_node, target_node.global_position, attack_range)
+		melee_engaged = _is_melee_engaged_with_target(target_node, attack_range, melee_goal)
 	if effective_job_type == &"CombatMelee":
 		if not melee_engaged:
 			return
 	elif dist > attack_range:
 		return
-	if effective_job_type == &"CombatMelee" and _melee_lock_target_id == 0 and _can_start_melee_combat_lock(target_node, attack_range):
+	if effective_job_type == &"CombatMelee" and _melee_lock_target_id == 0 and _can_start_melee_combat_lock(target_node, attack_range, melee_goal):
 		_melee_lock_target_id = target_id
 		current_job["melee_locked"] = true
 		current_job["target"] = global_position
@@ -1953,11 +1958,12 @@ func release_melee_combat_lock() -> void:
 	_combat_target_refresh_left = 0.0
 	_clear_path_cache()
 
-func _can_start_melee_combat_lock(target_node: Node2D, attack_range: float) -> bool:
-	return _is_melee_engaged_with_target(target_node, attack_range)
+func _can_start_melee_combat_lock(target_node: Node2D, attack_range: float, desired: Vector2 = Vector2.INF) -> bool:
+	return _is_melee_engaged_with_target(target_node, attack_range, desired)
 
-func _is_melee_engaged_with_target(target_node: Node2D, attack_range: float) -> bool:
-	var desired: Vector2 = _resolve_melee_engagement_goal(target_node, target_node.global_position, attack_range)
+func _is_melee_engaged_with_target(target_node: Node2D, attack_range: float, desired: Vector2 = Vector2.INF) -> bool:
+	if desired == Vector2.INF:
+		desired = _resolve_melee_engagement_goal(target_node, target_node.global_position, attack_range)
 	var target_cell: Vector2 = _snap_to_tile(target_node.global_position)
 	var engagement_ring: int = _melee_engagement_ring(target_node.get_instance_id(), attack_range)
 	var desired_ring: int = _melee_cell_ring(desired, target_cell)

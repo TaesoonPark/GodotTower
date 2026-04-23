@@ -22,6 +22,9 @@ const MELEE_GOAL_CACHE_MS: int = 1600
 const MELEE_SLOT_COUNT: int = 8
 const MELEE_SLOT_MAX_RING: int = 8
 
+static var _melee_attacker_cache_frame: int = -1
+static var _melee_attacker_ids_by_target: Dictionary = {}
+
 var health: float = 0.0
 var _target_colonist_id: int = 0
 var _melee_lock_target_id: int = 0
@@ -374,21 +377,21 @@ func _ai_tick(_delta: float) -> void:
 	var dist: float = global_position.distance_to(target.global_position)
 	if attack_mode != &"Ranged":
 		var melee_goal: Vector2 = _resolve_melee_engagement_goal(target, attack_range)
-		var melee_engaged: bool = _is_melee_engaged_with_target(target, attack_range)
+		var melee_engaged: bool = _is_melee_engaged_with_target(target, attack_range, melee_goal)
 		if not melee_engaged and not _is_melee_cell_available(_snap_to_tile(global_position)) and _is_melee_cell_available(melee_goal):
 			if _can_step_toward_melee_cell(melee_goal):
 				_move_toward_cell(melee_goal, move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
 			else:
 				_move_toward_cell(_snap_to_tile(global_position), move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
 			dist = global_position.distance_to(target.global_position)
-			melee_engaged = _is_melee_engaged_with_target(target, attack_range)
+			melee_engaged = _is_melee_engaged_with_target(target, attack_range, melee_goal)
 		if not melee_engaged and _snap_to_tile(global_position).distance_to(_snap_to_tile(target.global_position)) <= 0.1 and not _is_blocked_position(melee_goal):
 			if _can_step_toward_melee_cell(melee_goal):
 				_move_toward_cell(melee_goal, move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
 			else:
 				_move_toward_cell(_snap_to_tile(global_position), move_speed * maxf(0.5, external_move_speed_multiplier), _delta)
 			dist = global_position.distance_to(target.global_position)
-			melee_engaged = _is_melee_engaged_with_target(target, attack_range)
+			melee_engaged = _is_melee_engaged_with_target(target, attack_range, melee_goal)
 		var local_positioning: bool = dist <= maxf(tile_size * (float(_melee_allowed_ring(target.get_instance_id())) + 2.4), attack_range + tile_size * 2.4)
 		if not melee_engaged:
 			_move_goal = melee_goal if local_positioning else _snap_to_tile(melee_goal)
@@ -397,7 +400,7 @@ func _ai_tick(_delta: float) -> void:
 		else:
 			_move_goal = global_position
 			_move_goal_exact = false
-		if _melee_lock_target_id == 0 and _can_start_melee_combat_lock(target, attack_range):
+		if _melee_lock_target_id == 0 and _can_start_melee_combat_lock(target, attack_range, melee_goal):
 			_start_melee_combat_lock(target)
 	elif dist > attack_range:
 		_move_goal = _snap_to_tile(target.global_position)
@@ -450,11 +453,12 @@ func _start_melee_combat_lock(target: Node2D) -> void:
 		_enemy_pathing.clear()
 	_invalidate_dynamic_combat_blockers()
 
-func _can_start_melee_combat_lock(target: Node2D, attack_range: float) -> bool:
-	return _is_melee_engaged_with_target(target, attack_range)
+func _can_start_melee_combat_lock(target: Node2D, attack_range: float, desired: Vector2 = Vector2.INF) -> bool:
+	return _is_melee_engaged_with_target(target, attack_range, desired)
 
-func _is_melee_engaged_with_target(target: Node2D, attack_range: float) -> bool:
-	var desired: Vector2 = _resolve_melee_engagement_goal(target, attack_range)
+func _is_melee_engaged_with_target(target: Node2D, attack_range: float, desired: Vector2 = Vector2.INF) -> bool:
+	if desired == Vector2.INF:
+		desired = _resolve_melee_engagement_goal(target, attack_range)
 	var target_cell: Vector2 = _snap_to_tile(target.global_position)
 	var engagement_ring: int = _melee_engagement_ring(target.get_instance_id(), attack_range)
 	var desired_ring: int = _melee_cell_ring(desired, target_cell)
@@ -478,7 +482,22 @@ func _melee_cell_ring(cell: Vector2, target_cell: Vector2) -> int:
 	return maxi(cell_dx, cell_dy)
 
 func _melee_required_ring(target_id: int) -> int:
-	var attacker_count: int = 0
+	var attacker_count: int = _get_melee_attacker_ids_for_target(target_id).size()
+	for ring in range(1, MELEE_SLOT_MAX_RING + 1):
+		if attacker_count <= 4 * ring * (ring + 1):
+			return ring
+	return MELEE_SLOT_MAX_RING
+
+func _get_melee_attacker_ids_for_target(target_id: int) -> Array[int]:
+	if target_id == 0:
+		return []
+	var frame_id: int = Engine.get_physics_frames()
+	if _melee_attacker_cache_frame != frame_id:
+		_melee_attacker_cache_frame = frame_id
+		_melee_attacker_ids_by_target.clear()
+	if _melee_attacker_ids_by_target.has(target_id):
+		return _melee_attacker_ids_by_target[target_id]
+	var attacker_ids: Array[int] = []
 	var enemies: Array = get_tree().get_nodes_in_group("raiders")
 	enemies.append_array(get_tree().get_nodes_in_group("zombies"))
 	for node in enemies:
@@ -492,11 +511,10 @@ func _melee_required_ring(target_id: int) -> int:
 		if node_target_id == 0:
 			node_target_id = int(node.get("_target_colonist_id"))
 		if node_target_id == target_id:
-			attacker_count += 1
-	for ring in range(1, MELEE_SLOT_MAX_RING + 1):
-		if attacker_count <= 4 * ring * (ring + 1):
-			return ring
-	return MELEE_SLOT_MAX_RING
+			attacker_ids.append(node.get_instance_id())
+	attacker_ids.sort()
+	_melee_attacker_ids_by_target[target_id] = attacker_ids
+	return attacker_ids
 
 func _melee_allowed_ring(target_id: int) -> int:
 	var required: int = _melee_required_ring(target_id)
@@ -791,7 +809,7 @@ func _resolve_melee_engagement_goal(target: Node2D, attack_range: float) -> Vect
 		if cached_ring >= 1 and cached_ring <= allowed_ring and (not require_step_available or _is_melee_goal_step_available(cached_cell, own_cell)) and _is_melee_cell_available(cached_cell):
 			_cache_melee_goal(target_id, cached_cell)
 			return cached_cell
-	var slots: Array[Vector2] = _order_melee_slots_by_distance(_build_melee_slot_cells(target_cell))
+	var slots: Array[Vector2] = _order_melee_slots_by_distance(_build_melee_slot_cells(target_cell, allowed_ring))
 	var start_idx: int = _melee_slot_index(target_id, slots.size())
 	for offset in range(slots.size()):
 		var idx: int = (start_idx + offset) % slots.size()
@@ -862,9 +880,10 @@ func _compare_melee_slot_distance(a: Vector2, b: Vector2) -> bool:
 		return a.y < b.y
 	return a.x < b.x
 
-func _build_melee_slot_cells(target_cell: Vector2) -> Array[Vector2]:
+func _build_melee_slot_cells(target_cell: Vector2, max_ring: int = MELEE_SLOT_MAX_RING) -> Array[Vector2]:
 	var slots: Array[Vector2] = []
-	for ring in range(1, MELEE_SLOT_MAX_RING + 1):
+	var capped_ring: int = clampi(max_ring, 1, MELEE_SLOT_MAX_RING)
+	for ring in range(1, capped_ring + 1):
 		for y in range(-ring, ring + 1):
 			for x in range(-ring, ring + 1):
 				if maxi(absi(x), absi(y)) != ring:
@@ -932,23 +951,7 @@ func _node_has_active_melee_goal(node: Node) -> bool:
 	return true
 
 func _melee_slot_index(target_id: int, slot_count: int) -> int:
-	var attacker_ids: Array[int] = []
-	var enemies: Array = get_tree().get_nodes_in_group("raiders")
-	enemies.append_array(get_tree().get_nodes_in_group("zombies"))
-	for node in enemies:
-		if node == null or not is_instance_valid(node):
-			continue
-		if node.has_method("is_dead") and bool(node.is_dead()):
-			continue
-		if node.has_method("get_current_weapon_mode") and StringName(node.get_current_weapon_mode()) == &"Ranged":
-			continue
-		var node_target_id: int = int(node.get("_melee_lock_target_id"))
-		if node_target_id == 0:
-			node_target_id = int(node.get("_target_colonist_id"))
-		if node_target_id != target_id:
-			continue
-		attacker_ids.append(node.get_instance_id())
-	attacker_ids.sort()
+	var attacker_ids: Array[int] = _get_melee_attacker_ids_for_target(target_id)
 	var self_id: int = get_instance_id()
 	var found: int = attacker_ids.find(self_id)
 	if found >= 0:
