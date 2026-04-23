@@ -414,6 +414,32 @@ func queue_haul_job(drop_node: Node, zone_node: Node, assigned_to: int = 0, base
 	}
 	_dirty_assign = true
 
+func queue_workstation_supply_job(source_zone: Node, depot: Node, resource_type: StringName, amount: int, urgency: float = 0.0) -> bool:
+	if source_zone == null or not is_instance_valid(source_zone):
+		return false
+	if depot == null or not is_instance_valid(depot):
+		return false
+	if resource_type == &"" or amount <= 0:
+		return false
+	var source_pos: Vector2 = source_zone.global_position if source_zone is Node2D else Vector2.ZERO
+	if source_zone.has_method("get_drop_point"):
+		source_pos = source_zone.get_drop_point()
+	_jobs.append({
+		"type": &"HaulStockpileToDepot",
+		"target": source_pos,
+		"source_zone_id": source_zone.get_instance_id(),
+		"depot_id": depot.get_instance_id(),
+		"resource_type": resource_type,
+		"amount": amount,
+		"base_priority": 12,
+		"urgency": maxf(0.0, urgency),
+		"phase": &"to_stockpile",
+		"assigned_to": 0,
+		"queued_at_ms": Time.get_ticks_msec()
+	})
+	_dirty_assign = true
+	return true
+
 func enqueue_craft_recipe(recipe_id: StringName, workstation_id: StringName, repeat: bool = false) -> void:
 	if recipe_id == &"" or workstation_id == &"":
 		return
@@ -531,15 +557,18 @@ func request_haul_jobs(drops: Array, stockpile_zones: Array, current_stock: Dict
 			continue
 		var resource_type: StringName = StringName(drop_node.get("resource_type"))
 		var drop_amount: int = int(drop_node.get("amount"))
+		var as_craft_supply: bool = bool(drop_node.get_meta("craft_supply")) if drop_node.has_meta("craft_supply") else false
+		var has_preferred_zone: bool = drop_node.has_meta("preferred_zone_id") and int(drop_node.get_meta("preferred_zone_id")) != 0
 		var nearest_zone: Node = _resolve_preferred_zone(drop_node, stockpile_zones, resource_type, drop_amount)
 		if nearest_zone == null:
+			if as_craft_supply and has_preferred_zone:
+				continue
 			nearest_zone = _find_nearest_zone(drop_node.global_position, stockpile_zones, resource_type, drop_amount)
 		if nearest_zone == null:
 			continue
 		var need: int = int(target_stock.get(resource_type, 0))
 		var have: int = int(current_stock.get(resource_type, 0))
 		var urgency: float = maxf(0.0, float(need - have)) * _haul_urgency_multiplier
-		var as_craft_supply: bool = bool(drop_node.get_meta("craft_supply")) if drop_node.has_meta("craft_supply") else false
 		var base_priority: int = 12 if as_craft_supply else 8
 		queue_haul_job(drop_node, nearest_zone, 0, base_priority, as_craft_supply, urgency)
 		_set_latest_haul_meta(drop_node.get_instance_id(), urgency, drop_amount)

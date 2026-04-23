@@ -16,6 +16,9 @@ const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealth
 signal status_changed(colonist: Node)
 signal resource_harvested(resource_type: StringName, amount: int, world_pos: Vector2)
 signal resource_delivered(resource_type: StringName, amount: int, zone: Node)
+signal workstation_supply_picked(resource_type: StringName, amount: int, zone: Node)
+signal workstation_supply_delivered(resource_type: StringName, amount: int, depot: Node, source_zone: Node)
+signal workstation_supply_returned(resource_type: StringName, amount: int, zone: Node)
 signal craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id: int)
 signal research_progressed(project_id: StringName, points: float)
 signal haul_job_released(drop_id: int)
@@ -959,6 +962,13 @@ func assign_job(job: Dictionary) -> void:
 			nav.target_position = drop_target
 			_ensure_haul_handcart_assigned()
 			_update_haul_handcart_follow(Vector2.ZERO)
+		&"HaulStockpileToDepot":
+			var supply_target: Vector2 = job.get("target", global_position)
+			supply_target = _snap_to_tile(supply_target)
+			current_job["target"] = supply_target
+			nav.target_position = supply_target
+			_ensure_haul_handcart_assigned()
+			_update_haul_handcart_follow(Vector2.ZERO)
 		&"CraftRecipe":
 			var craft_target: Vector2 = job.get("target", global_position)
 			craft_target = _snap_to_tile(craft_target)
@@ -1062,6 +1072,8 @@ func cancel_current_job() -> void:
 			if drop != null and is_instance_valid(drop) and drop.has_method("set_job_queued"):
 				drop.set_job_queued(false)
 			haul_job_released.emit(drop_id)
+	elif job_type == &"HaulStockpileToDepot":
+		_return_carried_workstation_supply()
 	elif job_type == &"PlantCrop" or job_type == &"HarvestCrop":
 		var zone_id: int = int(current_job.get("zone_id", 0))
 		if zone_id != 0:
@@ -1211,6 +1223,8 @@ func update_job_completion(_delta: float = 0.0) -> void:
 		if drop_id != 0:
 			haul_job_released.emit(drop_id)
 		_finish_current_job()
+	elif job_type == &"HaulStockpileToDepot" and _is_job_target_reached(18.0):
+		_process_workstation_supply_haul()
 	elif job_type == &"CraftRecipe" and _is_job_target_reached(18.0):
 		if not bool(current_job.get("work_started", false)):
 			current_job["work_started"] = true
@@ -1330,6 +1344,8 @@ func can_do_job(job_type: StringName) -> bool:
 			return bool(work_enabled.get(&"Hunt", true))
 		&"HaulResource":
 			return bool(work_enabled.get(&"Haul", true))
+		&"HaulStockpileToDepot":
+			return bool(work_enabled.get(&"Haul", true))
 		&"CraftRecipe":
 			return bool(work_enabled.get(&"Craft", true))
 		&"ResearchTask":
@@ -1420,6 +1436,8 @@ func _job_display_name(job_type: StringName) -> String:
 		&"Hunt":
 			return _t("colonist.job.hunt")
 		&"HaulResource":
+			return _t("colonist.job.haul")
+		&"HaulStockpileToDepot":
 			return _t("colonist.job.haul")
 		&"CraftRecipe":
 			return _t("colonist.job.craft")
@@ -1559,6 +1577,60 @@ func _complete_eat_job() -> void:
 	ate_food.emit()
 	_finish_current_job()
 
+func _process_workstation_supply_haul() -> void:
+	var phase: StringName = StringName(current_job.get("phase", &"to_stockpile"))
+	var source_zone: Node = _job_node_from_id(int(current_job.get("source_zone_id", 0)))
+	var depot: Node = _job_node_from_id(int(current_job.get("depot_id", 0)))
+	var resource_type: StringName = StringName(current_job.get("resource_type", &""))
+	if resource_type == &"":
+		_finish_current_job()
+		return
+	if phase == &"to_stockpile":
+		if source_zone == null or not source_zone.has_method("remove_resource") or depot == null:
+			_finish_current_job()
+			return
+		_ensure_haul_handcart_assigned()
+		var requested_amount: int = maxi(1, int(current_job.get("amount", 1)))
+		var pickup_amount: int = mini(requested_amount, _effective_haul_capacity(current_job))
+		var removed: int = int(source_zone.remove_resource(resource_type, pickup_amount))
+		if removed <= 0:
+			_finish_current_job()
+			return
+		workstation_supply_picked.emit(resource_type, removed, source_zone)
+		current_job["amount"] = removed
+		current_job["carried_type"] = resource_type
+		current_job["carried_amount"] = removed
+		current_job["phase"] = &"to_depot"
+		var target_pos: Vector2 = depot.global_position if depot is Node2D else global_position
+		if depot.has_method("get_drop_point"):
+			target_pos = depot.get_drop_point()
+		current_job["target"] = _snap_to_tile(target_pos)
+		nav.target_position = current_job["target"]
+		emit_status()
+		return
+	var carried_amount: int = maxi(0, int(current_job.get("carried_amount", current_job.get("amount", 0))))
+	if carried_amount > 0 and depot != null:
+		workstation_supply_delivered.emit(resource_type, carried_amount, depot, source_zone)
+	_finish_current_job()
+
+func _return_carried_workstation_supply() -> void:
+	if StringName(current_job.get("phase", &"to_stockpile")) != &"to_depot":
+		return
+	var resource_type: StringName = StringName(current_job.get("carried_type", current_job.get("resource_type", &"")))
+	var carried_amount: int = maxi(0, int(current_job.get("carried_amount", 0)))
+	if resource_type == &"" or carried_amount <= 0:
+		return
+	var source_zone: Node = _job_node_from_id(int(current_job.get("source_zone_id", 0)))
+	workstation_supply_returned.emit(resource_type, carried_amount, source_zone)
+
+func _job_node_from_id(node_id: int) -> Node:
+	if node_id == 0:
+		return null
+	var obj: Object = instance_from_id(node_id)
+	if obj == null or not is_instance_valid(obj):
+		return null
+	return obj as Node
+
 func _complete_research_job() -> void:
 	var project_id: StringName = StringName(current_job.get("project_id", &""))
 	var points: float = maxf(0.1, float(current_job.get("research_points", 1.0)))
@@ -1632,7 +1704,8 @@ func _pickup_additional_nearby_drops(resource_type: StringName, remaining_capaci
 
 func _effective_haul_capacity(job: Dictionary) -> int:
 	var base_capacity: int = maxi(1, int(stats.haul_carry_capacity))
-	if StringName(job.get("type", &"")) != &"HaulResource":
+	var job_type: StringName = StringName(job.get("type", &""))
+	if job_type != &"HaulResource" and job_type != &"HaulStockpileToDepot":
 		return base_capacity
 	var bonus: int = maxi(0, int(job.get("handcart_bonus", 0)))
 	if bonus <= 0:
@@ -1644,7 +1717,8 @@ func _effective_haul_capacity(job: Dictionary) -> int:
 func _ensure_haul_handcart_assigned() -> void:
 	if current_job.is_empty():
 		return
-	if StringName(current_job.get("type", &"")) != &"HaulResource":
+	var job_type: StringName = StringName(current_job.get("type", &""))
+	if job_type != &"HaulResource" and job_type != &"HaulStockpileToDepot":
 		return
 	var owner_id: int = get_instance_id()
 	var owned: Object = _find_owned_handcart(owner_id)

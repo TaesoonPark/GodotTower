@@ -12,7 +12,7 @@ class_name JobPriorityData
 
 func get_priority(job_type: StringName) -> int:
 	match job_type:
-		&"Haul", &"HaulResource":
+		&"Haul", &"HaulResource", &"HaulStockpileToDepot":
 			return haul
 		&"Gather", &"PlantCrop", &"HarvestCrop":
 			return gather

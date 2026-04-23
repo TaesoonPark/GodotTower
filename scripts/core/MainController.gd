@@ -5,6 +5,9 @@ const RAIDER_SCENE: PackedScene = preload("res://scenes/units/Raider.tscn")
 const ZOMBIE_SCENE: PackedScene = preload("res://scenes/units/Zombie.tscn")
 const GATHERABLE_SCENE: PackedScene = preload("res://scenes/world/Gatherable.tscn")
 const HUNTABLE_SCENE: PackedScene = preload("res://scenes/world/Huntable.tscn")
+const BUILDING_SITE_SCENE: PackedScene = preload("res://scenes/world/BuildingSite.tscn")
+const STOCKPILE_ZONE_SCENE: PackedScene = preload("res://scenes/world/StockpileZone.tscn")
+const FARM_ZONE_SCENE: PackedScene = preload("res://scenes/world/FarmZone.tscn")
 const WORKSTATION_DEPOT_SCRIPT: Script = preload("res://scripts/core/WorkstationDepot.gd")
 const BUILDING_DEF_DIR := "res://data/buildings"
 const RECIPE_DEF_DIR := "res://data/recipes"
@@ -12,6 +15,11 @@ const WORKSTATION_DEF_DIR := "res://data/workstations"
 const CROP_DEF_DIR := "res://data/crops"
 const RESEARCH_DEF_DIR := "res://data/research"
 const RESEARCH_REQUIRED_POINTS_SCALE: float = 0.1
+const SAVE_VERSION: int = 1
+const DEFAULT_AUTOSAVE_SLOT_ID: String = "slot_0"
+const SAVE_DIR: String = "user://saves"
+const SAVE_FILE_SUFFIX: String = "_autosave.json"
+const AUTOSAVE_INTERVAL_SEC: float = 60.0
 const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
 const ENEMY_FLOW_FIELD_SERVICE_SCRIPT: Script = preload("res://scripts/systems/EnemyFlowFieldService.gd")
 const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
@@ -20,6 +28,7 @@ const HANDCART_SCRIPT: Script = preload("res://scripts/core/Handcart.gd")
 const DEFAULT_LOADOUT: ColonistLoadoutData = preload("res://data/colonists/default_loadout.tres")
 const RESOURCE_DROP_SCENE: PackedScene = preload("res://scenes/world/ResourceDrop.tscn")
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
+const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
 const WORLD_SIZE: Vector2 = Vector2(7680.0, 4320.0)
 const TILE_SIZE: float = 40.0
 const EDGE_SCROLL_MARGIN: float = 18.0
@@ -183,6 +192,9 @@ var _colonist_idle_state_by_id: Dictionary = {}
 var _group_cache: Dictionary = {}
 var _group_cache_dirty: Dictionary = {}
 var _job_liveness_next_ms: int = 0
+var _autosave_enabled: bool = false
+var _next_autosave_ms: int = 0
+var _save_load_in_progress: bool = false
 
 func _ready() -> void:
 	add_to_group("main_controller")
@@ -324,6 +336,10 @@ func _ready() -> void:
 	_wire_existing_world_signals()
 	_cached_alive_enemies = _get_alive_raiders()
 	_refresh_demolish_overlay_state()
+	_autosave_enabled = _is_primary_main_scene_run()
+	if _autosave_enabled and has_save_slot(DEFAULT_AUTOSAVE_SLOT_ID):
+		load_game_from_slot(DEFAULT_AUTOSAVE_SLOT_ID)
+	_schedule_next_autosave()
 	_maybe_start_auto_raid_benchmark()
 	if _is_gui_playtest_hints_enabled():
 		call_deferred("_emit_gui_playtest_hints")
@@ -476,6 +492,1369 @@ func _process(delta: float) -> void:
 	if _has_pending_dispatch():
 		_dispatch_event_updates()
 	_check_job_liveness_watchdog()
+	_process_autosave_timer()
+
+func has_save_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	return FileAccess.file_exists(_save_slot_path(slot_id))
+
+func save_game_to_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if _save_load_in_progress:
+		return false
+	var safe_slot: String = _sanitize_save_slot_id(slot_id)
+	var dir_error: Error = DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(SAVE_DIR))
+	if dir_error != OK:
+		push_warning("Autosave directory create failed: %s" % error_string(dir_error))
+		return false
+	var path: String = _save_slot_path(safe_slot)
+	var file: FileAccess = FileAccess.open(path, FileAccess.WRITE)
+	if file == null:
+		push_warning("Autosave open failed: %s" % error_string(FileAccess.get_open_error()))
+		return false
+	_save_load_in_progress = true
+	var payload: Dictionary = _build_save_payload(safe_slot)
+	file.store_string(JSON.stringify(payload, "\t"))
+	_save_load_in_progress = false
+	return true
+
+func load_game_from_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if _save_load_in_progress:
+		return false
+	var path: String = _save_slot_path(slot_id)
+	if not FileAccess.file_exists(path):
+		return false
+	var raw: String = FileAccess.get_file_as_string(path)
+	var parsed: Variant = JSON.parse_string(raw)
+	if not (parsed is Dictionary):
+		push_warning("Autosave parse failed: %s" % path)
+		return false
+	var payload: Dictionary = parsed
+	if int(payload.get("version", 0)) != SAVE_VERSION:
+		push_warning("Autosave version mismatch: %s" % path)
+		return false
+	_save_load_in_progress = true
+	var ok: bool = _apply_save_payload(payload)
+	_save_load_in_progress = false
+	if ok:
+		_schedule_next_autosave()
+	return ok
+
+func _is_primary_main_scene_run() -> bool:
+	var tree: SceneTree = get_tree()
+	return tree != null and tree.current_scene == self
+
+func _process_autosave_timer() -> void:
+	if not _autosave_enabled or _save_load_in_progress:
+		return
+	if _next_autosave_ms <= 0:
+		_schedule_next_autosave()
+	var now_ms: int = Time.get_ticks_msec()
+	if now_ms < _next_autosave_ms:
+		return
+	if save_game_to_slot(DEFAULT_AUTOSAVE_SLOT_ID):
+		_schedule_next_autosave()
+	else:
+		_next_autosave_ms = now_ms + 5000
+
+func _schedule_next_autosave() -> void:
+	if not _autosave_enabled:
+		_next_autosave_ms = 0
+		return
+	_next_autosave_ms = Time.get_ticks_msec() + int(round(AUTOSAVE_INTERVAL_SEC * 1000.0))
+
+func _save_slot_path(slot_id: String) -> String:
+	return "%s/%s%s" % [SAVE_DIR, _sanitize_save_slot_id(slot_id), SAVE_FILE_SUFFIX]
+
+func _sanitize_save_slot_id(slot_id: String) -> String:
+	var safe: String = slot_id.strip_edges()
+	safe = safe.replace("/", "_").replace("\\", "_").replace(":", "_").replace("..", "_")
+	if safe.is_empty():
+		return DEFAULT_AUTOSAVE_SLOT_ID
+	return safe
+
+func _build_save_payload(slot_id: String) -> Dictionary:
+	var craft_state: Dictionary = _save_craft_state()
+	return {
+		"version": SAVE_VERSION,
+		"slot_id": slot_id,
+		"saved_unix_time": Time.get_unix_time_from_system(),
+		"time": {
+			"elapsed_game_seconds": _elapsed_game_seconds,
+			"game_paused": _game_paused,
+			"speed_scale": _speed_scale,
+			"camera_pos": _vector2_to_save(camera.global_position if camera != null else WORLD_SIZE * 0.5),
+			"camera_zoom": _vector2_to_save(camera.zoom if camera != null else Vector2.ONE)
+		},
+		"ui": {
+			"outfit_mode": String(_outfit_mode),
+			"selected_workstation_id": String(selected_workstation_id)
+		},
+		"resources": _dict_int_to_save(resource_stock),
+		"research": {
+			"completed": _dict_bool_to_save(_research_completed),
+			"active_id": String(_active_research_id),
+			"points": _active_research_points,
+			"running": _research_running
+		},
+		"craft": craft_state,
+		"colonists": _save_colonists(),
+		"world": {
+			"gatherables": _save_gatherables(),
+			"huntables": _save_huntables(),
+			"drops": _save_resource_drops(_collect_carried_haul_drops()),
+			"stockpiles": _save_stockpile_zones(),
+			"farms": _save_farm_zones(),
+			"build_sites": _save_build_sites(),
+			"structures": _save_direct_structures(),
+			"rally": _save_rally_state()
+		},
+		"raid": _save_raid_state()
+	}
+
+func _apply_save_payload(payload: Dictionary) -> bool:
+	_reset_world_for_load()
+	_apply_time_save(payload.get("time", {}))
+	_apply_ui_save(payload.get("ui", {}))
+	resource_stock = _resource_stock_from_save(payload.get("resources", {}))
+	_apply_research_save(payload.get("research", {}))
+	var colonist_by_name: Dictionary = _restore_colonists(payload.get("colonists", []))
+	var craft_state: Dictionary = payload.get("craft", {})
+	_restore_world_save(payload.get("world", {}), colonist_by_name, craft_state)
+	_restore_craft_state(craft_state)
+	_apply_raid_save(payload.get("raid", {}))
+	_finalize_loaded_state()
+	return true
+
+func _reset_world_for_load() -> void:
+	_clear_pending_placement()
+	for colonist in selected_colonists:
+		if colonist != null and is_instance_valid(colonist) and colonist.has_method("set_selected"):
+			colonist.set_selected(false)
+	selected_colonists.clear()
+	colonists.clear()
+	_colonist_idle_state_by_id.clear()
+	_need_job_refresh_next_ms_by_colonist.clear()
+	_pending_handcart_use_by_colonist.clear()
+	_equipped_top_ids.clear()
+	_equipped_bottom_ids.clear()
+	_equipped_hat_ids.clear()
+	_equipped_weapon_ids.clear()
+	_equipped_weapon_kind.clear()
+	_combat_tile_claims.clear()
+	_cached_alive_enemies.clear()
+	_clear_saved_world_nodes()
+	_reset_job_runtime_for_load()
+	_reset_build_runtime_for_load()
+	_workstation_depots.clear()
+	_init_group_cache()
+	_mark_all_group_cache_dirty()
+
+func _clear_saved_world_nodes() -> void:
+	var seen: Dictionary = {}
+	var group_names: Array[StringName] = [
+		&"colonists", &"raiders", &"zombies", &"gatherables", &"huntables",
+		&"resource_drops", &"stockpile_zones", &"farm_zones", &"build_sites",
+		&"structures", &"handcarts"
+	]
+	for group_name in group_names:
+		for node in get_tree().get_nodes_in_group(group_name):
+			if node == null or not is_instance_valid(node):
+				continue
+			var id: int = node.get_instance_id()
+			if seen.has(id):
+				continue
+			seen[id] = true
+			_queue_free_without_groups(node)
+	for depot in _workstation_depots.values():
+		if depot != null and is_instance_valid(depot):
+			_queue_free_without_groups(depot)
+	if _rally_flag_node != null and is_instance_valid(_rally_flag_node):
+		_rally_flag_node.queue_free()
+	_rally_flag_node = null
+
+func _queue_free_without_groups(node: Node) -> void:
+	var groups: Array = node.get_groups().duplicate()
+	for group_any in groups:
+		node.remove_from_group(StringName(group_any))
+	node.queue_free()
+
+func _reset_job_runtime_for_load() -> void:
+	if job_system == null or not is_instance_valid(job_system):
+		return
+	if "_jobs" in job_system:
+		job_system._jobs.clear()
+	if "_reserved_craft_slot_ids" in job_system:
+		job_system._reserved_craft_slot_ids.clear()
+	if "_reserved_drop_ids" in job_system:
+		job_system._reserved_drop_ids.clear()
+	if "_craft_queues" in job_system:
+		job_system._craft_queues.clear()
+	if "_paused_craft_workstations" in job_system:
+		job_system._paused_craft_workstations.clear()
+	if "_rallied_colonist_ids" in job_system:
+		job_system._rallied_colonist_ids.clear()
+	if job_system.has_method("exit_raid_mode"):
+		job_system.exit_raid_mode()
+	job_system.mark_haul_dirty()
+	job_system.mark_craft_dirty()
+	job_system.mark_research_dirty()
+	job_system.mark_designation_dirty()
+	job_system.mark_repair_dirty()
+	job_system.mark_combat_dirty()
+
+func _reset_build_runtime_for_load() -> void:
+	if build_system == null or not is_instance_valid(build_system):
+		return
+	if "_sites" in build_system:
+		build_system._sites.clear()
+	if "_zones" in build_system:
+		build_system._zones.clear()
+	if "_cached_structures" in build_system:
+		build_system._cached_structures.clear()
+	if "_structures_cache_dirty" in build_system:
+		build_system._structures_cache_dirty = true
+
+func _apply_time_save(time_state: Variant) -> void:
+	if not (time_state is Dictionary):
+		time_state = {}
+	var state: Dictionary = time_state
+	_elapsed_game_seconds = maxf(0.0, float(state.get("elapsed_game_seconds", 0.0)))
+	_game_paused = bool(state.get("game_paused", false))
+	_speed_scale = clampf(float(state.get("speed_scale", 1.0)), 0.25, 8.0)
+	if camera != null:
+		camera.global_position = _load_vector2(state.get("camera_pos", WORLD_SIZE * 0.5), WORLD_SIZE * 0.5)
+		camera.zoom = _load_vector2(state.get("camera_zoom", Vector2.ONE), Vector2.ONE)
+
+func _apply_ui_save(ui_state: Variant) -> void:
+	if not (ui_state is Dictionary):
+		ui_state = {}
+	var state: Dictionary = ui_state
+	_outfit_mode = StringName(state.get("outfit_mode", String(_outfit_mode)))
+	var ws_id: StringName = StringName(state.get("selected_workstation_id", String(selected_workstation_id)))
+	if ws_id != &"" and workstation_lookup.has(ws_id):
+		selected_workstation_id = ws_id
+	elif not workstation_lookup.is_empty():
+		selected_workstation_id = StringName(workstation_lookup.keys()[0])
+	current_action = &"Interact"
+
+func _apply_research_save(research_state: Variant) -> void:
+	if not (research_state is Dictionary):
+		research_state = {}
+	var state: Dictionary = research_state
+	_research_completed = _string_name_bool_dict_from_save(state.get("completed", {}))
+	_active_research_id = StringName(state.get("active_id", ""))
+	_active_research_points = maxf(0.0, float(state.get("points", 0.0)))
+	_research_running = bool(state.get("running", false)) and _active_research_id != &""
+	_reset_research_bonuses_for_load()
+	var keys: Array = _research_completed.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	for key_any in keys:
+		var research_id: StringName = StringName(key_any)
+		if bool(_research_completed.get(research_id, false)):
+			_apply_research_bonus(research_id)
+
+func _reset_research_bonuses_for_load() -> void:
+	_farm_growth_multiplier = 1.0
+	_combat_accuracy_bonus_from_research = 0.0
+	_build_speed_bonus_from_research = 1.0
+	_repair_speed_bonus_from_research = 1.0
+	_haul_urgency_bonus_from_research = 1.0
+	_rest_recover_bonus_from_research = 1.0
+	_trap_damage_bonus_from_research = 1.0
+	_raid_reward_bonus_from_research = 1.0
+	_trap_range_bonus_from_research = 1.0
+	_enemy_drop_bonus_from_research = 1.0
+	_trap_cooldown_bonus_from_research = 1.0
+	_farm_yield_bonus_from_research = 1.0
+	_farm_resilience_bonus_from_research = 1.0
+	_enemy_night_slow_bonus_from_research = 1.0
+
+func _restore_colonists(rows: Variant) -> Dictionary:
+	var by_name: Dictionary = {}
+	if not (rows is Array):
+		return by_name
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var colonist: Node = COLONIST_SCENE.instantiate()
+		var saved_name: String = String(row.get("name", "Colonist%d" % [colonists.size() + 1]))
+		colonist.name = saved_name
+		colonist.global_position = _snap_to_tile(_load_vector2(row.get("pos", WORLD_SIZE * 0.5), WORLD_SIZE * 0.5))
+		if colonist.has_method("set_tile_size"):
+			colonist.set_tile_size(TILE_SIZE)
+		_connect_loaded_colonist_signals(colonist)
+		units_root.add_child(colonist)
+		colonist.set("health", float(row.get("health", colonist.get("health"))))
+		colonist.set("hunger", float(row.get("hunger", colonist.get("hunger"))))
+		colonist.set("rest", float(row.get("rest", colonist.get("rest"))))
+		colonist.set("mood", float(row.get("mood", colonist.get("mood"))))
+		_restore_colonist_priorities(colonist, row.get("priorities", {}))
+		_restore_colonist_work_toggles(colonist, row.get("work_enabled", {}))
+		if colonist.has_method("set_equipment_slots"):
+			colonist.set_equipment_slots(_string_name_dict_from_save(row.get("equipment", {})))
+		if colonist.has_method("emit_status"):
+			colonist.emit_status()
+		_colonist_idle_state_by_id[colonist.get_instance_id()] = true
+		colonists.append(colonist)
+		by_name[saved_name] = colonist
+	return by_name
+
+func _connect_loaded_colonist_signals(colonist: Node) -> void:
+	colonist.status_changed.connect(_on_colonist_status_changed)
+	colonist.resource_harvested.connect(_on_resource_harvested)
+	colonist.resource_delivered.connect(_on_resource_delivered)
+	colonist.workstation_supply_picked.connect(_on_workstation_supply_picked)
+	colonist.workstation_supply_delivered.connect(_on_workstation_supply_delivered)
+	colonist.workstation_supply_returned.connect(_on_workstation_supply_returned)
+	colonist.craft_completed.connect(_on_craft_completed)
+	colonist.structure_demolished.connect(_on_structure_demolished)
+	colonist.research_progressed.connect(_on_research_progressed)
+	colonist.haul_job_released.connect(_on_haul_job_released)
+	colonist.ate_food.connect(_on_colonist_ate_food)
+	colonist.died.connect(_on_colonist_died)
+
+func _restore_world_save(world_state: Variant, colonist_by_name: Dictionary, craft_state: Dictionary) -> void:
+	if not (world_state is Dictionary):
+		world_state = {}
+	var state: Dictionary = world_state
+	_restore_gatherables(state.get("gatherables", []))
+	_restore_huntables(state.get("huntables", []))
+	_restore_stockpile_zones(state.get("stockpiles", []))
+	_restore_farm_zones(state.get("farms", []))
+	_restore_build_sites(state.get("build_sites", []))
+	_restore_direct_structures(state.get("structures", []), colonist_by_name)
+	_restore_workstation_depots(craft_state)
+	_restore_resource_drops(state.get("drops", []))
+	_restore_rally_state(state.get("rally", {}))
+
+func _restore_gatherables(rows: Variant) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var node: Node2D = GATHERABLE_SCENE.instantiate()
+		node.global_position = _snap_to_tile(_load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO))
+		node.set("resource_type", StringName(row.get("resource_type", "Wood")))
+		node.set("display_name", String(row.get("display_name", "Resource")))
+		node.set("max_amount", maxi(1, int(row.get("max_amount", 1))))
+		node.set("gather_per_tick", maxi(1, int(row.get("gather_per_tick", 1))))
+		node.set("tint", _load_color(row.get("tint", {}), Color(0.3, 0.65, 0.35, 1.0)))
+		world_root.add_child(node)
+		node.set("current_amount", maxi(0, int(row.get("current_amount", node.get("max_amount")))))
+		node.set("job_queued", false)
+		node.set("designated", bool(row.get("designated", false)))
+		if node.has_method("_refresh_visual"):
+			node.call("_refresh_visual")
+
+func _restore_huntables(rows: Variant) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var node: Node2D = HUNTABLE_SCENE.instantiate()
+		node.global_position = _snap_to_tile(_load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO))
+		node.set("display_name", String(row.get("display_name", "Animal")))
+		node.set("max_health", maxi(1, int(row.get("max_health", 1))))
+		node.set("hunt_damage_per_tick", maxi(1, int(row.get("hunt_damage_per_tick", 1))))
+		node.set("meat_type", StringName(row.get("meat_type", "FoodRaw")))
+		node.set("meat_yield", maxi(0, int(row.get("meat_yield", 0))))
+		node.set("tint", _load_color(row.get("tint", {}), Color(0.78, 0.56, 0.36, 1.0)))
+		world_root.add_child(node)
+		node.set("health", maxi(0, int(row.get("health", node.get("max_health")))))
+		node.set("job_queued", false)
+		node.set("designated", bool(row.get("designated", false)))
+		if node.has_method("_refresh_visual"):
+			node.call("_refresh_visual")
+
+func _restore_resource_drops(rows: Variant) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var amount: int = int(row.get("amount", 0))
+		if amount <= 0:
+			continue
+		var drop: Node = _spawn_resource_drop(
+			StringName(row.get("resource_type", "Wood")),
+			amount,
+			_load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO)
+		)
+		if drop == null or not is_instance_valid(drop):
+			continue
+		drop.set("job_queued", false)
+		if bool(row.get("craft_supply", false)):
+			drop.set_meta("craft_supply", true)
+		var target_ws: StringName = StringName(row.get("target_workstation_id", ""))
+		if target_ws != &"" and _workstation_depots.has(target_ws):
+			var depot: Node = _workstation_depots[target_ws]
+			if depot != null and is_instance_valid(depot):
+				drop.set_meta("craft_supply", true)
+				drop.set_meta("preferred_zone_id", depot.get_instance_id())
+
+func _restore_stockpile_zones(rows: Variant) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var zone: Node = STOCKPILE_ZONE_SCENE.instantiate()
+		world_root.add_child(zone)
+		var pos: Vector2 = _load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO)
+		var size: Vector2 = _load_vector2(row.get("size", Vector2(120, 80)), Vector2(120, 80))
+		if zone.has_method("setup_from_rect"):
+			zone.setup_from_rect(Rect2(pos - size * 0.5, size))
+		zone.set("stored", _string_name_int_dict_from_save(row.get("stored", {})))
+		zone.set("filter_mode", int(row.get("filter_mode", 0)))
+		zone.set("filter_types", _string_name_array_from_save(row.get("filter_types", [])))
+		zone.set("zone_priority", int(row.get("zone_priority", 0)))
+		zone.set("resource_limits", _string_name_int_dict_from_save(row.get("resource_limits", {})))
+		zone.set("preset_id", StringName(row.get("preset_id", "All")))
+		if zone.has_method("_refresh_shape"):
+			zone.call("_refresh_shape")
+		elif zone.has_method("_update_label"):
+			zone.call("_update_label")
+		_track_loaded_zone(zone)
+		_on_stockpile_zone_added(zone)
+
+func _restore_farm_zones(rows: Variant) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var zone: Node = FARM_ZONE_SCENE.instantiate()
+		world_root.add_child(zone)
+		var pos: Vector2 = _load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO)
+		var size: Vector2 = _load_vector2(row.get("size", Vector2(120, 80)), Vector2(120, 80))
+		if zone.has_method("setup_from_rect"):
+			zone.setup_from_rect(Rect2(pos - size * 0.5, size))
+		_configure_farm_zone_catalog(zone)
+		zone.set("crop_type", StringName(row.get("crop_type", "")))
+		zone.set("zone_fertility", float(row.get("zone_fertility", 1.0)))
+		zone.set("growth_time_multiplier", float(row.get("growth_time_multiplier", 1.0)))
+		zone.set("yield_multiplier", float(row.get("yield_multiplier", 1.0)))
+		zone.set("fertility_resilience", float(row.get("fertility_resilience", 1.0)))
+		zone.set("_plots", _plots_from_save(row.get("plots", [])))
+		if zone.has_method("_refresh_shape"):
+			zone.call("_refresh_shape")
+		if zone.has_method("_refresh_plot_markers"):
+			zone.call("_refresh_plot_markers")
+		if zone.has_method("_refresh_label"):
+			zone.call("_refresh_label")
+		_track_loaded_zone(zone)
+		_on_farm_zone_added(zone)
+
+func _restore_build_sites(rows: Variant) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var building_id: StringName = StringName(row.get("building_id", ""))
+		var def: Resource = _find_building_def(building_id)
+		if def == null:
+			continue
+		var complete: bool = bool(row.get("complete", false))
+		var site: Node = BUILDING_SITE_SCENE.instantiate()
+		world_root.add_child(site)
+		site.global_position = _snap_to_tile(_load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO))
+		if site.has_method("setup_building"):
+			site.setup_building(def, complete)
+		site.set("work_progress", float(row.get("work_progress", site.get("work_progress"))))
+		site.set("complete", complete)
+		site.set("job_queued", false)
+		var materials_delivered: bool = bool(row.get("materials_delivered", complete))
+		site.set("materials_delivered", materials_delivered)
+		site.set_meta("materials_delivered", materials_delivered)
+		_apply_structure_runtime_from_save(site, row.get("runtime", {}))
+		if site.has_method("_update_visual"):
+			site.call("_update_visual")
+		_track_loaded_build_site(site)
+		_on_build_site_added(site)
+		if complete:
+			_on_structure_added(site)
+
+func _restore_direct_structures(rows: Variant, colonist_by_name: Dictionary) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var building_id: StringName = StringName(row.get("building_id", ""))
+		if building_id == &"":
+			continue
+		var node: Node = _spawn_loaded_direct_structure(building_id, _load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO))
+		if node == null or not is_instance_valid(node):
+			continue
+		_apply_structure_runtime_from_save(node, row.get("runtime", {}))
+		_restore_assigned_colonist_meta(node, String(row.get("assigned_colonist", "")), colonist_by_name)
+		_on_structure_added(node)
+
+func _spawn_loaded_direct_structure(building_id: StringName, pos: Vector2) -> Node:
+	var snapped: Vector2 = _snap_to_tile(pos)
+	match building_id:
+		&"InstalledBed":
+			_spawn_installed_bed(snapped)
+			return _find_structure_by_building_near(snapped, &"InstalledBed", 4.0)
+		&"InstalledHandcart":
+			return _spawn_installed_handcart(snapped)
+		_:
+			var def: Resource = _find_building_def(building_id)
+			if def == null:
+				return null
+			var placed := Node2D.new()
+			placed.name = "Built_%s" % String(building_id)
+			placed.global_position = snapped
+			if build_system != null and is_instance_valid(build_system) and build_system.has_method("_apply_structure_metas"):
+				build_system.call("_apply_structure_metas", placed, def)
+			else:
+				placed.add_to_group("structures")
+				placed.set_meta("building_id", building_id)
+				placed.set_meta("footprint_size", def.footprint_size)
+			var sprite := Sprite2D.new()
+			var sprite_tex: Texture2D = GAME_SPRITE.get_building_texture(building_id)
+			if sprite_tex != null:
+				sprite.texture = sprite_tex
+			else:
+				sprite.texture = _make_loaded_block_texture(int(def.footprint_size.x), int(def.footprint_size.y), def.direct_place_color)
+			placed.add_child(sprite)
+			world_root.add_child(placed)
+			return placed
+
+func _restore_workstation_depots(craft_state: Dictionary) -> void:
+	var depot_rows: Variant = craft_state.get("depots", {})
+	if depot_rows is Dictionary:
+		for ws_any in depot_rows.keys():
+			var ws_id: StringName = StringName(ws_any)
+			var row_any: Variant = depot_rows[ws_any]
+			if not (row_any is Dictionary):
+				continue
+			var row: Dictionary = row_any
+			var pos: Vector2 = _load_vector2(row.get("pos", _find_workstation_pos(ws_id)), _find_workstation_pos(ws_id))
+			if pos == Vector2.INF:
+				continue
+			var depot: Node = _ensure_workstation_depot(ws_id, pos)
+			if depot == null:
+				continue
+			depot.set("stored", _string_name_int_dict_from_save(row.get("stored", {})))
+			depot.set("requested", _string_name_int_dict_from_save(row.get("requested", {})))
+			depot.set("pending", _string_name_int_dict_from_save(row.get("pending", {})))
+	var returns: Variant = craft_state.get("interrupted_returns", {})
+	if not (returns is Dictionary):
+		return
+	for ws_any in returns.keys():
+		var ws_id: StringName = StringName(ws_any)
+		var returned: Dictionary = _string_name_int_dict_from_save(returns[ws_any])
+		if returned.is_empty():
+			continue
+		var depot: Node = _workstation_depots.get(ws_id, null)
+		var depot_pos: Vector2 = _find_workstation_pos(ws_id)
+		if (depot == null or not is_instance_valid(depot)) and depot_pos != Vector2.INF:
+			depot = _ensure_workstation_depot(ws_id, depot_pos)
+		for resource_any in returned.keys():
+			var resource_type: StringName = StringName(resource_any)
+			var amount: int = int(returned[resource_any])
+			if amount <= 0:
+				continue
+			if depot != null and is_instance_valid(depot):
+				var stored: Dictionary = depot.get("stored")
+				stored[resource_type] = int(stored.get(resource_type, 0)) + amount
+				depot.set("stored", stored)
+			else:
+				_spawn_resource_drop(resource_type, amount, camera.global_position if camera != null else WORLD_SIZE * 0.5)
+
+func _restore_craft_state(craft_state: Variant) -> void:
+	if job_system == null or not is_instance_valid(job_system):
+		return
+	if not (craft_state is Dictionary):
+		craft_state = {}
+	var state: Dictionary = craft_state
+	job_system._craft_queues = _craft_queues_from_save(state.get("queues", {}))
+	job_system._paused_craft_workstations = _string_name_bool_dict_from_save(state.get("paused", {}))
+	job_system.mark_craft_dirty()
+	job_system.mark_assign_dirty()
+
+func _apply_raid_save(raid_state: Variant) -> void:
+	if not (raid_state is Dictionary):
+		raid_state = {}
+	var state: Dictionary = raid_state
+	_raid_state = StringName(state.get("state", "Idle"))
+	_raid_warning_timer = maxf(0.0, float(state.get("warning_timer", 0.0)))
+	_raid_wave_size = maxi(0, int(state.get("wave_size", 0)))
+	_raid_wave_kind = StringName(state.get("wave_kind", "RaiderOnly"))
+	_restore_enemies(state.get("enemies", []))
+	if _raid_state == &"Active" and job_system != null and is_instance_valid(job_system) and job_system.has_method("enter_raid_mode"):
+		job_system.enter_raid_mode()
+
+func _restore_enemies(rows: Variant) -> void:
+	if not (rows is Array):
+		return
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var enemy_type: StringName = StringName(row.get("type", "Raider"))
+		var scene: PackedScene = ZOMBIE_SCENE if enemy_type == &"Zombie" else RAIDER_SCENE
+		var enemy: Node2D = scene.instantiate()
+		enemy.global_position = _snap_to_tile(_load_vector2(row.get("pos", Vector2.ZERO), Vector2.ZERO))
+		if enemy.has_method("set_tile_size"):
+			enemy.set_tile_size(TILE_SIZE)
+		units_root.add_child(enemy)
+		if enemy.has_method("set_equipment_slots"):
+			enemy.set_equipment_slots(_string_name_dict_from_save(row.get("equipment", {})))
+		enemy.set("health", float(row.get("health", enemy.get("health"))))
+		if enemy.has_method("_refresh_label"):
+			enemy.call("_refresh_label")
+		_connect_enemy_signals(enemy)
+
+func _finalize_loaded_state() -> void:
+	_refresh_building_catalog()
+	hud.set_workstation_catalog(workstation_lookup.values())
+	hud.set_selected_workstation(selected_workstation_id)
+	hud.set_recipe_catalog(_filter_recipes_for_workstation(selected_workstation_id))
+	hud.set_research_catalog(
+		_get_research_catalog(),
+		_active_research_id,
+		_get_research_lock_map(),
+		_get_research_prereq_map(),
+		_get_research_tree_rows()
+	)
+	hud.set_resource_stock(resource_stock)
+	hud.set_active_action(&"Interact")
+	hud.set_command_button_states(current_action)
+	hud.set_outfit_mode(_outfit_mode)
+	hud.set_raid_state(_raid_state, _raid_warning_timer, _raid_wave_kind)
+	hud.set_time_flow_state(_game_paused, _speed_scale, _elapsed_game_seconds)
+	hud.set_research_state(_active_research_id, _active_research_points, _active_research_required_points(), _research_completed)
+	hud.set_craft_panel_visible(false)
+	hud.set_selected_count(0)
+	_seed_equipment_maps_from_colonists()
+	_apply_time_scale()
+	_clamp_camera()
+	_mark_all_group_cache_dirty()
+	_mark_pathing_dirty()
+	_mark_combat_dirty()
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_mark_maintenance_dirty()
+	_mark_farm_dirty()
+	_hud_dirty = true
+	_hud_time_dirty = true
+	_hud_selection_dirty = true
+	_cached_alive_enemies = _get_alive_raiders()
+	_refresh_demolish_overlay_state()
+	_queue_event_dispatch()
+
+func _save_colonists() -> Array:
+	var rows: Array = []
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		rows.append({
+			"name": String(colonist.name),
+			"pos": _vector2_to_save(colonist.global_position),
+			"health": float(colonist.get("health")),
+			"hunger": float(colonist.get("hunger")),
+			"rest": float(colonist.get("rest")),
+			"mood": float(colonist.get("mood")),
+			"work_enabled": _dict_bool_to_save(colonist.get("work_enabled")),
+			"priorities": _save_colonist_priorities(colonist),
+			"equipment": _dict_string_to_save(colonist.get_equipment_snapshot() if colonist.has_method("get_equipment_snapshot") else {})
+		})
+	return rows
+
+func _save_colonist_priorities(colonist: Node) -> Dictionary:
+	var out: Dictionary = {}
+	var priorities: Variant = colonist.get("priorities")
+	if priorities == null:
+		return out
+	for key in ["haul", "build", "craft", "gather", "hunt", "combat", "idle", "eat"]:
+		out[key] = int(priorities.get(key))
+	return out
+
+func _restore_colonist_priorities(colonist: Node, saved: Variant) -> void:
+	if not (saved is Dictionary):
+		return
+	var priorities: Variant = colonist.get("priorities")
+	if priorities == null:
+		return
+	for key in ["haul", "build", "craft", "gather", "hunt", "combat", "idle", "eat"]:
+		if saved.has(key):
+			priorities.set(key, int(saved[key]))
+
+func _restore_colonist_work_toggles(colonist: Node, saved: Variant) -> void:
+	if not (saved is Dictionary):
+		return
+	for key_any in saved.keys():
+		var work_type: StringName = StringName(key_any)
+		if colonist.has_method("set_work_enabled"):
+			colonist.set_work_enabled(work_type, bool(saved[key_any]))
+
+func _save_gatherables() -> Array:
+	var rows: Array = []
+	for node in _get_group_nodes_cached(&"gatherables"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.has_method("is_depleted") and bool(node.is_depleted()):
+			continue
+		rows.append({
+			"resource_type": String(node.get("resource_type")),
+			"display_name": String(node.get("display_name")),
+			"pos": _vector2_to_save(node.global_position),
+			"max_amount": int(node.get("max_amount")),
+			"current_amount": int(node.get("current_amount")),
+			"gather_per_tick": int(node.get("gather_per_tick")),
+			"tint": _color_to_save(node.get("tint")),
+			"designated": bool(node.get("designated"))
+		})
+	return rows
+
+func _save_huntables() -> Array:
+	var rows: Array = []
+	for node in _get_group_nodes_cached(&"huntables"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.has_method("is_dead") and bool(node.is_dead()):
+			continue
+		rows.append({
+			"display_name": String(node.get("display_name")),
+			"pos": _vector2_to_save(node.global_position),
+			"max_health": int(node.get("max_health")),
+			"health": int(node.get("health")),
+			"hunt_damage_per_tick": int(node.get("hunt_damage_per_tick")),
+			"meat_type": String(node.get("meat_type")),
+			"meat_yield": int(node.get("meat_yield")),
+			"tint": _color_to_save(node.get("tint")),
+			"designated": bool(node.get("designated"))
+		})
+	return rows
+
+func _save_resource_drops(extra_drops: Array) -> Array:
+	var rows: Array = []
+	for drop in _get_group_nodes_cached(&"resource_drops"):
+		if drop == null or not is_instance_valid(drop):
+			continue
+		if drop.has_method("is_empty") and bool(drop.is_empty()):
+			continue
+		var row: Dictionary = {
+			"resource_type": String(drop.get("resource_type")),
+			"amount": int(drop.get("amount")),
+			"pos": _vector2_to_save(drop.global_position),
+			"craft_supply": bool(drop.get_meta("craft_supply")) if drop.has_meta("craft_supply") else false
+		}
+		if drop.has_meta("preferred_zone_id"):
+			var target_ws: String = _workstation_id_for_zone_id(int(drop.get_meta("preferred_zone_id")))
+			if not target_ws.is_empty():
+				row["target_workstation_id"] = target_ws
+		rows.append(row)
+	for carried in extra_drops:
+		if carried is Dictionary:
+			rows.append(carried)
+	return rows
+
+func _collect_carried_haul_drops() -> Array:
+	var rows: Array = []
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		var job: Dictionary = colonist.get("current_job")
+		if StringName(job.get("type", &"")) != &"HaulResource":
+			continue
+		if StringName(job.get("phase", &"")) != &"to_zone":
+			continue
+		var amount: int = int(job.get("carried_amount", 0))
+		var resource_type: StringName = StringName(job.get("carried_type", &""))
+		if amount <= 0 or resource_type == &"":
+			continue
+		var row: Dictionary = {
+			"resource_type": String(resource_type),
+			"amount": amount,
+			"pos": _vector2_to_save(colonist.global_position),
+			"craft_supply": bool(job.get("as_craft_supply", false))
+		}
+		if bool(row["craft_supply"]):
+			var target_ws: String = _workstation_id_for_zone_id(int(job.get("zone_id", 0)))
+			if not target_ws.is_empty():
+				row["target_workstation_id"] = target_ws
+		rows.append(row)
+	return rows
+
+func _save_stockpile_zones() -> Array:
+	var rows: Array = []
+	for zone in _get_group_nodes_cached(&"stockpile_zones"):
+		if zone == null or not is_instance_valid(zone):
+			continue
+		rows.append({
+			"pos": _vector2_to_save(zone.global_position),
+			"size": _vector2_to_save(zone.get("zone_size")),
+			"stored": _dict_int_to_save(zone.get("stored")),
+			"filter_mode": int(zone.get("filter_mode")),
+			"filter_types": _string_name_array_to_save(zone.get("filter_types")),
+			"zone_priority": int(zone.get("zone_priority")),
+			"resource_limits": _dict_int_to_save(zone.get("resource_limits")),
+			"preset_id": String(zone.get("preset_id"))
+		})
+	return rows
+
+func _save_farm_zones() -> Array:
+	var rows: Array = []
+	for zone in _get_group_nodes_cached(&"farm_zones"):
+		if zone == null or not is_instance_valid(zone):
+			continue
+		rows.append({
+			"pos": _vector2_to_save(zone.global_position),
+			"size": _vector2_to_save(zone.get("zone_size")),
+			"crop_type": String(zone.get("crop_type")),
+			"zone_fertility": float(zone.get("zone_fertility")),
+			"growth_time_multiplier": float(zone.get("growth_time_multiplier")),
+			"yield_multiplier": float(zone.get("yield_multiplier")),
+			"fertility_resilience": float(zone.get("fertility_resilience")),
+			"plots": _plots_to_save(zone.get("_plots"))
+		})
+	return rows
+
+func _save_build_sites() -> Array:
+	var rows: Array = []
+	for site in _get_group_nodes_cached(&"build_sites"):
+		if site == null or not is_instance_valid(site):
+			continue
+		var building_id: StringName = StringName(site.get("building_id"))
+		if building_id == &"":
+			continue
+		rows.append({
+			"building_id": String(building_id),
+			"pos": _vector2_to_save(site.global_position),
+			"work_progress": float(site.get("work_progress")),
+			"complete": bool(site.get("complete")),
+			"materials_delivered": bool(site.get("materials_delivered")),
+			"runtime": _save_structure_runtime(site)
+		})
+	return rows
+
+func _save_direct_structures() -> Array:
+	var rows: Array = []
+	for node in _get_group_nodes_cached(&"structures"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if node.is_in_group("build_sites"):
+			continue
+		if not node.has_meta("building_id"):
+			continue
+		var assigned_name: String = ""
+		if node.has_meta("assigned_colonist_id"):
+			assigned_name = _colonist_name_for_id(int(node.get_meta("assigned_colonist_id")))
+		rows.append({
+			"building_id": String(node.get_meta("building_id")),
+			"pos": _vector2_to_save(node.global_position),
+			"runtime": _save_structure_runtime(node),
+			"assigned_colonist": assigned_name
+		})
+	return rows
+
+func _save_structure_runtime(node: Node) -> Dictionary:
+	var out: Dictionary = {}
+	for key in [
+		&"structure_health", &"structure_max_health", &"trap_charges",
+		&"trap_max_charges", &"trap_cooldown_left", &"assigned_colonist_id"
+	]:
+		if node.has_meta(key):
+			out[String(key)] = node.get_meta(key)
+	return out
+
+func _apply_structure_runtime_from_save(node: Node, saved: Variant) -> void:
+	if node == null or not is_instance_valid(node):
+		return
+	if saved is Dictionary:
+		var row: Dictionary = saved
+		for key_any in row.keys():
+			var key: StringName = StringName(key_any)
+			if key == &"assigned_colonist_id":
+				continue
+			node.set_meta(key, row[key_any])
+	if node.has_meta("repair_job_queued"):
+		node.set_meta("repair_job_queued", false)
+	if node.has_meta("demolish_job_queued"):
+		node.set_meta("demolish_job_queued", false)
+	if node.has_meta("trap_maint_job_queued"):
+		node.set_meta("trap_maint_job_queued", false)
+	var max_hp: float = float(node.get_meta("structure_max_health")) if node.has_meta("structure_max_health") else 0.0
+	var hp: float = float(node.get_meta("structure_health")) if node.has_meta("structure_health") else max_hp
+	if max_hp > 0.0:
+		STRUCTURE_HEALTH_BAR.update_bar(node, hp, max_hp)
+
+func _restore_assigned_colonist_meta(node: Node, colonist_name: String, colonist_by_name: Dictionary) -> void:
+	if colonist_name.is_empty() or not colonist_by_name.has(colonist_name):
+		if node.has_method("clear_owner"):
+			node.call("clear_owner")
+		elif node.has_meta("assigned_colonist_id"):
+			node.set_meta("assigned_colonist_id", 0)
+		return
+	var colonist: Node = colonist_by_name[colonist_name]
+	if colonist != null and is_instance_valid(colonist):
+		var colonist_id: int = colonist.get_instance_id()
+		if node.has_method("assign_owner") and bool(node.call("assign_owner", colonist_id)):
+			return
+		node.set_meta("assigned_colonist_id", colonist_id)
+
+func _save_rally_state() -> Dictionary:
+	return {
+		"exists": _rally_flag_node != null and is_instance_valid(_rally_flag_node),
+		"pos": _vector2_to_save(_combat_rally_point)
+	}
+
+func _restore_rally_state(saved: Variant) -> void:
+	if not (saved is Dictionary):
+		return
+	var row: Dictionary = saved
+	_combat_rally_point = _snap_to_tile(_load_vector2(row.get("pos", WORLD_SIZE * 0.5), WORLD_SIZE * 0.5))
+	if bool(row.get("exists", false)):
+		_set_combat_rally_point(_combat_rally_point)
+
+func _save_raid_state() -> Dictionary:
+	return {
+		"state": String(_raid_state),
+		"warning_timer": _raid_warning_timer,
+		"wave_size": _raid_wave_size,
+		"wave_kind": String(_raid_wave_kind),
+		"enemies": _save_enemies()
+	}
+
+func _save_enemies() -> Array:
+	var rows: Array = []
+	var groups: Array[StringName] = [&"raiders", &"zombies"]
+	for group_name in groups:
+		for enemy in _get_group_nodes_cached(group_name):
+			if enemy == null or not is_instance_valid(enemy):
+				continue
+			if enemy.has_method("is_dead") and bool(enemy.is_dead()):
+				continue
+			rows.append({
+				"type": "Zombie" if enemy.is_in_group("zombies") else "Raider",
+				"pos": _vector2_to_save(enemy.global_position),
+				"health": float(enemy.get("health")),
+				"equipment": _dict_string_to_save(enemy.get_equipment_snapshot() if enemy.has_method("get_equipment_snapshot") else {})
+			})
+	return rows
+
+func _save_craft_state() -> Dictionary:
+	var queues: Dictionary = _craft_queues_to_save(job_system._craft_queues if job_system != null and "_craft_queues" in job_system else {})
+	var interrupted_returns: Dictionary = {}
+	for job in _collect_interrupted_craft_jobs():
+		var ws_id: StringName = StringName(job.get("workstation_id", &""))
+		var recipe_id: StringName = StringName(job.get("recipe_id", &""))
+		if ws_id == &"" or recipe_id == &"" or not recipe_lookup.has(recipe_id):
+			continue
+		var recipe: Resource = recipe_lookup[recipe_id]
+		_merge_nested_int_dict(interrupted_returns, String(ws_id), recipe.ingredients)
+		if not _saved_queue_has_repeat_front(queues, ws_id, recipe_id):
+			if not queues.has(String(ws_id)):
+				queues[String(ws_id)] = []
+			var queue: Array = queues[String(ws_id)]
+			queue.insert(0, {
+				"recipe_id": String(recipe_id),
+				"workstation_id": String(ws_id),
+				"repeat": false
+			})
+			queues[String(ws_id)] = queue
+	_merge_carried_workstation_supply_returns(interrupted_returns)
+	return {
+		"queues": queues,
+		"paused": _dict_bool_to_save(job_system._paused_craft_workstations if job_system != null and "_paused_craft_workstations" in job_system else {}),
+		"depots": _save_workstation_depots(),
+		"interrupted_returns": interrupted_returns
+	}
+
+func _collect_interrupted_craft_jobs() -> Array:
+	var rows: Array = []
+	var seen: Dictionary = {}
+	if job_system != null and is_instance_valid(job_system) and "_jobs" in job_system:
+		for job in job_system._jobs:
+			_append_interrupted_craft_job(job, rows, seen)
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		_append_interrupted_craft_job(colonist.get("current_job"), rows, seen)
+	return rows
+
+func _append_interrupted_craft_job(job_any: Variant, rows: Array, seen: Dictionary) -> void:
+	if not (job_any is Dictionary):
+		return
+	var job: Dictionary = job_any
+	if StringName(job.get("type", &"")) != &"CraftRecipe":
+		return
+	var ws_id: StringName = StringName(job.get("workstation_id", &""))
+	var recipe_id: StringName = StringName(job.get("recipe_id", &""))
+	if ws_id == &"" or recipe_id == &"":
+		return
+	var slot_id: int = int(job.get("craft_slot_id", 0))
+	var sig: String = "%s|%s|%d" % [String(ws_id), String(recipe_id), slot_id]
+	if seen.has(sig):
+		return
+	seen[sig] = true
+	rows.append(job)
+
+func _merge_carried_workstation_supply_returns(interrupted_returns: Dictionary) -> void:
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		var job: Dictionary = colonist.get("current_job")
+		if StringName(job.get("type", &"")) != &"HaulStockpileToDepot":
+			continue
+		if StringName(job.get("phase", &"to_stockpile")) != &"to_depot":
+			continue
+		var ws_id: String = _workstation_id_for_zone_id(int(job.get("depot_id", 0)))
+		var resource_type: StringName = StringName(job.get("carried_type", job.get("resource_type", &"")))
+		var amount: int = int(job.get("carried_amount", 0))
+		if ws_id.is_empty() or resource_type == &"" or amount <= 0:
+			continue
+		var values: Dictionary = {}
+		values[resource_type] = amount
+		_merge_nested_int_dict(interrupted_returns, ws_id, values)
+
+func _save_workstation_depots() -> Dictionary:
+	var rows: Dictionary = {}
+	for ws_any in _workstation_depots.keys():
+		var ws_id: StringName = StringName(ws_any)
+		var depot: Node = _workstation_depots[ws_any]
+		if depot == null or not is_instance_valid(depot):
+			continue
+		rows[String(ws_id)] = {
+			"pos": _vector2_to_save(depot.global_position if depot is Node2D else Vector2.ZERO),
+			"stored": _dict_int_to_save(depot.get("stored")),
+			"requested": _dict_int_to_save(depot.get("requested")),
+			"pending": _dict_int_to_save(depot.get("pending"))
+		}
+	return rows
+
+func _track_loaded_zone(zone: Node) -> void:
+	if build_system != null and is_instance_valid(build_system) and "_zones" in build_system:
+		build_system._zones.append(zone)
+
+func _track_loaded_build_site(site: Node) -> void:
+	if build_system != null and is_instance_valid(build_system):
+		if "_sites" in build_system:
+			build_system._sites.append(site)
+		if build_system.has_method("_connect_tracked_site"):
+			build_system.call("_connect_tracked_site", site)
+		if "_structures_cache_dirty" in build_system:
+			build_system._structures_cache_dirty = true
+
+func _seed_equipment_maps_from_colonists() -> void:
+	_equipped_top_ids.clear()
+	_equipped_bottom_ids.clear()
+	_equipped_hat_ids.clear()
+	_equipped_weapon_ids.clear()
+	_equipped_weapon_kind.clear()
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		var equipment: Dictionary = colonist.get_equipment_snapshot() if colonist.has_method("get_equipment_snapshot") else {}
+		var cid: int = colonist.get_instance_id()
+		var top: StringName = StringName(equipment.get(&"Top", &""))
+		var bottom: StringName = StringName(equipment.get(&"Bottom", &""))
+		var hat: StringName = StringName(equipment.get(&"Hat", &""))
+		var weapon: StringName = StringName(equipment.get(&"Weapon", &""))
+		if top != &"":
+			_equipped_top_ids[cid] = true
+		if bottom != &"":
+			_equipped_bottom_ids[cid] = true
+		if hat != &"":
+			_equipped_hat_ids[cid] = true
+		if weapon != &"":
+			_equipped_weapon_ids[cid] = true
+			_equipped_weapon_kind[cid] = weapon
+
+func _colonist_name_for_id(colonist_id: int) -> String:
+	if colonist_id == 0:
+		return ""
+	for colonist in colonists:
+		if colonist != null and is_instance_valid(colonist) and colonist.get_instance_id() == colonist_id:
+			return String(colonist.name)
+	return ""
+
+func _workstation_id_for_zone_id(zone_id: int) -> String:
+	if zone_id == 0:
+		return ""
+	for ws_any in _workstation_depots.keys():
+		var depot: Node = _workstation_depots[ws_any]
+		if depot != null and is_instance_valid(depot) and depot.get_instance_id() == zone_id:
+			return String(ws_any)
+	return ""
+
+func _resource_stock_from_save(saved: Variant) -> Dictionary:
+	var out: Dictionary = _empty_resource_stock()
+	if saved is Dictionary:
+		for key_any in saved.keys():
+			out[StringName(key_any)] = maxi(0, int(saved[key_any]))
+	return out
+
+func _empty_resource_stock() -> Dictionary:
+	return {
+		&"Wood": 0,
+		&"Stone": 0,
+		&"Steel": 0,
+		&"FoodRaw": 0,
+		&"Meal": 0,
+		&"Bed": 0,
+		&"GatherTop": 0,
+		&"GatherBottom": 0,
+		&"Handcart": 0,
+		&"StrawHat": 0,
+		&"Weapon": 0,
+		&"CombatTop": 0,
+		&"CombatBottom": 0,
+		&"CombatHat": 0,
+		&"Sword": 0,
+		&"Bow": 0
+	}
+
+func _dict_int_to_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	var keys: Array = dict.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	for key_any in keys:
+		out[String(key_any)] = int(dict[key_any])
+	return out
+
+func _dict_bool_to_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	var keys: Array = dict.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	for key_any in keys:
+		out[String(key_any)] = bool(dict[key_any])
+	return out
+
+func _dict_string_to_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	var keys: Array = dict.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	for key_any in keys:
+		out[String(key_any)] = String(dict[key_any])
+	return out
+
+func _string_name_int_dict_from_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	for key_any in dict.keys():
+		out[StringName(key_any)] = int(dict[key_any])
+	return out
+
+func _string_name_bool_dict_from_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	for key_any in dict.keys():
+		out[StringName(key_any)] = bool(dict[key_any])
+	return out
+
+func _string_name_dict_from_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	for key_any in dict.keys():
+		out[StringName(key_any)] = StringName(dict[key_any])
+	return out
+
+func _string_name_array_to_save(input: Variant) -> Array:
+	var out: Array = []
+	if not (input is Array):
+		return out
+	for value in input:
+		out.append(String(value))
+	return out
+
+func _string_name_array_from_save(input: Variant) -> Array[StringName]:
+	var out: Array[StringName] = []
+	if not (input is Array):
+		return out
+	for value in input:
+		out.append(StringName(value))
+	return out
+
+func _vector2_to_save(value: Vector2) -> Dictionary:
+	return {"x": value.x, "y": value.y}
+
+func _load_vector2(value: Variant, fallback: Vector2) -> Vector2:
+	if value is Dictionary:
+		var dict: Dictionary = value
+		return Vector2(float(dict.get("x", fallback.x)), float(dict.get("y", fallback.y)))
+	if value is Array and value.size() >= 2:
+		return Vector2(float(value[0]), float(value[1]))
+	if value is Vector2:
+		return value
+	return fallback
+
+func _vector2i_to_save(value: Vector2i) -> Dictionary:
+	return {"x": value.x, "y": value.y}
+
+func _load_vector2i(value: Variant, fallback: Vector2i) -> Vector2i:
+	if value is Dictionary:
+		var dict: Dictionary = value
+		return Vector2i(int(dict.get("x", fallback.x)), int(dict.get("y", fallback.y)))
+	if value is Array and value.size() >= 2:
+		return Vector2i(int(value[0]), int(value[1]))
+	if value is Vector2i:
+		return value
+	return fallback
+
+func _color_to_save(value: Color) -> Dictionary:
+	return {"r": value.r, "g": value.g, "b": value.b, "a": value.a}
+
+func _load_color(value: Variant, fallback: Color) -> Color:
+	if not (value is Dictionary):
+		return fallback
+	var dict: Dictionary = value
+	return Color(
+		float(dict.get("r", fallback.r)),
+		float(dict.get("g", fallback.g)),
+		float(dict.get("b", fallback.b)),
+		float(dict.get("a", fallback.a))
+	)
+
+func _plots_to_save(input: Variant) -> Array:
+	var rows: Array = []
+	if not (input is Dictionary):
+		return rows
+	var plots: Dictionary = input
+	var keys: Array = plots.keys()
+	keys.sort_custom(func(a, b):
+		var av: Vector2i = a
+		var bv: Vector2i = b
+		if av.y == bv.y:
+			return av.x < bv.x
+		return av.y < bv.y
+	)
+	for tile_any in keys:
+		var tile: Vector2i = tile_any
+		var plot: Dictionary = plots[tile_any]
+		rows.append({
+			"tile": _vector2i_to_save(tile),
+			"state": String(plot.get("state", &"Empty")),
+			"crop": String(plot.get("crop", &"")),
+			"elapsed": float(plot.get("elapsed", 0.0)),
+			"last_crop": String(plot.get("last_crop", &"")),
+			"consecutive_crop": int(plot.get("consecutive_crop", 0)),
+			"rotation_mult": float(plot.get("rotation_mult", 1.0))
+		})
+	return rows
+
+func _plots_from_save(rows: Variant) -> Dictionary:
+	var plots: Dictionary = {}
+	if not (rows is Array):
+		return plots
+	for row_any in rows:
+		if not (row_any is Dictionary):
+			continue
+		var row: Dictionary = row_any
+		var tile: Vector2i = _load_vector2i(row.get("tile", Vector2i.ZERO), Vector2i.ZERO)
+		plots[tile] = {
+			"state": StringName(row.get("state", "Empty")),
+			"crop": StringName(row.get("crop", "")),
+			"elapsed": maxf(0.0, float(row.get("elapsed", 0.0))),
+			"job_queued": false,
+			"last_crop": StringName(row.get("last_crop", "")),
+			"consecutive_crop": maxi(0, int(row.get("consecutive_crop", 0))),
+			"rotation_mult": maxf(0.1, float(row.get("rotation_mult", 1.0)))
+		}
+	return plots
+
+func _craft_queues_to_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	var keys: Array = dict.keys()
+	keys.sort_custom(func(a, b): return String(a) < String(b))
+	for ws_any in keys:
+		var rows: Array = []
+		var queue_any: Variant = dict[ws_any]
+		if queue_any is Array:
+			for item_any in queue_any:
+				if not (item_any is Dictionary):
+					continue
+				var item: Dictionary = item_any
+				rows.append({
+					"recipe_id": String(item.get("recipe_id", "")),
+					"workstation_id": String(item.get("workstation_id", ws_any)),
+					"repeat": bool(item.get("repeat", false))
+				})
+		out[String(ws_any)] = rows
+	return out
+
+func _craft_queues_from_save(input: Variant) -> Dictionary:
+	var out: Dictionary = {}
+	if not (input is Dictionary):
+		return out
+	var dict: Dictionary = input
+	for ws_any in dict.keys():
+		var ws_id: StringName = StringName(ws_any)
+		var queue: Array = []
+		var saved_queue: Variant = dict[ws_any]
+		if saved_queue is Array:
+			for item_any in saved_queue:
+				if not (item_any is Dictionary):
+					continue
+				var item: Dictionary = item_any
+				var recipe_id: StringName = StringName(item.get("recipe_id", ""))
+				if recipe_id == &"":
+					continue
+				queue.append({
+					"recipe_id": recipe_id,
+					"workstation_id": StringName(item.get("workstation_id", String(ws_id))),
+					"repeat": bool(item.get("repeat", false))
+				})
+		out[ws_id] = queue
+	return out
+
+func _saved_queue_has_repeat_front(queues: Dictionary, workstation_id: StringName, recipe_id: StringName) -> bool:
+	var key: String = String(workstation_id)
+	if not queues.has(key):
+		return false
+	var queue: Array = queues[key]
+	if queue.is_empty():
+		return false
+	var front: Dictionary = queue[0]
+	return bool(front.get("repeat", false)) and StringName(front.get("recipe_id", "")) == recipe_id
+
+func _merge_nested_int_dict(target: Dictionary, nested_key: String, values: Dictionary) -> void:
+	if not target.has(nested_key):
+		target[nested_key] = {}
+	var nested: Dictionary = target[nested_key]
+	for key_any in values.keys():
+		var amount: int = int(values[key_any])
+		if amount <= 0:
+			continue
+		var key: String = String(key_any)
+		nested[key] = int(nested.get(key, 0)) + amount
+	target[nested_key] = nested
+
+func _make_loaded_block_texture(w: int, h: int, color: Color) -> Texture2D:
+	var image := Image.create(maxi(8, w), maxi(8, h), false, Image.FORMAT_RGBA8)
+	image.fill(color)
+	return ImageTexture.create_from_image(image)
 
 func _queue_event_dispatch() -> void:
 	if _dispatch_queued:
@@ -846,6 +2225,9 @@ func _spawn_initial_colonists() -> void:
 		_colonist_idle_state_by_id[c.get_instance_id()] = true
 		c.resource_harvested.connect(_on_resource_harvested)
 		c.resource_delivered.connect(_on_resource_delivered)
+		c.workstation_supply_picked.connect(_on_workstation_supply_picked)
+		c.workstation_supply_delivered.connect(_on_workstation_supply_delivered)
+		c.workstation_supply_returned.connect(_on_workstation_supply_returned)
 		c.craft_completed.connect(_on_craft_completed)
 		c.structure_demolished.connect(_on_structure_demolished)
 		c.research_progressed.connect(_on_research_progressed)
@@ -1879,7 +3261,10 @@ func _on_resource_delivered(resource_type: StringName, amount: int, zone: Node) 
 		return
 	var accepted: int = int(zone.add_resource(resource_type, amount))
 	if accepted <= 0:
-		_spawn_resource_drop(resource_type, amount, zone.global_position)
+		if zone.has_method("can_start_recipe"):
+			_store_workstation_resource_unbounded(zone, resource_type, amount)
+		else:
+			_spawn_resource_drop(resource_type, amount, zone.global_position)
 		return
 	var delivered_to_workstation: bool = zone.has_method("can_start_recipe")
 	if delivered_to_workstation and job_system != null and is_instance_valid(job_system):
@@ -1896,6 +3281,67 @@ func _on_resource_delivered(resource_type: StringName, amount: int, zone: Node) 
 	_mark_economy_dirty()
 	_mark_maintenance_dirty()
 	_hud_dirty = true
+
+func _on_workstation_supply_picked(resource_type: StringName, amount: int, _zone: Node) -> void:
+	if amount <= 0:
+		return
+	resource_stock[resource_type] = maxi(0, int(resource_stock.get(resource_type, 0)) - amount)
+	hud.set_resource_stock(resource_stock)
+	_mark_economy_dirty()
+	_mark_jobs_dirty()
+	_hud_dirty = true
+
+func _on_workstation_supply_delivered(resource_type: StringName, amount: int, depot: Node, source_zone: Node) -> void:
+	if amount <= 0:
+		return
+	var accepted: int = 0
+	if depot != null and is_instance_valid(depot) and depot.has_method("add_resource"):
+		accepted = int(depot.add_resource(resource_type, amount))
+	if accepted > 0 and job_system != null and is_instance_valid(job_system):
+		job_system.mark_craft_dirty()
+	var remain: int = amount - accepted
+	if remain > 0:
+		_return_workstation_supply_to_source(resource_type, remain, source_zone, depot)
+	hud.set_resource_stock(resource_stock)
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
+
+func _on_workstation_supply_returned(resource_type: StringName, amount: int, zone: Node) -> void:
+	if amount <= 0:
+		return
+	_return_workstation_supply_to_source(resource_type, amount, zone, null)
+	hud.set_resource_stock(resource_stock)
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
+	_hud_dirty = true
+
+func _return_workstation_supply_to_source(resource_type: StringName, amount: int, zone: Node, fallback_node: Node) -> void:
+	var remain: int = amount
+	if zone != null and is_instance_valid(zone) and zone.has_method("add_resource"):
+		var accepted: int = int(zone.add_resource(resource_type, remain))
+		if accepted > 0:
+			resource_stock[resource_type] = int(resource_stock.get(resource_type, 0)) + accepted
+			remain -= accepted
+	if remain <= 0:
+		return
+	var fallback_pos: Vector2 = camera.global_position if camera != null else WORLD_SIZE * 0.5
+	if fallback_node != null and is_instance_valid(fallback_node) and fallback_node is Node2D:
+		fallback_pos = (fallback_node as Node2D).global_position
+	elif zone != null and is_instance_valid(zone) and zone is Node2D:
+		fallback_pos = (zone as Node2D).global_position
+	_spawn_resource_drop(resource_type, remain, fallback_pos)
+
+func _store_workstation_resource_unbounded(depot: Node, resource_type: StringName, amount: int) -> void:
+	if depot == null or not is_instance_valid(depot) or amount <= 0:
+		return
+	var stored: Dictionary = depot.get("stored")
+	stored[resource_type] = int(stored.get(resource_type, 0)) + amount
+	depot.set("stored", stored)
+	if job_system != null and is_instance_valid(job_system):
+		job_system.mark_craft_dirty()
+	_mark_jobs_dirty()
+	_mark_economy_dirty()
 
 func _on_craft_completed(products: Dictionary, world_pos: Vector2, craft_slot_id: int = 0) -> void:
 	for k in products.keys():
@@ -2387,9 +3833,18 @@ func _spawn_installed_handcart(world_pos: Vector2) -> Node2D:
 		placed.add_child(txt)
 	placed.name = "Installed_Handcart"
 	placed.global_position = world_pos
-	world_root.add_child(placed)
+	placed.set_meta("building_id", &"InstalledHandcart")
+	if not placed.has_meta("carry_bonus"):
+		placed.set_meta("carry_bonus", 80)
+	if not placed.has_meta("assigned_colonist_id"):
+		placed.set_meta("assigned_colonist_id", 0)
+	if not placed.is_in_group("structures"):
+		placed.add_to_group("structures")
 	if not placed.is_in_group("handcarts"):
 		placed.add_to_group("handcarts")
+	world_root.add_child(placed)
+	_mark_group_cache_dirty(&"structures")
+	_mark_group_cache_dirty(&"handcarts")
 	return placed
 
 func _can_start_recipe_at_workstation(workstation_id: StringName, recipe: Resource) -> bool:
@@ -2433,23 +3888,11 @@ func _update_workstation_supply_requests() -> void:
 			var resource_type: StringName = StringName(key_any)
 			var need: int = int(recipe.ingredients[key_any])
 			var ready: int = int(depot.get_stored_amount(resource_type)) + int(depot.get_pending_amount(resource_type))
+			ready += _workstation_supply_in_flight_amount(depot, resource_type)
 			var deficit: int = maxi(0, need - ready)
 			if deficit <= 0:
 				continue
-			var withdrawn_chunks: Array[Dictionary] = _withdraw_from_stockpiles_for_supply(resource_type, deficit)
-			if withdrawn_chunks.is_empty():
-				continue
-			var spawned_total: int = 0
-			for chunk in withdrawn_chunks:
-				var chunk_amount: int = maxi(0, int(chunk.get("amount", 0)))
-				if chunk_amount <= 0:
-					continue
-				var source_pos: Vector2 = chunk.get("source_pos", ws_pos)
-				_spawn_supply_drop_for_workstation(resource_type, chunk_amount, source_pos, depot)
-				spawned_total += chunk_amount
-			if spawned_total <= 0:
-				continue
-			depot.mark_supply_spawned(resource_type, spawned_total)
+			_queue_workstation_supply_jobs(resource_type, deficit, depot)
 
 func _ensure_workstation_depot(workstation_id: StringName, pos: Vector2) -> Node:
 	if _workstation_depots.has(workstation_id):
@@ -2465,50 +3908,51 @@ func _ensure_workstation_depot(workstation_id: StringName, pos: Vector2) -> Node
 	_workstation_depots[workstation_id] = depot
 	return depot
 
-func _spawn_supply_drop_for_workstation(resource_type: StringName, amount: int, spawn_pos: Vector2 = Vector2.INF, target_zone: Node = null) -> void:
-	if amount <= 0:
-		return
-	if spawn_pos == Vector2.INF:
-		spawn_pos = camera.global_position if camera != null else Vector2.ZERO
-	var drop: Node = _spawn_resource_drop(resource_type, amount, spawn_pos)
-	if drop != null and is_instance_valid(drop):
-		if drop is Node2D:
-			drop.global_position = _snap_to_tile(spawn_pos)
-		drop.set_meta("craft_supply", true)
-		if target_zone != null and is_instance_valid(target_zone):
-			drop.set_meta("preferred_zone_id", target_zone.get_instance_id())
-
-func _withdraw_from_stockpiles_for_supply(resource_type: StringName, amount: int) -> Array[Dictionary]:
+func _queue_workstation_supply_jobs(resource_type: StringName, amount: int, depot: Node) -> void:
 	var remain: int = maxi(0, amount)
-	var withdrawn_chunks: Array[Dictionary] = []
-	if remain <= 0:
-		return withdrawn_chunks
-	var removed_total: int = 0
+	if remain <= 0 or depot == null or not is_instance_valid(depot):
+		return
 	for zone in _get_group_nodes_cached(&"stockpile_zones"):
 		if remain <= 0:
 			break
 		if zone == null or not is_instance_valid(zone):
 			continue
-		if not zone.has_method("remove_resource"):
+		if not zone.has_method("get_stored_amount"):
 			continue
-		var removed: int = int(zone.remove_resource(resource_type, remain))
-		if removed <= 0:
+		var available: int = int(zone.get_stored_amount(resource_type))
+		if available <= 0:
 			continue
-		var source_pos: Vector2 = zone.global_position if zone is Node2D else Vector2.ZERO
-		if zone.has_method("get_drop_point"):
-			source_pos = zone.get_drop_point()
-		withdrawn_chunks.append({
-			"amount": removed,
-			"source_pos": source_pos
-		})
-		removed_total += removed
-		remain -= removed
-	if removed_total > 0:
-		resource_stock[resource_type] = maxi(0, int(resource_stock.get(resource_type, 0)) - removed_total)
-		hud.set_resource_stock(resource_stock)
-		_mark_economy_dirty()
-		_mark_jobs_dirty()
-	return withdrawn_chunks
+		var queued_amount: int = mini(available, remain)
+		if job_system.queue_workstation_supply_job(zone, depot, resource_type, queued_amount):
+			remain -= queued_amount
+
+func _workstation_supply_in_flight_amount(depot: Node, resource_type: StringName) -> int:
+	if depot == null or not is_instance_valid(depot):
+		return 0
+	var depot_id: int = depot.get_instance_id()
+	var total: int = 0
+	if job_system != null and is_instance_valid(job_system) and "_jobs" in job_system:
+		for job in job_system._jobs:
+			total += _workstation_supply_job_amount(job, depot_id, resource_type)
+	for colonist in colonists:
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		total += _workstation_supply_job_amount(colonist.get("current_job"), depot_id, resource_type)
+	return total
+
+func _workstation_supply_job_amount(job_any: Variant, depot_id: int, resource_type: StringName) -> int:
+	if not (job_any is Dictionary):
+		return 0
+	var job: Dictionary = job_any
+	if StringName(job.get("type", &"")) != &"HaulStockpileToDepot":
+		return 0
+	if int(job.get("depot_id", 0)) != depot_id:
+		return 0
+	if StringName(job.get("resource_type", job.get("carried_type", &""))) != resource_type:
+		return 0
+	if StringName(job.get("phase", &"to_stockpile")) == &"to_depot":
+		return maxi(0, int(job.get("carried_amount", job.get("amount", 0))))
+	return maxi(0, int(job.get("amount", 0)))
 
 func _consume_stockpile_by_delta(before_stock: Dictionary, after_stock: Dictionary) -> void:
 	for key_any in before_stock.keys():

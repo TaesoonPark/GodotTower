@@ -42,6 +42,11 @@ static func score_job(
 			score += float(job.get("drop_amount", 0)) * 0.03
 			if bool(job.get("as_craft_supply", false)):
 				score += float(craft_priority) * 10.0
+		&"HaulStockpileToDepot":
+			score += _distance_bonus(colonist_pos, target, 180.0, 0.003)
+			score += float(job.get("urgency", 0.0)) * 0.08
+			score += float(job.get("amount", 0)) * 0.03
+			score += float(craft_priority) * 10.0
 		&"CombatMelee", &"CombatRanged":
 			score += _distance_bonus(colonist_pos, target, 260.0, 0.004)
 			score += float(combat_priority) * 10.0

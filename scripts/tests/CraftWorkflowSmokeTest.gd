@@ -40,7 +40,8 @@ func _run_test() -> void:
 		colonist.set_work_enabled(&"Combat", false)
 		colonist.set_work_enabled(&"Hunt", false)
 
-	if not main.build_system.place_stockpile_zone(Rect2(Vector2(3880.0, 2140.0), Vector2(240.0, 160.0))):
+	var stockpile_rect := Rect2(Vector2(3880.0, 2140.0), Vector2(240.0, 160.0))
+	if not main.build_system.place_stockpile_zone(stockpile_rect):
 		_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: stockpile placement failed")
 		return
 	main._spawn_resource_drop(&"FoodRaw", 4, Vector2(3810.0, 2160.0))
@@ -49,7 +50,6 @@ func _run_test() -> void:
 	if not bool(main.build_system.place_building(Vector2(3960.0, 2200.0), true)):
 		_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: campfire blueprint failed")
 		return
-	var campfire_pos: Vector2 = main._snap_to_tile(Vector2(3960.0, 2200.0))
 
 	main._mark_jobs_dirty()
 
@@ -70,7 +70,6 @@ func _run_test() -> void:
 
 	main._on_craft_recipe_queued(&"CookMeal", &"CampfireStation")
 
-	var observed_craft_supply: bool = false
 	for _step in range(3200):
 		await get_tree().process_frame
 		var meal_drops: int = 0
@@ -79,17 +78,14 @@ func _run_test() -> void:
 				continue
 			var is_craft_supply: bool = bool(drop.get_meta("craft_supply")) if drop.has_meta("craft_supply") else false
 			if is_craft_supply and StringName(drop.get("resource_type")) == &"FoodRaw":
-				observed_craft_supply = true
-				if drop.global_position.distance_to(campfire_pos) <= 0.1:
-					_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: craft supply drop teleported directly to campfire tile")
+				if stockpile_rect.has_point(drop.global_position):
+					_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: craft supply FoodRaw spawned inside stockpile")
 					return
+				_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: craft supply FoodRaw spawned as world drop")
+				return
 			if StringName(drop.get("resource_type")) == &"Meal":
 				meal_drops += int(drop.get("amount"))
 		if meal_drops >= 5:
-			if not observed_craft_supply:
-				print(_debug_snapshot(main, colonists))
-				_finish(false, "CRAFT_WORKFLOW_TEST_FAIL: no craft supply FoodRaw drop observed")
-				return
 			_finish(true, "CRAFT_WORKFLOW_TEST_PASS: blueprint workstation crafted recipe")
 			return
 
