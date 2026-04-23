@@ -76,6 +76,8 @@ func _ensure_visuals() -> void:
 		_label.name = "Label"
 		_label.position = Vector2(-28.0, -26.0)
 		add_child(_label)
+	if _label != null:
+		_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 
 func _refresh_visuals() -> void:
 	if _sprite != null:

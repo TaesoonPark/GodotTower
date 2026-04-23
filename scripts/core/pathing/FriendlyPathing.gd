@@ -70,8 +70,7 @@ func _can_rebuild_this_frame() -> bool:
 	if _frame_id != fid:
 		_frame_id = fid
 		_frame_rebuilds = 0
-	var time_scale: float = clampf(Engine.time_scale if Engine.time_scale > 0.0 else 1.0, 1.0, 4.0)
-	var allowed_rebuilds: int = maxi(2, int(round((float(BASE_MAX_REBUILDS_PER_FRAME) * time_scale) / _budget_scale_runtime)))
+	var allowed_rebuilds: int = maxi(2, int(round(float(BASE_MAX_REBUILDS_PER_FRAME) / _budget_scale_runtime)))
 	if _frame_rebuilds >= allowed_rebuilds:
 		return false
 	_frame_rebuilds += 1

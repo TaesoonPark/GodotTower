@@ -11,6 +11,11 @@ var _combat_blocked_tiles: Dictionary = {}
 var _combat_blocked_next_refresh_ms: int = 0
 var _layout_signature: int = 0
 var _revision: int = 1
+var _debug_stats: Dictionary = {
+	"dynamic_refreshes": 0,
+	"dynamic_units": 0,
+	"last_dynamic_ms": 0.0
+}
 const COMBAT_BLOCKED_REFRESH_MS: int = 50
 
 func _ready() -> void:
@@ -58,6 +63,9 @@ func get_enemy_blocked_tile_keys() -> Array:
 func get_revision() -> int:
 	return _revision
 
+func get_debug_stats() -> Dictionary:
+	return _debug_stats.duplicate(true)
+
 func _rebuild_maps() -> void:
 	if get_tree() == null:
 		return
@@ -93,8 +101,10 @@ func _refresh_combat_blocked_tiles() -> void:
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms < _combat_blocked_next_refresh_ms:
 		return
+	var start_us: int = Time.get_ticks_usec()
 	_combat_blocked_next_refresh_ms = now_ms + COMBAT_BLOCKED_REFRESH_MS
 	_combat_blocked_tiles.clear()
+	var unit_count: int = 0
 	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
 	for group_name in groups:
 		for node in get_tree().get_nodes_in_group(group_name):
@@ -110,6 +120,10 @@ func _refresh_combat_blocked_tiles() -> void:
 			var ids: Array = _combat_blocked_tiles.get(key, [])
 			ids.append(node.get_instance_id())
 			_combat_blocked_tiles[key] = ids
+			unit_count += 1
+	_debug_stats["dynamic_refreshes"] = int(_debug_stats.get("dynamic_refreshes", 0)) + 1
+	_debug_stats["dynamic_units"] = unit_count
+	_debug_stats["last_dynamic_ms"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 
 func _is_node_in_combat_blocking_state(node: Node) -> bool:
 	if node.has_method("is_melee_combat_locked") and bool(node.is_melee_combat_locked()):

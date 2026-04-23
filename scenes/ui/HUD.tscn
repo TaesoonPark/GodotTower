@@ -113,6 +113,7 @@ text = ""
 
 [node name="EquipmentLabel" type="Label" parent="SelectedStatusPanel/VBox"]
 text = ""
+autowrap_mode = 3
 
 [node name="EquipmentSlots" type="HBoxContainer" parent="SelectedStatusPanel/VBox"]
 theme_override_constants/separation = 8

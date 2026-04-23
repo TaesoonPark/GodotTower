@@ -17,6 +17,8 @@ var job_queued: bool = false
 
 func _ready() -> void:
 	add_to_group("resource_drops")
+	if label != null:
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_refresh()
 
 func setup_drop(t: StringName, v: int) -> void:

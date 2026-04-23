@@ -21,9 +21,28 @@ const CELL_CENTER_EPSILON: float = 0.75
 const MELEE_GOAL_CACHE_MS: int = 1600
 const MELEE_SLOT_COUNT: int = 8
 const MELEE_SLOT_MAX_RING: int = 8
+const MELEE_SLOT_RESOLVE_DISTANCE_TILES: float = 6.0
+const MAX_SIM_ACCUM_SEC: float = 0.65
+const MAX_SIM_STEPS_PER_PHYSICS: int = 2
+const STRUCTURE_ATTACK_TARGET_REFRESH_MS: int = 450
+const STRUCTURE_ATTACK_TARGET_FAIL_REFRESH_MS: int = 120
+const STRUCTURE_ATTACK_SCAN_BUDGET_PER_FRAME: int = 10
+const POST_BREACH_FLOW_DEFER_MS: int = 350
 
 static var _melee_attacker_cache_frame: int = -1
 static var _melee_attacker_ids_by_target: Dictionary = {}
+static var _melee_cell_cache_frame: int = -1
+static var _melee_occupied_ids_by_cell: Dictionary = {}
+static var _melee_claim_ids_by_cell: Dictionary = {}
+static var _structure_attack_scan_frame: int = -1
+static var _structure_attack_scan_count: int = 0
+static var _perf_env_checked: bool = false
+static var _perf_enabled: bool = false
+static var _perf_units: int = 0
+static var _perf_steps: int = 0
+static var _perf_move_us: int = 0
+static var _perf_ai_us: int = 0
+static var _post_breach_flow_defer_until_ms: int = 0
 
 var health: float = 0.0
 var _target_colonist_id: int = 0
@@ -35,11 +54,14 @@ var _melee_step_claim_cell: Vector2 = Vector2.INF
 var _melee_step_claim_next_ms: int = 0
 var _next_attack_ms: int = 0
 var _next_structure_attack_ms: int = 0
+var _structure_attack_target_id: int = 0
+var _structure_attack_target_refresh_ms: int = 0
 var _target_refresh_left: float = 0.0
 var _ai_phase_left: float = 0.0
 var tile_size: float = 40.0
 var _enemy_pathing: EnemyPathing = null
 var _enemy_flow_field_service: Node = null
+var _enemy_engagement_coordinator: Node = null
 var _pathing_occupancy: Node = null
 var _main_controller: Node = null
 var _sim_accum: float = 0.0
@@ -117,6 +139,7 @@ func _ready() -> void:
 	_ai_phase_left = fmod(float(get_instance_id()) * 0.017, AI_STEP_SEC)
 	_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
 	_enemy_flow_field_service = get_tree().get_first_node_in_group("enemy_flow_field_service")
+	_enemy_engagement_coordinator = get_tree().get_first_node_in_group("enemy_engagement_coordinator")
 	_main_controller = get_tree().get_first_node_in_group("main_controller")
 	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_signal("revision_changed"):
 		_pathing_occupancy.connect("revision_changed", Callable(self, "_on_pathing_revision_changed"))
@@ -229,26 +252,67 @@ func _physics_process(delta: float) -> void:
 	_lock_rotation()
 	_spawn_unclip_left = maxf(0.0, _spawn_unclip_left - delta)
 	_spawn_unclip_retry_left = maxf(0.0, _spawn_unclip_retry_left - delta)
-	_sim_accum += delta
+	_sim_accum = minf(_sim_accum + delta, MAX_SIM_ACCUM_SEC)
 	var tick_interval: float = _lod_tick_interval()
 	if tick_interval > 0.0 and _sim_accum < tick_interval:
 		return
 	var sim_remaining: float = _sim_accum
 	if _enemy_pathing != null:
 		_enemy_pathing.tick(sim_remaining)
-	while sim_remaining > 0.0:
+	var perf_enabled: bool = _enemy_perf_enabled()
+	var perf_move_us: int = 0
+	var perf_ai_us: int = 0
+	var step_count: int = 0
+	while sim_remaining > 0.0 and step_count < MAX_SIM_STEPS_PER_PHYSICS:
 		var sim_delta: float = minf(sim_remaining, 0.05)
 		sim_remaining -= sim_delta
+		step_count += 1
+		var move_start_us: int = Time.get_ticks_usec() if perf_enabled else 0
 		_process_movement(sim_delta)
+		if perf_enabled:
+			perf_move_us += Time.get_ticks_usec() - move_start_us
 		_ai_phase_left = maxf(0.0, _ai_phase_left - sim_delta)
 		if _ai_phase_left <= 0.0:
+			var ai_start_us: int = Time.get_ticks_usec() if perf_enabled else 0
 			_ai_tick(sim_delta)
-			_ai_phase_left = AI_STEP_SEC
-	_sim_accum = sim_remaining
+			if perf_enabled:
+				perf_ai_us += Time.get_ticks_usec() - ai_start_us
+			_ai_phase_left = _ai_tick_interval()
+	_sim_accum = minf(sim_remaining, MAX_SIM_ACCUM_SEC)
+	if perf_enabled:
+		_record_enemy_perf(perf_move_us, perf_ai_us, step_count)
+
+static func consume_perf_stats() -> Dictionary:
+	var out: Dictionary = {
+		"units": _perf_units,
+		"steps": _perf_steps,
+		"move_ms": float(_perf_move_us) / 1000.0,
+		"ai_ms": float(_perf_ai_us) / 1000.0
+	}
+	_perf_units = 0
+	_perf_steps = 0
+	_perf_move_us = 0
+	_perf_ai_us = 0
+	return out
+
+static func _enemy_perf_enabled() -> bool:
+	if not _perf_env_checked:
+		_perf_enabled = OS.get_environment("PERF_LOGS") == "1"
+		_perf_env_checked = true
+	return _perf_enabled
+
+static func _record_enemy_perf(move_us: int, ai_us: int, steps: int) -> void:
+	_perf_units += 1
+	_perf_steps += steps
+	_perf_move_us += move_us
+	_perf_ai_us += ai_us
 
 func _lock_rotation() -> void:
 	if absf(rotation) > 0.0001:
 		rotation = 0.0
+
+func _ai_tick_interval() -> float:
+	return clampf(AI_STEP_SEC * _sim_interval_scale, AI_STEP_SEC, 0.25)
 
 func _lod_tick_interval() -> float:
 	var now_ms: int = Time.get_ticks_msec()
@@ -294,6 +358,8 @@ func _anchor_to_cell(world_pos: Vector2) -> bool:
 	var snapped: Vector2 = _snap_to_tile(world_pos)
 	if _snap_to_tile(global_position).distance_to(snapped) > 0.1 and _is_blocked_position(snapped):
 		return false
+	if _is_move_segment_blocked(global_position, snapped):
+		return false
 	if global_position.distance_to(snapped) <= CELL_CENTER_EPSILON:
 		global_position = snapped
 		return false
@@ -313,6 +379,8 @@ func _move_toward_cell(world_pos: Vector2, speed: float, delta: float) -> bool:
 		return true
 	var step_len: float = minf(dist, maxf(1.0, speed) * minf(delta, 0.05))
 	var next_pos: Vector2 = global_position + to_center.normalized() * step_len
+	if _is_move_segment_blocked(global_position, next_pos):
+		return false
 	global_position = snapped if step_len >= dist else next_pos
 	_emit_moved_if_needed()
 	return global_position.distance_to(snapped) <= CELL_CENTER_EPSILON
@@ -376,6 +444,11 @@ func _ai_tick(_delta: float) -> void:
 	var attack_range: float = _resolve_attack_range(attack_mode)
 	var dist: float = global_position.distance_to(target.global_position)
 	if attack_mode != &"Ranged":
+		if not _should_resolve_melee_slot(target, attack_range):
+			_clear_melee_goal_cache()
+			_move_goal = _snap_to_tile(target.global_position)
+			_move_goal_exact = false
+			return
 		var melee_goal: Vector2 = _resolve_melee_engagement_goal(target, attack_range)
 		var melee_engaged: bool = _is_melee_engaged_with_target(target, attack_range, melee_goal)
 		if not melee_engaged and not _is_melee_cell_available(_snap_to_tile(global_position)) and _is_melee_cell_available(melee_goal):
@@ -414,6 +487,12 @@ func _ai_tick(_delta: float) -> void:
 		_move_goal = global_position
 		_move_goal_exact = false
 	_try_attack_target(target, attack_mode, attack_range, dist)
+
+func _should_resolve_melee_slot(target: Node2D, attack_range: float) -> bool:
+	var target_cell: Vector2 = _snap_to_tile(target.global_position)
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	var resolve_distance: float = maxf(tile_size * MELEE_SLOT_RESOLVE_DISTANCE_TILES, attack_range + tile_size * 4.0)
+	return own_cell.distance_to(target_cell) <= resolve_distance
 
 func _try_process_melee_combat_lock() -> bool:
 	if _melee_lock_target_id == 0:
@@ -655,6 +734,7 @@ func _process_movement(delta: float) -> void:
 		return
 	var result: Dictionary = {}
 	var flow_direction_missing: bool = false
+	var flow_navigation_deferred: bool = false
 	if _enemy_flow_field_service == null or not is_instance_valid(_enemy_flow_field_service):
 		_enemy_flow_field_service = get_tree().get_first_node_in_group("enemy_flow_field_service")
 	if _enemy_flow_field_service != null and is_instance_valid(_enemy_flow_field_service) and _enemy_flow_field_service.has_method("get_flow_direction"):
@@ -662,10 +742,15 @@ func _process_movement(delta: float) -> void:
 		if flow_dir != Vector2.ZERO:
 			var flow_delta: float = minf(delta, 0.05)
 			var flow_pos: Vector2 = global_position + flow_dir * speed * flow_delta
-			if not _is_blocked_position(flow_pos):
+			if not _is_blocked_position(flow_pos) and not _is_move_segment_blocked(global_position, flow_pos):
 				result = {"position": flow_pos, "reached_goal": false, "blocked": false}
 		else:
 			flow_direction_missing = true
+			if _enemy_flow_field_service.has_method("is_navigation_deferred"):
+				flow_navigation_deferred = bool(_enemy_flow_field_service.is_navigation_deferred(goal))
+	if flow_navigation_deferred and Time.get_ticks_msec() < _post_breach_flow_defer_until_ms:
+		_try_attack_structure(goal)
+		return
 	if result.is_empty() and _enemy_pathing != null:
 		result = _enemy_pathing.move_step(
 			global_position,
@@ -702,10 +787,15 @@ func _process_movement(delta: float) -> void:
 		var fallback_dir: Vector2 = current.direction_to(goal)
 		if fallback_dir != Vector2.ZERO:
 			var fallback_step: Vector2 = current + fallback_dir * speed * minf(delta, 0.05)
-			if not _is_blocked_position(fallback_step):
+			if not _is_blocked_position(fallback_step) and not _is_move_segment_blocked(current, fallback_step):
 				next_pos = fallback_step
 			elif _try_attack_structure(goal):
 				return
+	if _is_blocked_position(next_pos) or _is_move_segment_blocked(current, next_pos):
+		if _enemy_pathing != null:
+			_enemy_pathing.clear()
+		_try_attack_structure(goal)
+		return
 	global_position = next_pos
 	_emit_moved_if_needed()
 
@@ -733,7 +823,7 @@ func _try_process_exact_combat_positioning(goal: Vector2, speed: float, delta: f
 		next_pos = _snap_to_tile(goal)
 	if not _can_step_toward_melee_cell(next_pos):
 		return false
-	if _is_blocked_position(next_pos):
+	if _is_blocked_position(next_pos) or _is_move_segment_blocked(global_position, next_pos):
 		return false
 	global_position = next_pos
 	_emit_moved_if_needed()
@@ -770,7 +860,13 @@ func _can_step_toward_melee_cell(next_pos: Vector2) -> bool:
 		return false
 	_melee_step_claim_cell = next_cell
 	_melee_step_claim_next_ms = Time.get_ticks_msec() + 120
+	_register_melee_claim_for_current_frame(next_cell)
 	return true
+
+func _get_enemy_engagement_coordinator() -> Node:
+	if _enemy_engagement_coordinator == null or not is_instance_valid(_enemy_engagement_coordinator):
+		_enemy_engagement_coordinator = get_tree().get_first_node_in_group("enemy_engagement_coordinator")
+	return _enemy_engagement_coordinator
 
 func _get_current_target_node() -> Node2D:
 	var explicit: Object = instance_from_id(_target_colonist_id) if _target_colonist_id != 0 else null
@@ -785,6 +881,15 @@ func _invalidate_dynamic_combat_blockers() -> void:
 		_pathing_occupancy.invalidate_dynamic_combat_blockers()
 
 func _resolve_melee_engagement_goal(target: Node2D, attack_range: float) -> Vector2:
+	var cached_staging_goal: Vector2 = _try_reuse_cached_staging_goal(target, attack_range)
+	if cached_staging_goal != Vector2.INF:
+		return cached_staging_goal
+	var coordinator: Node = _get_enemy_engagement_coordinator()
+	if coordinator != null and is_instance_valid(coordinator) and coordinator.has_method("request_melee_goal"):
+		var coordinated_goal: Vector2 = coordinator.request_melee_goal(self, target, attack_range)
+		if coordinated_goal != Vector2.INF:
+			_cache_melee_goal(target.get_instance_id(), coordinated_goal)
+			return coordinated_goal
 	var target_id: int = target.get_instance_id()
 	var target_cell: Vector2 = _snap_to_tile(target.global_position)
 	var own_cell: Vector2 = _snap_to_tile(global_position)
@@ -854,10 +959,31 @@ func _resolve_melee_engagement_goal(target: Node2D, attack_range: float) -> Vect
 	_cache_melee_goal(target_id, fallback)
 	return fallback
 
+func _try_reuse_cached_staging_goal(target: Node2D, attack_range: float) -> Vector2:
+	var target_id: int = target.get_instance_id()
+	if _melee_goal_cache_target_id != target_id:
+		return Vector2.INF
+	if _melee_goal_cache_cell == Vector2.INF or Time.get_ticks_msec() >= _melee_goal_cache_next_ms:
+		return Vector2.INF
+	var target_cell: Vector2 = _snap_to_tile(target.global_position)
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	var engagement_ring: int = _melee_engagement_ring(target_id, attack_range)
+	var own_ring: int = _melee_cell_ring(own_cell, target_cell)
+	if own_ring <= engagement_ring + 2:
+		return Vector2.INF
+	var cached_ring: int = _melee_cell_ring(_melee_goal_cache_cell, target_cell)
+	if cached_ring <= engagement_ring + 1 or cached_ring > MELEE_SLOT_MAX_RING:
+		return Vector2.INF
+	if not _is_melee_cell_available(_melee_goal_cache_cell):
+		return Vector2.INF
+	_cache_melee_goal(target_id, _melee_goal_cache_cell)
+	return _melee_goal_cache_cell
+
 func _cache_melee_goal(target_id: int, cell: Vector2) -> void:
 	_melee_goal_cache_target_id = target_id
 	_melee_goal_cache_cell = _snap_to_tile(cell)
 	_melee_goal_cache_next_ms = Time.get_ticks_msec() + MELEE_GOAL_CACHE_MS
+	_register_melee_claim_for_current_frame(_melee_goal_cache_cell)
 
 func _clear_melee_goal_cache() -> void:
 	_melee_goal_cache_target_id = 0
@@ -893,46 +1019,84 @@ func _build_melee_slot_cells(target_cell: Vector2, max_ring: int = MELEE_SLOT_MA
 
 func _is_melee_cell_available(cell: Vector2) -> bool:
 	var snapped: Vector2 = _snap_to_tile(cell)
+	var coordinator: Node = _get_enemy_engagement_coordinator()
+	if coordinator != null and is_instance_valid(coordinator) and coordinator.has_method("is_melee_cell_available"):
+		return bool(coordinator.is_melee_cell_available(self, snapped))
 	if _is_blocked_position(snapped):
 		return false
 	var self_on_cell: bool = _snap_to_tile(global_position).distance_to(snapped) <= 0.1
 	var now_ms: int = Time.get_ticks_msec()
+	_refresh_melee_cell_cache(now_ms)
+	var key: int = _melee_cell_key(snapped)
+	var occupied_ids: Array = _melee_occupied_ids_by_cell.get(key, [])
+	for id_any in occupied_ids:
+		if int(id_any) != get_instance_id():
+			return false
+	if not self_on_cell:
+		var claim_ids: Array = _melee_claim_ids_by_cell.get(key, [])
+		for id_any in claim_ids:
+			if int(id_any) != get_instance_id():
+				return false
+	return true
+
+func _refresh_melee_cell_cache(now_ms: int) -> void:
+	var frame_id: int = Engine.get_physics_frames()
+	if _melee_cell_cache_frame == frame_id:
+		return
+	_melee_cell_cache_frame = frame_id
+	_melee_occupied_ids_by_cell.clear()
+	_melee_claim_ids_by_cell.clear()
 	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
 	for group_name in groups:
 		for node in get_tree().get_nodes_in_group(group_name):
-			if node == null or not is_instance_valid(node) or node == self:
+			if node == null or not is_instance_valid(node):
 				continue
 			if not (node is Node2D):
 				continue
 			if node.has_method("is_dead") and bool(node.is_dead()):
 				continue
-			if _snap_to_tile((node as Node2D).global_position).distance_to(snapped) <= 0.1:
-				return false
-			if not self_on_cell and _node_has_fresh_melee_goal_claim(node, snapped, now_ms):
-				return false
-	return true
+			var node_id: int = node.get_instance_id()
+			_add_id_to_melee_cell_cache(_melee_occupied_ids_by_cell, (node as Node2D).global_position, node_id)
+			_add_node_melee_claims_to_cache(node, node_id, now_ms)
 
-func _node_has_fresh_melee_goal_claim(node: Node, snapped: Vector2, now_ms: int) -> bool:
-	var step_next_ms: int = int(node.get("_melee_step_claim_next_ms"))
+func _add_node_melee_claims_to_cache(node: Node, node_id: int, now_ms: int) -> void:
+	if not _node_has_active_melee_goal(node):
+		return
+	var step_next_ms: int = _get_node_int(node, "_melee_step_claim_next_ms")
 	if step_next_ms > now_ms:
 		var step_cell_variant: Variant = node.get("_melee_step_claim_cell")
-		if step_cell_variant is Vector2 and _node_has_active_melee_goal(node):
-			var step_cell: Vector2 = _snap_to_tile(step_cell_variant)
-			if step_cell.distance_to(snapped) <= 0.1:
-				return true
-	var cache_next_ms: int = int(node.get("_melee_goal_cache_next_ms"))
+		if step_cell_variant is Vector2:
+			_add_id_to_melee_cell_cache(_melee_claim_ids_by_cell, step_cell_variant, node_id)
+	var cache_next_ms: int = _get_node_int(node, "_melee_goal_cache_next_ms")
 	if cache_next_ms <= now_ms:
-		return false
-	var cache_target_id: int = int(node.get("_melee_goal_cache_target_id"))
+		return
+	var cache_target_id: int = _get_node_int(node, "_melee_goal_cache_target_id")
 	if cache_target_id == 0:
-		return false
+		return
 	var cache_cell_variant: Variant = node.get("_melee_goal_cache_cell")
-	if not (cache_cell_variant is Vector2):
-		return false
-	if not _node_has_active_melee_goal(node):
-		return false
-	var cache_cell: Vector2 = _snap_to_tile(cache_cell_variant)
-	return cache_cell.distance_to(snapped) <= 0.1
+	if cache_cell_variant is Vector2:
+		_add_id_to_melee_cell_cache(_melee_claim_ids_by_cell, cache_cell_variant, node_id)
+
+func _register_melee_claim_for_current_frame(cell: Vector2) -> void:
+	var coordinator: Node = _get_enemy_engagement_coordinator()
+	if coordinator != null and is_instance_valid(coordinator) and coordinator.has_method("register_melee_claim"):
+		coordinator.register_melee_claim(self, cell)
+	if _melee_cell_cache_frame != Engine.get_physics_frames():
+		return
+	_add_id_to_melee_cell_cache(_melee_claim_ids_by_cell, cell, get_instance_id())
+
+func _add_id_to_melee_cell_cache(cache: Dictionary, cell: Vector2, node_id: int) -> void:
+	var key: int = _melee_cell_key(cell)
+	var ids: Array = cache.get(key, [])
+	if ids.find(node_id) < 0:
+		ids.append(node_id)
+	cache[key] = ids
+
+func _melee_cell_key(world_pos: Vector2) -> int:
+	var tile: Vector2i = _world_to_tile(world_pos)
+	var packed_x: int = (tile.x + 32768) & 0xFFFF
+	var packed_y: int = (tile.y + 32768) & 0xFFFF
+	return (packed_x << 16) | packed_y
 
 func _node_has_active_melee_goal(node: Node) -> bool:
 	var job_variant: Variant = node.get("current_job")
@@ -940,15 +1104,25 @@ func _node_has_active_melee_goal(node: Node) -> bool:
 		var job: Dictionary = job_variant
 		if StringName(job.get("type", &"")) == &"CombatMelee":
 			return true
-	var lock_id: int = int(node.get("_melee_lock_target_id"))
+	var lock_id: int = _get_node_int(node, "_melee_lock_target_id")
 	if lock_id != 0:
 		return true
-	var target_id: int = int(node.get("_target_colonist_id"))
+	var target_id: int = _get_node_int(node, "_target_colonist_id")
 	if target_id == 0:
 		return false
 	if node.has_method("get_current_weapon_mode"):
 		return StringName(node.get_current_weapon_mode()) != &"Ranged"
 	return true
+
+func _get_node_int(node: Node, property_name: StringName, fallback: int = 0) -> int:
+	var value: Variant = node.get(property_name)
+	if value == null:
+		return fallback
+	if value is int:
+		return int(value)
+	if value is float:
+		return int(value)
+	return fallback
 
 func _melee_slot_index(target_id: int, slot_count: int) -> int:
 	var attacker_ids: Array[int] = _get_melee_attacker_ids_for_target(target_id)
@@ -988,7 +1162,10 @@ func _force_nudge_toward_goal(goal: Vector2, delta: float) -> bool:
 	if dir == Vector2.ZERO:
 		return false
 	var nudge_dist: float = maxf(tile_size * 1.2, move_speed * maxf(0.5, external_move_speed_multiplier) * minf(delta, 0.06))
-	global_position = global_position + dir * nudge_dist
+	var next_pos: Vector2 = global_position + dir * nudge_dist
+	if _is_blocked_position(next_pos) or _is_move_segment_blocked(global_position, next_pos):
+		return false
+	global_position = next_pos
 	_emit_moved_if_needed()
 	return true
 
@@ -1036,6 +1213,22 @@ func _is_blocked_position(world_pos: Vector2) -> bool:
 		return bool(_pathing_occupancy.is_blocked_for_enemy(world_pos))
 	return false
 
+func _is_move_segment_blocked(from_pos: Vector2, to_pos: Vector2) -> bool:
+	var distance: float = from_pos.distance_to(to_pos)
+	if distance <= 0.1:
+		return false
+	var sample_step: float = maxf(4.0, tile_size * 0.25)
+	var steps: int = maxi(1, int(ceil(distance / sample_step)))
+	var from_tile: Vector2 = _snap_to_tile(from_pos)
+	for i in range(1, steps + 1):
+		var t: float = float(i) / float(steps)
+		var probe: Vector2 = from_pos.lerp(to_pos, t)
+		if _snap_to_tile(probe).distance_to(from_tile) <= 0.1:
+			continue
+		if _is_blocked_position(probe):
+			return true
+	return false
+
 func _is_combat_unit_blocking_tile(world_pos: Vector2) -> bool:
 	if (_pathing_occupancy == null or not is_instance_valid(_pathing_occupancy)):
 		_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
@@ -1075,7 +1268,7 @@ func _is_node_in_combat_state(node: Node) -> bool:
 	return false
 
 func _try_attack_structure(goal: Vector2 = Vector2.INF) -> bool:
-	var target: Node = _find_blocking_structure_near(global_position, structure_attack_range, goal)
+	var target: Node = _get_structure_attack_target(global_position, structure_attack_range, goal)
 	if target == null:
 		return false
 	var now_ms: int = Time.get_ticks_msec()
@@ -1090,12 +1283,92 @@ func _try_attack_structure(goal: Vector2 = Vector2.INF) -> bool:
 	target.set_meta("repair_job_queued", false)
 	STRUCTURE_HEALTH_BAR.update_bar(target, hp, max_hp)
 	if hp <= 0.0:
-		target.queue_free()
-		_grp_blocking_ms = 0
+		_destroy_structure_target(target)
 		if _enemy_pathing != null:
 			_enemy_pathing.clear()
 	_next_structure_attack_ms = now_ms + int(round(1000.0 * maxf(0.2, attack_cooldown_sec)))
 	return true
+
+func _get_structure_attack_target(center: Vector2, radius: float, goal: Vector2 = Vector2.INF) -> Node:
+	var cached: Node = _get_cached_structure_attack_target(center, radius)
+	if cached != null:
+		return cached
+	var now_ms: int = Time.get_ticks_msec()
+	if now_ms < _structure_attack_target_refresh_ms:
+		return null
+	if not _can_scan_structure_attack_targets_this_frame():
+		return null
+	var target: Node = _find_blocking_structure_near(center, radius, goal)
+	if target == null:
+		_structure_attack_target_id = 0
+		_structure_attack_target_refresh_ms = now_ms + STRUCTURE_ATTACK_TARGET_FAIL_REFRESH_MS
+		return null
+	_structure_attack_target_id = target.get_instance_id()
+	_structure_attack_target_refresh_ms = now_ms + STRUCTURE_ATTACK_TARGET_REFRESH_MS
+	return target
+
+func _get_cached_structure_attack_target(center: Vector2, radius: float) -> Node:
+	if _structure_attack_target_id == 0:
+		return null
+	var obj: Object = instance_from_id(_structure_attack_target_id)
+	if obj == null or not is_instance_valid(obj) or not (obj is Node):
+		_structure_attack_target_id = 0
+		_structure_attack_target_refresh_ms = 0
+		return null
+	var target: Node = obj as Node
+	if not _is_valid_structure_attack_target(target, center, radius):
+		_structure_attack_target_id = 0
+		_structure_attack_target_refresh_ms = 0
+		return null
+	return target
+
+func _is_valid_structure_attack_target(target: Node, center: Vector2, radius: float) -> bool:
+	if target == null or not is_instance_valid(target) or not (target is Node2D):
+		return false
+	if not bool(target.get_meta("blocks_movement")):
+		return false
+	var max_hp: float = float(target.get_meta("structure_max_health")) if target.has_meta("structure_max_health") else 0.0
+	if max_hp <= 0.0:
+		return false
+	var hp: float = float(target.get_meta("structure_health")) if target.has_meta("structure_health") else max_hp
+	if hp <= 0.0:
+		return false
+	return _distance_sq_to_structure_footprint(center, target as Node2D) <= radius * radius
+
+func _can_scan_structure_attack_targets_this_frame() -> bool:
+	var fid: int = Engine.get_physics_frames()
+	if _structure_attack_scan_frame != fid:
+		_structure_attack_scan_frame = fid
+		_structure_attack_scan_count = 0
+	if _structure_attack_scan_count >= STRUCTURE_ATTACK_SCAN_BUDGET_PER_FRAME:
+		return false
+	_structure_attack_scan_count += 1
+	return true
+
+func _destroy_structure_target(target: Node) -> void:
+	if target == null or not is_instance_valid(target):
+		return
+	_post_breach_flow_defer_until_ms = Time.get_ticks_msec() + POST_BREACH_FLOW_DEFER_MS
+	if target.get_instance_id() == _structure_attack_target_id:
+		_structure_attack_target_id = 0
+		_structure_attack_target_refresh_ms = 0
+	target.set_meta("blocks_movement", false)
+	if target.is_in_group("blocking_structures"):
+		target.remove_from_group("blocking_structures")
+	_grp_blocking_ms = 0
+	_notify_obstacle_layout_changed()
+	target.queue_free()
+
+func _notify_obstacle_layout_changed() -> void:
+	if (_main_controller == null or not is_instance_valid(_main_controller)):
+		_main_controller = get_tree().get_first_node_in_group("main_controller")
+	if _main_controller != null and is_instance_valid(_main_controller) and _main_controller.has_method("_mark_pathing_dirty"):
+		_main_controller._mark_pathing_dirty()
+		return
+	if (_pathing_occupancy == null or not is_instance_valid(_pathing_occupancy)):
+		_pathing_occupancy = get_tree().get_first_node_in_group("pathing_occupancy")
+	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("notify_world_changed"):
+		_pathing_occupancy.notify_world_changed()
 
 func _find_blocking_structure_near(center: Vector2, radius: float, goal: Vector2 = Vector2.INF) -> Node:
 	var now_ms: int = Time.get_ticks_msec()

@@ -22,6 +22,7 @@ const SAVE_FILE_SUFFIX: String = "_autosave.json"
 const AUTOSAVE_INTERVAL_SEC: float = 60.0
 const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
 const ENEMY_FLOW_FIELD_SERVICE_SCRIPT: Script = preload("res://scripts/systems/EnemyFlowFieldService.gd")
+const ENEMY_ENGAGEMENT_COORDINATOR_SCRIPT: Script = preload("res://scripts/systems/EnemyEngagementCoordinator.gd")
 const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
 const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
 const HANDCART_SCRIPT: Script = preload("res://scripts/core/Handcart.gd")
@@ -126,6 +127,10 @@ var _context_handcart_id: int = 0
 var _context_handcart_release_pos: Vector2 = Vector2.INF
 var _context_stockpile_zone_id: int = 0
 var _context_stockpile_use_pos: Vector2 = Vector2.INF
+var _context_equipment_resource: StringName = &""
+var _context_equipment_source_kind: StringName = &""
+var _context_equipment_drop_id: int = 0
+var _context_equipment_stockpile_zone_id: int = 0
 var _pending_handcart_use_by_colonist: Dictionary = {}
 var _selected_object_kind: StringName = &""
 var _selected_object_resource: StringName = &""
@@ -133,6 +138,7 @@ var _selected_object_zone: Node = null
 var _workstation_depots: Dictionary = {}
 var _outfit_mode: StringName = &"Combat"
 var _equipped_weapon_kind: Dictionary = {}
+var _manual_equipment_slots_by_colonist: Dictionary = {}
 var _raid_state: StringName = &"Idle"
 var _raid_warning_timer: float = 0.0
 var _raid_wave_size: int = 0
@@ -145,6 +151,7 @@ var _defense_status_text: String = "-"
 var _day_night_cycle_seconds: float = 240.0
 var _pathing_occupancy: PathingOccupancy = null
 var _enemy_flow_field_service: Node = null
+var _enemy_engagement_coordinator: Node = null
 var _cached_alive_enemies: Array = []
 var _hud_dirty: bool = true
 var _hud_time_dirty: bool = false
@@ -217,6 +224,14 @@ func _ready() -> void:
 	else:
 		add_child(_enemy_flow_field_service)
 	_enemy_flow_field_service.setup(TILE_SIZE, WORLD_SIZE, _pathing_occupancy)
+	_enemy_engagement_coordinator = ENEMY_ENGAGEMENT_COORDINATOR_SCRIPT.new()
+	_enemy_engagement_coordinator.name = "EnemyEngagementCoordinator"
+	_enemy_engagement_coordinator.add_to_group("enemy_engagement_coordinator")
+	if systems_node != null:
+		systems_node.add_child(_enemy_engagement_coordinator)
+	else:
+		add_child(_enemy_engagement_coordinator)
+	_enemy_engagement_coordinator.setup(TILE_SIZE, _pathing_occupancy)
 	if _pathing_occupancy.has_signal("revision_changed"):
 		_pathing_occupancy.connect("revision_changed", Callable(self, "_on_pathing_occupancy_revision_changed"))
 	_init_group_cache()
@@ -639,6 +654,7 @@ func _reset_world_for_load() -> void:
 	_equipped_hat_ids.clear()
 	_equipped_weapon_ids.clear()
 	_equipped_weapon_kind.clear()
+	_manual_equipment_slots_by_colonist.clear()
 	_combat_tile_claims.clear()
 	_cached_alive_enemies.clear()
 	_clear_saved_world_nodes()
@@ -1555,6 +1571,7 @@ func _seed_equipment_maps_from_colonists() -> void:
 	_equipped_hat_ids.clear()
 	_equipped_weapon_ids.clear()
 	_equipped_weapon_kind.clear()
+	_manual_equipment_slots_by_colonist.clear()
 	for colonist in colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
@@ -1573,6 +1590,13 @@ func _seed_equipment_maps_from_colonists() -> void:
 		if weapon != &"":
 			_equipped_weapon_ids[cid] = true
 			_equipped_weapon_kind[cid] = weapon
+		var manual_slots: Dictionary = {}
+		for slot_key in [&"Top", &"Bottom", &"Hat", &"Weapon"]:
+			var item_id: StringName = StringName(equipment.get(slot_key, &""))
+			if item_id != &"":
+				manual_slots[slot_key] = item_id
+		if not manual_slots.is_empty():
+			_manual_equipment_slots_by_colonist[cid] = manual_slots
 
 func _colonist_name_for_id(colonist_id: int) -> String:
 	if colonist_id == 0:
@@ -2276,6 +2300,8 @@ func _on_left_click(world_pos: Vector2) -> void:
 	var stockpile_item: Dictionary = _find_stockpile_item_at(world_pos)
 	if not stockpile_item.is_empty():
 		_set_selected([])
+		selected_bed_node = null
+		hud.set_bed_assignment_visible(false)
 		selected_stockpile_zone = stockpile_item.get("zone", null)
 		_selected_object_kind = &"StockpileItem"
 		_selected_object_zone = selected_stockpile_zone
@@ -2287,7 +2313,13 @@ func _on_left_click(world_pos: Vector2) -> void:
 	var bed_node: Node = _find_installed_bed_near(world_pos, 42.0)
 	if bed_node != null:
 		_clear_selected_object()
+		_set_selected([])
+		selected_designation_target = null
+		hud.set_designation_panel_visible(false)
+		selected_stockpile_zone = null
+		selected_farm_zone = null
 		selected_bed_node = bed_node
+		hud.set_selected_status_visible(true)
 		_refresh_bed_assign_ui()
 		hud.set_active_action(&"BedSelected")
 		_close_bottom_catalog_if_supported()
@@ -2348,6 +2380,21 @@ func _on_left_click(world_pos: Vector2) -> void:
 			hud.set_active_action(&"Install%s" % String(drop_type))
 			_close_bottom_catalog_if_supported()
 			return
+		_clear_selected_object()
+		_set_selected([])
+		selected_designation_target = null
+		hud.set_designation_panel_visible(false)
+		selected_stockpile_zone = null
+		selected_farm_zone = null
+		selected_bed_node = null
+		hud.set_bed_assignment_visible(false)
+		_selected_object_kind = &"ResourceDrop"
+		_selected_object_zone = drop
+		_selected_object_resource = drop_type
+		_refresh_hud()
+		hud.set_active_action(&"ResourceDropSelected")
+		_close_bottom_catalog_if_supported()
+		return
 
 	var gatherable: Node = _find_gatherable_near(world_pos, 48.0)
 	if gatherable != null:
@@ -2706,9 +2753,10 @@ func _refresh_hud() -> void:
 	var focus: Node = selected_colonists[0] if not selected_colonists.is_empty() else null
 	var stockpile_focus: Node = selected_stockpile_zone if selected_stockpile_zone != null and is_instance_valid(selected_stockpile_zone) else null
 	var farm_focus: Node = selected_farm_zone if selected_farm_zone != null and is_instance_valid(selected_farm_zone) else null
+	var bed_focus: Node = selected_bed_node if selected_bed_node != null and is_instance_valid(selected_bed_node) else null
 	var object_focus: bool = _selected_object_kind != &"" and _selected_object_zone != null and is_instance_valid(_selected_object_zone)
 	hud.set_research_panel_visible(object_focus and _selected_object_kind == &"ResearchBench")
-	hud.set_selected_status_visible(focus != null or stockpile_focus != null or farm_focus != null or object_focus)
+	hud.set_selected_status_visible(focus != null or stockpile_focus != null or farm_focus != null or bed_focus != null or object_focus)
 	hud.set_needs_preview(focus)
 	hud.set_priority_preview(focus)
 	hud.set_current_job_preview(focus)
@@ -2766,6 +2814,11 @@ func _refresh_hud() -> void:
 				detail,
 				[{"id": &"DemolishSelectedStructure", "label": _t("main.action.demolish")}]
 			)
+		elif _selected_object_kind == &"ResourceDrop":
+			var drop_amount: int = int(_selected_object_zone.get("amount"))
+			var title: String = _t("main.selected.resource.title", {"resource": String(_selected_object_resource)})
+			var detail: String = _t("main.selected.resource.detail", {"amount": drop_amount})
+			hud.set_selected_object_preview(title, detail, [])
 		else:
 			var amount: int = 0
 			if _selected_object_zone.has_method("get_stored_amount"):
@@ -3803,11 +3856,8 @@ func _spawn_installed_bed(world_pos: Vector2) -> void:
 	image.fill(Color(0.73, 0.54, 0.36, 1.0))
 	sprite.texture = ImageTexture.create_from_image(image)
 	placed.add_child(sprite)
-	var txt := Label.new()
-	txt.text = _t("main.bed.label.unassigned")
-	txt.position = Vector2(-24, -28)
-	placed.add_child(txt)
 	world_root.add_child(placed)
+	_mark_group_cache_dirty(&"structures")
 
 func _spawn_installed_handcart(world_pos: Vector2) -> Node2D:
 	var placed: Node2D = null
@@ -4179,12 +4229,17 @@ func _on_context_action_requested(action_id: StringName) -> void:
 						_mark_economy_dirty()
 						_mark_jobs_dirty()
 						_hud_dirty = true
+		&"EquipSelectedItem":
+			if _equip_context_item_to_primary():
+				_mark_jobs_dirty()
+				_hud_dirty = true
 	_context_gather_target_id = 0
 	_context_workstation_id = &""
 	_context_handcart_id = 0
 	_context_handcart_release_pos = Vector2.INF
 	_context_stockpile_zone_id = 0
 	_context_stockpile_use_pos = Vector2.INF
+	_clear_equipment_context()
 
 func _on_designation_toggle_requested() -> void:
 	if selected_designation_target == null or not is_instance_valid(selected_designation_target):
@@ -4546,15 +4601,22 @@ func _apply_passive_item_bonuses() -> void:
 		if c == null or not is_instance_valid(c):
 			continue
 		alive_ids[c.get_instance_id()] = true
+	_prune_manual_equipment_slots(alive_ids)
+	var manual_counts: Dictionary = _manual_equipment_item_counts(alive_ids)
+	_remove_manual_slot_ids(_equipped_top_ids, &"Top", alive_ids)
+	_remove_manual_slot_ids(_equipped_bottom_ids, &"Bottom", alive_ids)
+	_remove_manual_slot_ids(_equipped_hat_ids, &"Hat", alive_ids)
 	if _outfit_mode == &"Combat":
-		_sync_equipped_map(_equipped_top_ids, int(resource_stock.get(&"CombatTop", 0)), alive_ids)
-		_sync_equipped_map(_equipped_bottom_ids, int(resource_stock.get(&"CombatBottom", 0)), alive_ids)
-		_sync_equipped_map(_equipped_hat_ids, int(resource_stock.get(&"CombatHat", 0)), alive_ids)
+		_sync_equipped_map(_equipped_top_ids, maxi(0, int(resource_stock.get(&"CombatTop", 0)) - int(manual_counts.get(&"CombatTop", 0))), alive_ids)
+		_sync_equipped_map(_equipped_bottom_ids, maxi(0, int(resource_stock.get(&"CombatBottom", 0)) - int(manual_counts.get(&"CombatBottom", 0))), alive_ids)
+		_sync_equipped_map(_equipped_hat_ids, maxi(0, int(resource_stock.get(&"CombatHat", 0)) - int(manual_counts.get(&"CombatHat", 0))), alive_ids)
 	else:
-		_sync_equipped_map(_equipped_top_ids, int(resource_stock.get(&"GatherTop", 0)), alive_ids)
-		_sync_equipped_map(_equipped_bottom_ids, int(resource_stock.get(&"GatherBottom", 0)), alive_ids)
-		_sync_equipped_map(_equipped_hat_ids, int(resource_stock.get(&"StrawHat", 0)), alive_ids)
-	_rebuild_weapon_assignments(alive_ids)
+		_sync_equipped_map(_equipped_top_ids, maxi(0, int(resource_stock.get(&"GatherTop", 0)) - int(manual_counts.get(&"GatherTop", 0))), alive_ids)
+		_sync_equipped_map(_equipped_bottom_ids, maxi(0, int(resource_stock.get(&"GatherBottom", 0)) - int(manual_counts.get(&"GatherBottom", 0))), alive_ids)
+		_sync_equipped_map(_equipped_hat_ids, maxi(0, int(resource_stock.get(&"StrawHat", 0)) - int(manual_counts.get(&"StrawHat", 0))), alive_ids)
+	var manual_weapon_ids: Dictionary = _manual_equipment_colonist_ids_for_slot(&"Weapon", alive_ids)
+	_rebuild_weapon_assignments(alive_ids, manual_counts, manual_weapon_ids)
+	_apply_manual_equipment_tracking(alive_ids)
 	var assigned_bed_map: Dictionary = {}
 	for node in _get_group_nodes_cached(&"structures"):
 		if node != null and is_instance_valid(node) and node.has_meta("building_id"):
@@ -4578,6 +4640,9 @@ func _apply_passive_item_bonuses() -> void:
 			&"Hat": (&"CombatHat" if _outfit_mode == &"Combat" else &"StrawHat") if has_hat else &"",
 			&"Weapon": weapon_id if has_weapon else &""
 		}
+		var manual_slots: Dictionary = _manual_equipment_slots_for_colonist(cid)
+		for slot_key in manual_slots.keys():
+			equipped_slots[StringName(slot_key)] = StringName(manual_slots[slot_key])
 		if colonist.has_method("set_wearing_clothes"):
 			colonist.set_wearing_clothes(has_any_apparel)
 		if colonist.has_method("set_equipment_slots"):
@@ -4636,17 +4701,17 @@ func _sync_equipped_map(equipped_map: Dictionary, max_count: int, alive_ids: Dic
 			equipped_map[cid] = true
 			kept += 1
 
-func _rebuild_weapon_assignments(alive_ids: Dictionary) -> void:
+func _rebuild_weapon_assignments(alive_ids: Dictionary, manual_counts: Dictionary = {}, manual_weapon_ids: Dictionary = {}) -> void:
 	for cid in _equipped_weapon_kind.keys():
-		if not alive_ids.has(cid):
+		if not alive_ids.has(cid) or manual_weapon_ids.has(cid):
 			_equipped_weapon_kind.erase(cid)
 	var wanted: Array[StringName] = []
 	if _outfit_mode == &"Combat":
-		for _i in range(int(resource_stock.get(&"Bow", 0))):
+		for _i in range(maxi(0, int(resource_stock.get(&"Bow", 0)) - int(manual_counts.get(&"Bow", 0)))):
 			wanted.append(&"Bow")
-		for _i in range(int(resource_stock.get(&"Sword", 0))):
+		for _i in range(maxi(0, int(resource_stock.get(&"Sword", 0)) - int(manual_counts.get(&"Sword", 0)))):
 			wanted.append(&"Sword")
-	for _i in range(int(resource_stock.get(&"Weapon", 0))):
+	for _i in range(maxi(0, int(resource_stock.get(&"Weapon", 0)) - int(manual_counts.get(&"Weapon", 0)))):
 		wanted.append(&"Weapon")
 	var next_map: Dictionary = {}
 	var idx: int = 0
@@ -4658,12 +4723,73 @@ func _rebuild_weapon_assignments(alive_ids: Dictionary) -> void:
 		var cid: int = colonist.get_instance_id()
 		if not alive_ids.has(cid):
 			continue
+		if manual_weapon_ids.has(cid):
+			continue
 		next_map[cid] = wanted[idx]
 		idx += 1
 	_equipped_weapon_kind = next_map
 	_equipped_weapon_ids.clear()
 	for cid in _equipped_weapon_kind.keys():
 		_equipped_weapon_ids[cid] = true
+
+func _prune_manual_equipment_slots(alive_ids: Dictionary) -> void:
+	for cid_any in _manual_equipment_slots_by_colonist.keys():
+		var cid: int = int(cid_any)
+		if not alive_ids.has(cid):
+			_manual_equipment_slots_by_colonist.erase(cid)
+
+func _manual_equipment_slots_for_colonist(colonist_id: int) -> Dictionary:
+	var slots_variant: Variant = _manual_equipment_slots_by_colonist.get(colonist_id, {})
+	if slots_variant is Dictionary:
+		return (slots_variant as Dictionary).duplicate(true)
+	return {}
+
+func _manual_equipment_item_counts(alive_ids: Dictionary) -> Dictionary:
+	var counts: Dictionary = {}
+	for cid_any in _manual_equipment_slots_by_colonist.keys():
+		var cid: int = int(cid_any)
+		if not alive_ids.has(cid):
+			continue
+		var slots: Dictionary = _manual_equipment_slots_for_colonist(cid)
+		for slot_key in slots.keys():
+			var item_id: StringName = StringName(slots[slot_key])
+			if item_id == &"":
+				continue
+			counts[item_id] = int(counts.get(item_id, 0)) + 1
+	return counts
+
+func _manual_equipment_colonist_ids_for_slot(slot_key: StringName, alive_ids: Dictionary) -> Dictionary:
+	var ids: Dictionary = {}
+	for cid_any in _manual_equipment_slots_by_colonist.keys():
+		var cid: int = int(cid_any)
+		if not alive_ids.has(cid):
+			continue
+		var slots: Dictionary = _manual_equipment_slots_for_colonist(cid)
+		if StringName(slots.get(slot_key, &"")) != &"":
+			ids[cid] = true
+	return ids
+
+func _remove_manual_slot_ids(equipped_map: Dictionary, slot_key: StringName, alive_ids: Dictionary) -> void:
+	var ids: Dictionary = _manual_equipment_colonist_ids_for_slot(slot_key, alive_ids)
+	for cid_any in ids.keys():
+		equipped_map.erase(int(cid_any))
+
+func _apply_manual_equipment_tracking(alive_ids: Dictionary) -> void:
+	for cid_any in _manual_equipment_slots_by_colonist.keys():
+		var cid: int = int(cid_any)
+		if not alive_ids.has(cid):
+			continue
+		var slots: Dictionary = _manual_equipment_slots_for_colonist(cid)
+		if StringName(slots.get(&"Top", &"")) != &"":
+			_equipped_top_ids[cid] = true
+		if StringName(slots.get(&"Bottom", &"")) != &"":
+			_equipped_bottom_ids[cid] = true
+		if StringName(slots.get(&"Hat", &"")) != &"":
+			_equipped_hat_ids[cid] = true
+		var weapon_id: StringName = StringName(slots.get(&"Weapon", &""))
+		if weapon_id != &"":
+			_equipped_weapon_kind[cid] = weapon_id
+			_equipped_weapon_ids[cid] = true
 
 func _clear_pending_placement() -> void:
 	pending_building_id = &""
@@ -4673,6 +4799,7 @@ func _clear_pending_placement() -> void:
 	_context_handcart_release_pos = Vector2.INF
 	_context_stockpile_zone_id = 0
 	_context_stockpile_use_pos = Vector2.INF
+	_clear_equipment_context()
 	selected_designation_target = null
 	selected_stockpile_zone = null
 	selected_farm_zone = null
@@ -4817,6 +4944,162 @@ func _prepare_install_from_selected_stockpile(resource_type: StringName) -> void
 	_mark_economy_dirty()
 	_mark_jobs_dirty()
 
+func _clear_equipment_context() -> void:
+	_context_equipment_resource = &""
+	_context_equipment_source_kind = &""
+	_context_equipment_drop_id = 0
+	_context_equipment_stockpile_zone_id = 0
+
+func _equipment_slot_for_item(item_id: StringName) -> StringName:
+	if item_id == &"":
+		return &""
+	var def: Resource = EQUIPMENT_STATS.get_resource_def(item_id)
+	if def == null:
+		return &""
+	if String(def.get("category")) == "Weapon":
+		return &"Weapon"
+	var raw: String = String(item_id)
+	if raw.ends_with("Top"):
+		return &"Top"
+	if raw.ends_with("Bottom"):
+		return &"Bottom"
+	if raw.ends_with("Hat"):
+		return &"Hat"
+	return &""
+
+func _is_equipment_item(item_id: StringName) -> bool:
+	return _equipment_slot_for_item(item_id) != &""
+
+func _resource_display_name(item_id: StringName) -> String:
+	var def: Resource = EQUIPMENT_STATS.get_resource_def(item_id)
+	if def != null:
+		var display: String = String(def.get("display_name"))
+		if not display.is_empty():
+			return display
+	return String(item_id)
+
+func _try_show_equipment_context_from_right_click(world_pos: Vector2, screen_pos: Vector2) -> bool:
+	var stockpile_item: Dictionary = _find_stockpile_item_at(world_pos)
+	if not stockpile_item.is_empty():
+		var stock_resource: StringName = StringName(stockpile_item.get("resource_type", &""))
+		var stock_zone: Node = stockpile_item.get("zone", null)
+		if _is_equipment_item(stock_resource) and stock_zone != null and is_instance_valid(stock_zone):
+			_context_equipment_resource = stock_resource
+			_context_equipment_source_kind = &"Stockpile"
+			_context_equipment_stockpile_zone_id = stock_zone.get_instance_id()
+			_context_equipment_drop_id = 0
+			_context_gather_target_id = 0
+			_context_workstation_id = &""
+			_context_handcart_id = 0
+			_context_handcart_release_pos = Vector2.INF
+			_context_stockpile_zone_id = 0
+			_context_stockpile_use_pos = Vector2.INF
+			hud.show_context_action_button(
+				&"EquipSelectedItem",
+				_t("main.context.equip", {"item": _resource_display_name(stock_resource)}, "%s 장착" % _resource_display_name(stock_resource)),
+				screen_pos
+			)
+			return true
+	var drop: Node = _find_resource_drop_near(world_pos, 40.0)
+	if drop == null:
+		return false
+	var drop_resource: StringName = StringName(drop.get("resource_type"))
+	if not _is_equipment_item(drop_resource):
+		return false
+	if int(drop.get("amount")) <= 0:
+		return false
+	_context_equipment_resource = drop_resource
+	_context_equipment_source_kind = &"Drop"
+	_context_equipment_drop_id = drop.get_instance_id()
+	_context_equipment_stockpile_zone_id = 0
+	_context_gather_target_id = 0
+	_context_workstation_id = &""
+	_context_handcart_id = 0
+	_context_handcart_release_pos = Vector2.INF
+	_context_stockpile_zone_id = 0
+	_context_stockpile_use_pos = Vector2.INF
+	hud.show_context_action_button(
+		&"EquipSelectedItem",
+		_t("main.context.equip", {"item": _resource_display_name(drop_resource)}, "%s 장착" % _resource_display_name(drop_resource)),
+		screen_pos
+	)
+	return true
+
+func _equip_context_item_to_primary() -> bool:
+	var colonist: Node = _get_primary_selected_colonist()
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	var item_id: StringName = _context_equipment_resource
+	var slot_key: StringName = _equipment_slot_for_item(item_id)
+	if slot_key == &"":
+		return false
+	var current_slots: Dictionary = colonist.get_equipment_snapshot() if colonist.has_method("get_equipment_snapshot") else {}
+	var already_equipped: bool = StringName(current_slots.get(slot_key, &"")) == item_id
+	var manual_slots: Dictionary = _manual_equipment_slots_for_colonist(colonist.get_instance_id())
+	if already_equipped and StringName(manual_slots.get(slot_key, &"")) == item_id:
+		return true
+	if already_equipped and _context_equipment_source_kind == &"Drop":
+		return true
+	match _context_equipment_source_kind:
+		&"Stockpile":
+			var zone_obj: Object = instance_from_id(_context_equipment_stockpile_zone_id)
+			if zone_obj == null or not is_instance_valid(zone_obj) or not zone_obj.has_method("remove_resource"):
+				return false
+			var removed: int = int(zone_obj.remove_resource(item_id, 1))
+			if removed <= 0:
+				return false
+		&"Drop":
+			var drop_obj: Object = instance_from_id(_context_equipment_drop_id)
+			if drop_obj == null or not is_instance_valid(drop_obj) or not drop_obj.has_method("take_amount"):
+				return false
+			var taken: int = int(drop_obj.take_amount(1))
+			if taken <= 0:
+				return false
+			resource_stock[item_id] = int(resource_stock.get(item_id, 0)) + taken
+			if drop_obj.has_method("is_empty") and bool(drop_obj.is_empty()):
+				drop_obj.queue_free()
+		_:
+			return false
+	if already_equipped:
+		_set_manual_equipment_slot(colonist, slot_key, item_id)
+		_apply_passive_item_bonuses()
+		_mark_maintenance_dirty()
+		_hud_dirty = true
+		return true
+	return _equip_item_to_colonist(colonist, item_id, slot_key)
+
+func _set_manual_equipment_slot(colonist: Node, slot_key: StringName, item_id: StringName) -> void:
+	var cid: int = colonist.get_instance_id()
+	var manual_slots: Dictionary = _manual_equipment_slots_for_colonist(cid)
+	manual_slots[slot_key] = item_id
+	_manual_equipment_slots_by_colonist[cid] = manual_slots
+
+func _equip_item_to_colonist(colonist: Node, item_id: StringName, slot_key: StringName) -> bool:
+	if colonist == null or not is_instance_valid(colonist):
+		return false
+	if item_id == &"" or slot_key == &"":
+		return false
+	if not colonist.has_method("get_equipment_snapshot") or not colonist.has_method("set_equipment_slots"):
+		return false
+	var slots: Dictionary = colonist.get_equipment_snapshot()
+	var old_item: StringName = StringName(slots.get(slot_key, &""))
+	if old_item == item_id:
+		return true
+	if old_item != &"":
+		resource_stock[old_item] = maxi(0, int(resource_stock.get(old_item, 0)) - 1)
+		if colonist is Node2D:
+			_spawn_resource_drop(old_item, 1, (colonist as Node2D).global_position)
+	slots[slot_key] = item_id
+	colonist.set_equipment_slots(slots)
+	_set_manual_equipment_slot(colonist, slot_key, item_id)
+	_apply_passive_item_bonuses()
+	hud.set_resource_stock(resource_stock)
+	_mark_economy_dirty()
+	_mark_maintenance_dirty()
+	_mark_combat_dirty()
+	_hud_dirty = true
+	return true
+
 func _handle_user_right_click(event: InputEventMouseButton) -> void:
 	var world_pos: Vector2 = world_root.get_global_mouse_position()
 	if pending_building_id != &"" or pending_install_item != &"" or current_action == &"StockpileZone" or current_action == &"FarmZone" or current_action == &"SetRallyFlag" or current_action == &"DragGather":
@@ -4826,6 +5109,8 @@ func _handle_user_right_click(event: InputEventMouseButton) -> void:
 		return
 	_sanitize_selected_colonists()
 	if not selected_colonists.is_empty():
+		if _try_show_equipment_context_from_right_click(world_pos, event.position):
+			return
 		var stockpile_item: Dictionary = _find_stockpile_item_at(world_pos)
 		if not stockpile_item.is_empty():
 			var stock_resource: StringName = StringName(stockpile_item.get("resource_type", &""))
@@ -5753,7 +6038,33 @@ func _record_frame_profile(delta: float) -> void:
 	print("[Perf][Wave] render_fps=%.1f avg_fps=%.1f p95_fps=%.1f p99_fps=%.1f peak_fps=%.1f max_dt_ms=%.1f hitch33=%d hitch100=%d hitch250=%d samples=%d raid=%s" % [
 		render_fps, avg_fps, p95_fps, p99_fps, max_fps, max_dt * 1000.0, hitch_33, hitch_100, hitch_250, sample_count, String(_raid_state)
 	])
+	_report_enemy_perf_snapshot()
 	_perf_report_next_ms = now_ms + 5000
+
+func _report_enemy_perf_snapshot() -> void:
+	var enemy_perf: Dictionary = EnemyUnitBase.consume_perf_stats()
+	var coordinator_stats: Dictionary = {}
+	if _enemy_engagement_coordinator != null and is_instance_valid(_enemy_engagement_coordinator) and _enemy_engagement_coordinator.has_method("get_debug_stats"):
+		coordinator_stats = _enemy_engagement_coordinator.get_debug_stats()
+	var occupancy_stats: Dictionary = {}
+	if _pathing_occupancy != null and is_instance_valid(_pathing_occupancy) and _pathing_occupancy.has_method("get_debug_stats"):
+		occupancy_stats = _pathing_occupancy.get_debug_stats()
+	var flow_stats: Dictionary = {}
+	if _enemy_flow_field_service != null and is_instance_valid(_enemy_flow_field_service) and _enemy_flow_field_service.has_method("get_debug_stats"):
+		flow_stats = _enemy_flow_field_service.get_debug_stats()
+	print("[Perf][Enemy] units=%d steps=%d move=%.2f ai=%.2f coord_req=%d coord_builds=%d coord_ms=%.2f dyn_block=%.2f dyn_units=%d flow_build=%.2f flow_exp=%d" % [
+		int(enemy_perf.get("units", 0)),
+		int(enemy_perf.get("steps", 0)),
+		float(enemy_perf.get("move_ms", 0.0)),
+		float(enemy_perf.get("ai_ms", 0.0)),
+		int(coordinator_stats.get("requests", 0)),
+		int(coordinator_stats.get("target_context_builds", 0)),
+		float(coordinator_stats.get("total_request_ms", 0.0)),
+		float(occupancy_stats.get("last_dynamic_ms", 0.0)),
+		int(occupancy_stats.get("dynamic_units", 0)),
+		float(flow_stats.get("last_build_ms", 0.0)),
+		int(flow_stats.get("last_expansions", 0))
+	])
 
 func _reset_combat_window() -> void:
 	_combat_window = {

@@ -19,6 +19,8 @@ var designated: bool = false
 func _ready() -> void:
 	current_amount = max_amount
 	add_to_group("gatherables")
+	if label != null:
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_refresh_visual()
 
 func is_depleted() -> bool:

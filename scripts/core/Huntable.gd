@@ -20,6 +20,8 @@ var designated: bool = false
 func _ready() -> void:
 	health = maxi(1, max_health)
 	add_to_group("huntables")
+	if label != null:
+		label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_refresh_visual()
 
 func is_dead() -> bool:

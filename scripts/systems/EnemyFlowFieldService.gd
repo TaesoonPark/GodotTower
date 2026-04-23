@@ -3,6 +3,8 @@ class_name EnemyFlowFieldService
 
 const MAX_FIELDS: int = 8
 const BASE_MAX_BUILDS_PER_FRAME: int = 1
+const BUILD_EXPANSIONS_PER_FRAME: int = 1400
+const BUILD_MAX_MS_PER_FRAME: float = 3.0
 const HASH_REFRESH_SEC: float = 0.15
 const HASH_BUCKET_TILES: float = 2.0
 const SEPARATION_RADIUS_TILES: float = 0.9
@@ -20,6 +22,8 @@ var _field_cache: Dictionary = {}
 var _lru_tick: int = 0
 var _frame_id: int = -1
 var _frame_builds: int = 0
+var _pending_field_builds: Dictionary = {}
+var _pending_field_order: Array[String] = []
 var _unit_buckets: Dictionary = {}
 var _next_hash_refresh_ms: int = 0
 var _debug_stats: Dictionary = {
@@ -33,6 +37,7 @@ var _debug_stats: Dictionary = {
 	"last_expansions": 0,
 	"last_field_size": 0,
 	"last_build_ms": 0.0,
+	"pending_builds": 0,
 	"direct_clear": 0
 }
 
@@ -48,6 +53,12 @@ func notify_obstacle_revision(revision: int) -> void:
 		return
 	_revision = revision
 	_field_cache.clear()
+	_pending_field_builds.clear()
+	_pending_field_order.clear()
+	_debug_stats["pending_builds"] = 0
+
+func _process(_delta: float) -> void:
+	_process_pending_field_builds()
 
 func get_flow_direction(current_pos: Vector2, goal_pos: Vector2, self_id: int) -> Vector2:
 	_refresh_unit_hash_if_due()
@@ -63,16 +74,14 @@ func get_flow_direction(current_pos: Vector2, goal_pos: Vector2, self_id: int) -
 		_debug_stats["cache_hits"] = int(_debug_stats.get("cache_hits", 0)) + 1
 	else:
 		_debug_stats["cache_misses"] = int(_debug_stats.get("cache_misses", 0)) + 1
-		if not _can_build_this_frame():
+		if _pending_field_builds.has(cache_key):
 			_debug_stats["build_deferred"] = int(_debug_stats.get("build_deferred", 0)) + 1
 			return Vector2.ZERO
-		field = _build_field(goal_tile)
-		if field.is_empty():
-			_debug_stats["build_failed"] = int(_debug_stats.get("build_failed", 0)) + 1
+		if not _queue_field_build(cache_key, goal_tile):
+			_debug_stats["build_deferred"] = int(_debug_stats.get("build_deferred", 0)) + 1
 			return Vector2.ZERO
-		_field_cache[cache_key] = field
-		_prune_field_cache()
-		_debug_stats["field_builds"] = int(_debug_stats.get("field_builds", 0)) + 1
+		_debug_stats["build_deferred"] = int(_debug_stats.get("build_deferred", 0)) + 1
+		return Vector2.ZERO
 	_lru_tick += 1
 	field["last_used"] = _lru_tick
 	var flow_dir: Vector2 = _direction_from_field(field, current_pos)
@@ -90,6 +99,15 @@ func _apply_separation(flow_dir: Vector2, current_pos: Vector2, self_id: int) ->
 func get_debug_stats() -> Dictionary:
 	return _debug_stats.duplicate(true)
 
+func is_navigation_deferred(goal_pos: Vector2) -> bool:
+	var goal_tile: Vector2i = _clamp_tile(_world_to_tile(goal_pos))
+	var cache_key: String = _field_cache_key(goal_tile)
+	if _field_cache.has(cache_key):
+		return false
+	if _pending_field_builds.has(cache_key):
+		return true
+	return _frame_id == Engine.get_physics_frames() and _frame_builds >= BASE_MAX_BUILDS_PER_FRAME
+
 func _field_cache_key(goal_tile: Vector2i) -> String:
 	return "enemy:%d:%d:%d" % [_revision, goal_tile.x, goal_tile.y]
 
@@ -101,6 +119,156 @@ func _can_build_this_frame() -> bool:
 	if _frame_builds >= BASE_MAX_BUILDS_PER_FRAME:
 		return false
 	_frame_builds += 1
+	return true
+
+func _queue_field_build(cache_key: String, goal_tile: Vector2i) -> bool:
+	if _pending_field_builds.has(cache_key):
+		return true
+	if not _can_build_this_frame():
+		return false
+	var builder: Dictionary = _create_field_builder(cache_key, goal_tile)
+	if builder.is_empty():
+		_debug_stats["build_failed"] = int(_debug_stats.get("build_failed", 0)) + 1
+		return false
+	_pending_field_builds[cache_key] = builder
+	_pending_field_order.append(cache_key)
+	_debug_stats["pending_builds"] = _pending_field_order.size()
+	return true
+
+func _create_field_builder(cache_key: String, goal_tile: Vector2i) -> Dictionary:
+	var width: int = _max_tile_x() + 1
+	var height: int = _max_tile_y() + 1
+	var cell_count: int = width * height
+	if cell_count <= 0:
+		return {}
+	var walkable: PackedByteArray = _build_walkable_map(goal_tile, width, height)
+	var costs := PackedInt32Array()
+	costs.resize(cell_count)
+	costs.fill(FIELD_INF_COST)
+	var closed := PackedByteArray()
+	closed.resize(cell_count)
+	var goal_idx: int = _tile_index(goal_tile.x, goal_tile.y, width)
+	costs[goal_idx] = 0
+	var heap_costs := PackedInt32Array()
+	var heap_indexes := PackedInt32Array()
+	_heap_push_index(heap_costs, heap_indexes, goal_idx, 0)
+	return {
+		"key": cache_key,
+		"goal": goal_tile,
+		"costs": costs,
+		"walkable": walkable,
+		"closed": closed,
+		"heap_costs": heap_costs,
+		"heap_indexes": heap_indexes,
+		"width": width,
+		"height": height,
+		"expansions": 0,
+		"reachable": 0,
+		"work_us": 0
+	}
+
+func _process_pending_field_builds() -> void:
+	if _pending_field_order.is_empty():
+		return
+	var processed: int = 0
+	while processed < BASE_MAX_BUILDS_PER_FRAME and not _pending_field_order.is_empty():
+		var cache_key: String = _pending_field_order[0]
+		if not _pending_field_builds.has(cache_key):
+			_pending_field_order.remove_at(0)
+			continue
+		var builder: Dictionary = _pending_field_builds[cache_key]
+		var complete: bool = _advance_field_builder(builder)
+		if complete:
+			_pending_field_builds.erase(cache_key)
+			_pending_field_order.remove_at(0)
+		else:
+			_pending_field_builds[cache_key] = builder
+			break
+		processed += 1
+	_debug_stats["pending_builds"] = _pending_field_order.size()
+
+func _advance_field_builder(builder: Dictionary) -> bool:
+	var frame_start_us: int = Time.get_ticks_usec()
+	var max_us: int = int(round(BUILD_MAX_MS_PER_FRAME * 1000.0))
+	var costs: PackedInt32Array = builder.get("costs", PackedInt32Array())
+	var walkable: PackedByteArray = builder.get("walkable", PackedByteArray())
+	var closed: PackedByteArray = builder.get("closed", PackedByteArray())
+	var heap_costs: PackedInt32Array = builder.get("heap_costs", PackedInt32Array())
+	var heap_indexes: PackedInt32Array = builder.get("heap_indexes", PackedInt32Array())
+	var width: int = int(builder.get("width", 0))
+	var height: int = int(builder.get("height", 0))
+	var expansions: int = int(builder.get("expansions", 0))
+	var reachable: int = int(builder.get("reachable", 0))
+	var local_expansions: int = 0
+	while heap_indexes.size() > 0:
+		var best_idx: int = _heap_pop_index(heap_costs, heap_indexes)
+		if closed[best_idx] != 0:
+			continue
+		closed[best_idx] = 1
+		expansions += 1
+		reachable += 1
+		local_expansions += 1
+		var bx: int = best_idx % width
+		var by: int = int(best_idx / width)
+		var best_cost: int = costs[best_idx]
+		for dy in range(-1, 2):
+			for dx in range(-1, 2):
+				if dx == 0 and dy == 0:
+					continue
+				var nx: int = bx + dx
+				var ny: int = by + dy
+				if nx < 0 or nx >= width or ny < 0 or ny >= height:
+					continue
+				var next_idx: int = _tile_index(nx, ny, width)
+				if walkable[next_idx] == 0:
+					continue
+				if dx != 0 and dy != 0:
+					if walkable[_tile_index(nx, by, width)] == 0:
+						continue
+					if walkable[_tile_index(bx, ny, width)] == 0:
+						continue
+				if closed[next_idx] != 0:
+					continue
+				var step_cost: int = DIAG_COST if dx != 0 and dy != 0 else ORTH_COST
+				var next_cost: int = best_cost + step_cost
+				if next_cost >= costs[next_idx]:
+					continue
+				costs[next_idx] = next_cost
+				_heap_push_index(heap_costs, heap_indexes, next_idx, next_cost)
+		if local_expansions >= BUILD_EXPANSIONS_PER_FRAME:
+			break
+		if local_expansions % 64 == 0 and Time.get_ticks_usec() - frame_start_us >= max_us:
+			break
+	var elapsed_us: int = Time.get_ticks_usec() - frame_start_us
+	builder["costs"] = costs
+	builder["walkable"] = walkable
+	builder["closed"] = closed
+	builder["heap_costs"] = heap_costs
+	builder["heap_indexes"] = heap_indexes
+	builder["expansions"] = expansions
+	builder["reachable"] = reachable
+	builder["work_us"] = int(builder.get("work_us", 0)) + elapsed_us
+	_debug_stats["last_expansions"] = expansions
+	_debug_stats["last_field_size"] = reachable
+	_debug_stats["last_build_ms"] = float(builder.get("work_us", 0)) / 1000.0
+	if heap_indexes.size() > 0:
+		return false
+	if reachable <= 1:
+		_debug_stats["build_failed"] = int(_debug_stats.get("build_failed", 0)) + 1
+		return true
+	var field: Dictionary = {
+		"costs": costs,
+		"walkable": walkable,
+		"width": width,
+		"height": height,
+		"goal": builder.get("goal", Vector2i.ZERO),
+		"last_used": _lru_tick
+	}
+	var cache_key: String = String(builder.get("key", ""))
+	if cache_key != "":
+		_field_cache[cache_key] = field
+		_prune_field_cache()
+		_debug_stats["field_builds"] = int(_debug_stats.get("field_builds", 0)) + 1
 	return true
 
 func _prune_field_cache() -> void:

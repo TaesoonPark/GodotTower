@@ -288,6 +288,7 @@ func _rebuild_stack_visuals() -> void:
 		txt.custom_minimum_size = Vector2(64, 16)
 		txt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		txt.add_theme_font_size_override("font_size", 11)
+		txt.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		holder.add_child(txt)
 		_stack_root.add_child(holder)
 		_stack_slots.append({

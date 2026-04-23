@@ -7,6 +7,7 @@ const CATALOG_RESEARCH: StringName = &"Research"
 const CATALOG_FARM: StringName = &"Farm"
 const CATALOG_CRAFT: StringName = &"Craft"
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
+const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
 
 @onready var resources_label: Label = $TopResourceBar
 @onready var time_flow_label: Label = $TimeFlowLabel
@@ -433,7 +434,7 @@ func set_time_flow_state(paused: bool, speed_scale: float, elapsed_game_seconds:
 
 func set_equipment_preview(colonist: Node) -> void:
 	if colonist == null:
-		equipment_label.text = _t("hud.equipment.empty")
+		equipment_label.text = "%s\n%s" % [_t("hud.equipment.summary", {"items": ""}).strip_edges(), _t("common.none")]
 		_set_equipment_slot_icon(top_slot_icon, false, Color(0.36, 0.63, 0.9))
 		_set_equipment_slot_icon(bottom_slot_icon, false, Color(0.55, 0.74, 0.95))
 		_set_equipment_slot_icon(hat_slot_icon, false, Color(0.93, 0.74, 0.4))
@@ -442,17 +443,29 @@ func set_equipment_preview(colonist: Node) -> void:
 	var slots := {&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &""}
 	if colonist.has_method("get_equipment_snapshot"):
 		slots = colonist.get_equipment_snapshot()
-	var parts: Array[String] = []
-	for key in [&"Top", &"Bottom", &"Hat", &"Weapon"]:
-		var item_id: StringName = StringName(slots.get(key, &""))
-		if item_id != &"":
-			parts.append("%s:%s" % [String(key), String(item_id)])
-	var equipment_text: String = _t("common.none") if parts.is_empty() else ", ".join(parts)
-	equipment_label.text = _t("hud.equipment.summary", {"items": equipment_text})
+	equipment_label.text = _format_equipment_lines(slots)
 	_set_equipment_slot_icon(top_slot_icon, StringName(slots.get(&"Top", &"")) != &"", Color(0.36, 0.63, 0.9))
 	_set_equipment_slot_icon(bottom_slot_icon, StringName(slots.get(&"Bottom", &"")) != &"", Color(0.55, 0.74, 0.95))
 	_set_equipment_slot_icon(hat_slot_icon, StringName(slots.get(&"Hat", &"")) != &"", Color(0.93, 0.74, 0.4))
 	_set_equipment_slot_icon(weapon_slot_icon, StringName(slots.get(&"Weapon", &"")) != &"", Color(0.92, 0.38, 0.38))
+
+func _format_equipment_lines(slots: Dictionary) -> String:
+	var lines: Array[String] = [_t("hud.equipment.summary", {"items": ""}).strip_edges()]
+	lines.append("%s: %s" % [_t("hud.slot.top"), _equipment_display_name(StringName(slots.get(&"Top", &"")))])
+	lines.append("%s: %s" % [_t("hud.slot.bottom"), _equipment_display_name(StringName(slots.get(&"Bottom", &"")))])
+	lines.append("%s: %s" % [_t("hud.slot.hat"), _equipment_display_name(StringName(slots.get(&"Hat", &"")))])
+	lines.append("%s: %s" % [_t("hud.slot.weapon"), _equipment_display_name(StringName(slots.get(&"Weapon", &"")))])
+	return "\n".join(lines)
+
+func _equipment_display_name(item_id: StringName) -> String:
+	if item_id == &"":
+		return _t("common.none")
+	var def: Resource = EQUIPMENT_STATS.get_resource_def(item_id)
+	if def != null:
+		var display: String = String(def.get("display_name"))
+		if not display.is_empty():
+			return display
+	return String(item_id)
 
 func set_needs_preview(colonist: Node) -> void:
 	if colonist == null:
