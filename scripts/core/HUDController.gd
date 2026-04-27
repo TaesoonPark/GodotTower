@@ -8,11 +8,14 @@ const CATALOG_FARM: StringName = &"Farm"
 const CATALOG_CRAFT: StringName = &"Craft"
 const GAME_TEXT: Script = preload("res://scripts/core/GameText.gd")
 const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
+const FPS_UPDATE_INTERVAL_SEC: float = 0.2
 
+@onready var fps_label: Label = $FPSLabel
 @onready var resources_label: Label = $TopResourceBar
 @onready var time_flow_label: Label = $TimeFlowLabel
 @onready var raid_status_label: Label = $RaidStatusLabel
 @onready var raid_test_button: Button = $RaidTestButton
+@onready var save_reset_button: Button = $SaveResetButton
 @onready var context_action_button: Button = $ContextActionButton
 
 @onready var roster_panel: HUDRosterPanel = $LeftRosterPanel
@@ -117,6 +120,7 @@ signal context_action_requested(action_id: StringName)
 signal selected_object_action_requested(action_id: StringName)
 signal outfit_mode_changed(mode: StringName)
 signal raid_test_warning_requested()
+signal save_reset_requested()
 signal research_project_changed(project_id: StringName)
 signal research_start_requested()
 signal portrait_selected(colonist_id: int)
@@ -164,10 +168,13 @@ var _context_action_id: StringName = &""
 var _last_resource_stock_text: String = ""
 var _defense_status_label: Label = null
 var _work_toggle_signal_mute: bool = false
+var _fps_update_left: float = 0.0
+
 func _ready() -> void:
 	_catalog_description = _t("hud.catalog.description.default")
 	_research_status_text = _t("hud.research.status.none")
 	_apply_static_texts()
+	_update_fps_label()
 	roster_panel.set_title(_t("hud.roster.title"))
 	roster_panel.portrait_selected.connect(func(colonist_id: int):
 		portrait_selected.emit(colonist_id)
@@ -238,6 +245,7 @@ func _ready() -> void:
 	_setup_stockpile_filter_widgets()
 	context_action_button.pressed.connect(_on_context_action_button_pressed)
 	raid_test_button.pressed.connect(func(): raid_test_warning_requested.emit())
+	save_reset_button.pressed.connect(func(): save_reset_requested.emit())
 
 	_defense_status_label = Label.new()
 	_defense_status_label.text = _t("hud.defense.status.empty")
@@ -250,11 +258,19 @@ func _ready() -> void:
 	set_stockpile_filter_state(false, 0, {}, 0, {})
 	set_active_action(_active_action)
 
+func _process(delta: float) -> void:
+	_fps_update_left -= delta
+	if _fps_update_left > 0.0:
+		return
+	_update_fps_label()
+	_fps_update_left = FPS_UPDATE_INTERVAL_SEC
+
 func _apply_static_texts() -> void:
 	resources_label.text = _t("hud.resource.title")
 	time_flow_label.text = _t("hud.time.default")
 	raid_status_label.text = _t("hud.raid.idle", {"kind": ""})
 	raid_test_button.text = _t("hud.raid.test_button")
+	save_reset_button.text = _t("hud.save_reset_button")
 	context_action_button.text = _t("hud.context.action.default")
 	status_title.text = _t("hud.status.title")
 	selected_label.text = _t("hud.selected.none")
@@ -302,6 +318,11 @@ func _apply_static_texts() -> void:
 	build_catalog_button.text = _t("hud.action.build")
 	outfit_toggle_button.text = _t("hud.action.outfit")
 	rally_flag_button.text = _t("hud.action.rally")
+
+func _update_fps_label() -> void:
+	if fps_label == null:
+		return
+	fps_label.text = "FPS: %d" % int(round(Engine.get_frames_per_second()))
 
 func set_colonist_roster(entries: Array) -> void:
 	roster_panel.set_entries(entries)

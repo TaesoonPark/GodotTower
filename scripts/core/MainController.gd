@@ -296,6 +296,7 @@ func _ready() -> void:
 	hud.selected_object_action_requested.connect(_on_selected_object_action_requested)
 	hud.outfit_mode_changed.connect(_on_outfit_mode_changed)
 	hud.raid_test_warning_requested.connect(_on_raid_test_warning_requested)
+	hud.save_reset_requested.connect(_on_save_reset_requested)
 	hud.bed_assignee_changed.connect(_on_bed_assignee_changed)
 	hud.bed_auto_assign_requested.connect(_on_bed_auto_assign_requested)
 	hud.research_project_changed.connect(_on_research_project_changed)
@@ -370,6 +371,8 @@ func _get_gui_playtest_building_id() -> StringName:
 	return StringName(raw)
 
 func _emit_gui_playtest_hints() -> void:
+	if not is_inside_tree():
+		return
 	if hud == null or not is_instance_valid(hud):
 		return
 	var building_id: StringName = _get_gui_playtest_building_id()
@@ -377,6 +380,8 @@ func _emit_gui_playtest_hints() -> void:
 		var rect: Rect2 = hud.get_building_button_rect(building_id)
 		if rect.size == Vector2.ZERO:
 			await get_tree().process_frame
+			if not is_inside_tree() or hud == null or not is_instance_valid(hud):
+				return
 			rect = hud.get_building_button_rect(building_id)
 		if rect.size != Vector2.ZERO:
 			print("GUI_HINT_BUILD_BUTTON %s %d %d %d %d" % [
@@ -474,8 +479,11 @@ func _mark_group_cache_for_node(node: Node) -> void:
 			_group_cache_dirty[group_name] = true
 
 func _get_group_nodes_cached(group_name: StringName) -> Array:
+	if not is_inside_tree():
+		return []
 	if bool(_group_cache_dirty.get(group_name, true)):
-		_group_cache[group_name] = get_tree().get_nodes_in_group(StringName(group_name))
+		var tree: SceneTree = get_tree()
+		_group_cache[group_name] = tree.get_nodes_in_group(StringName(group_name))
 		_group_cache_dirty[group_name] = false
 	return _group_cache.get(group_name, [])
 
@@ -511,6 +519,36 @@ func _process(delta: float) -> void:
 
 func has_save_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
 	return FileAccess.file_exists(_save_slot_path(slot_id))
+
+func delete_save_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if _save_load_in_progress:
+		return false
+	var path: String = _save_slot_path(slot_id)
+	if not FileAccess.file_exists(path):
+		return true
+	var err: Error = DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	if err != OK:
+		push_warning("Autosave delete failed: %s" % error_string(err))
+		return false
+	return true
+
+func reset_save_and_reload_game_scene(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if not delete_save_slot(slot_id):
+		return false
+	_autosave_enabled = false
+	_next_autosave_ms = 0
+	_clear_pending_dispatch_state()
+	Engine.time_scale = 1.0
+	if not is_inside_tree():
+		return true
+	var tree: SceneTree = get_tree()
+	if tree.current_scene != self:
+		return true
+	var err: Error = tree.reload_current_scene()
+	if err != OK:
+		push_warning("Game scene reload failed after save reset: %s" % error_string(err))
+		return false
+	return true
 
 func save_game_to_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
 	if _save_load_in_progress:
@@ -1881,6 +1919,8 @@ func _make_loaded_block_texture(w: int, h: int, color: Color) -> Texture2D:
 	return ImageTexture.create_from_image(image)
 
 func _queue_event_dispatch() -> void:
+	if not is_inside_tree():
+		return
 	if _dispatch_queued:
 		return
 	_dispatch_queued = true
@@ -1897,6 +1937,19 @@ func _has_pending_dispatch() -> bool:
 		or _hud_dirty \
 		or _hud_time_dirty \
 		or _hud_selection_dirty
+
+func _clear_pending_dispatch_state() -> void:
+	_dispatch_queued = false
+	_dispatch_pathing_dirty = false
+	_dispatch_combat_dirty = false
+	_dispatch_traps_dirty = false
+	_dispatch_farm_dirty = false
+	_dispatch_maintenance_dirty = false
+	_dispatch_economy_dirty = false
+	_dispatch_jobs_dirty = false
+	_hud_dirty = false
+	_hud_time_dirty = false
+	_hud_selection_dirty = false
 
 func _mark_pathing_dirty() -> void:
 	_dispatch_pathing_dirty = true
@@ -1973,6 +2026,9 @@ func _check_job_liveness_watchdog() -> void:
 
 func _dispatch_event_updates() -> void:
 	_dispatch_queued = false
+	if not is_inside_tree():
+		_clear_pending_dispatch_state()
+		return
 	if not _has_pending_dispatch():
 		return
 	var dispatch_start_us: int = Time.get_ticks_usec()
@@ -2614,8 +2670,12 @@ func _set_selected(new_selection: Array) -> void:
 func _maybe_start_auto_raid_benchmark() -> void:
 	if not _is_auto_raid_benchmark_enabled():
 		return
+	if not is_inside_tree():
+		return
 	var timer: SceneTreeTimer = get_tree().create_timer(2.0)
 	timer.timeout.connect(func():
+		if not is_inside_tree():
+			return
 		if _raid_state == &"Idle" or _raid_state == &"Resolved":
 			_start_raid_warning()
 	)
@@ -3418,6 +3478,8 @@ func _on_structure_demolished(world_pos: Vector2, replace_building_id: StringNam
 	call_deferred("_try_place_replacement_building_after_demolish", world_pos, replace_building_id)
 
 func _try_place_replacement_building_after_demolish(world_pos: Vector2, replace_building_id: StringName) -> void:
+	if not is_inside_tree():
+		return
 	_try_place_building_by_id(world_pos, replace_building_id)
 
 func _on_research_progressed(project_id: StringName, points: float) -> void:
@@ -4362,6 +4424,9 @@ func _on_raid_test_warning_requested() -> void:
 	if not _get_alive_raiders().is_empty():
 		return
 	_start_raid_warning()
+
+func _on_save_reset_requested() -> void:
+	reset_save_and_reload_game_scene()
 
 func _cancel_noncombat_jobs_for_active_raid() -> void:
 	if _rally_flag_node == null or not is_instance_valid(_rally_flag_node):

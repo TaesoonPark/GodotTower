@@ -91,6 +91,7 @@ const CELL_CENTER_EPSILON: float = 0.75
 const MELEE_GOAL_CACHE_MS: int = 1600
 const MELEE_SLOT_COUNT: int = 8
 const MELEE_SLOT_MAX_RING: int = 8
+const HELD_WEAPON_HEIGHT: float = 28.0
 
 var _move_stuck_elapsed: float = 0.0
 var _move_repath_fail_streak: int = 0
@@ -127,6 +128,7 @@ var _is_path_blocked_callable: Callable
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
 @onready var sprite: Sprite2D = $Sprite2D
+@onready var weapon_sprite: Sprite2D = $WeaponSprite
 @onready var job_label: Label = $JobLabel
 @onready var work_progress: ProgressBar = $WorkProgress
 
@@ -143,6 +145,7 @@ func _ready() -> void:
 		if sprite_tex != null:
 			sprite.texture = sprite_tex
 	_fit_sprite()
+	_update_weapon_sprite()
 	_friendly_pathing = FRIENDLY_PATHING.new()
 	_friendly_pathing.setup(tile_size)
 	_is_path_blocked_callable = Callable(self, "_is_path_blocked_position")
@@ -178,6 +181,7 @@ func _physics_process(delta: float) -> void:
 		_update_haul_handcart_follow(move_delta)
 		update_job_completion(sim_delta)
 		_process_active_work(sim_delta)
+		_update_weapon_sprite()
 	_sim_accum = sim_remaining
 
 func _lod_tick_interval() -> float:
@@ -1004,6 +1008,7 @@ func assign_job(job: Dictionary) -> void:
 			rest = clampf(rest + 20.0 * rest_recover_multiplier, 0.0, 100.0)
 			mood = clampf(mood + 4.0 * rest_recover_multiplier, 0.0, 100.0)
 			_finish_current_job()
+	_update_weapon_sprite()
 	emit_status()
 
 func capture_current_job_for_resume() -> void:
@@ -1028,6 +1033,7 @@ func cancel_current_job() -> void:
 	_resume_after_move_enabled = false
 	if current_job.is_empty():
 		nav.target_position = global_position
+		_update_weapon_sprite()
 		return
 	var job_type: StringName = current_job.get("type", &"")
 	if job_type == &"BuildSite":
@@ -1089,6 +1095,7 @@ func cancel_current_job() -> void:
 	_reset_build_stall_watch()
 	_clear_path_cache()
 	nav.target_position = global_position
+	_update_weapon_sprite()
 	emit_status()
 
 func is_idle() -> bool:
@@ -1309,6 +1316,7 @@ func set_equipment_slots(next_slots: Dictionary) -> void:
 		changed = true
 	if changed:
 		_refresh_equipment_combat_profile()
+		_update_weapon_sprite()
 		emit_status()
 
 func get_equipment_snapshot() -> Dictionary:
@@ -1371,6 +1379,54 @@ func _fit_sprite() -> void:
 		return
 	var scale_factor: float = sprite_height / tex_size.y
 	sprite.scale = Vector2(scale_factor, scale_factor)
+
+func _update_weapon_sprite() -> void:
+	if weapon_sprite == null:
+		return
+	var job_type: StringName = StringName(current_job.get("type", &""))
+	if job_type != &"CombatMelee" and job_type != &"CombatRanged":
+		weapon_sprite.visible = false
+		return
+	var weapon_id: StringName = StringName(equipment_slots.get(&"Weapon", &""))
+	if weapon_id == &"":
+		weapon_sprite.visible = false
+		return
+	var weapon_tex: Texture2D = GAME_SPRITE.get_drop_texture(weapon_id)
+	if weapon_tex == null:
+		weapon_sprite.visible = false
+		return
+	weapon_sprite.texture = weapon_tex
+	_fit_weapon_sprite()
+	_place_weapon_sprite()
+	weapon_sprite.visible = true
+
+func _fit_weapon_sprite() -> void:
+	if weapon_sprite.texture == null:
+		return
+	var tex_size: Vector2 = weapon_sprite.texture.get_size()
+	if tex_size.y <= 0.0:
+		return
+	var scale_factor: float = HELD_WEAPON_HEIGHT / tex_size.y
+	weapon_sprite.scale = Vector2(scale_factor, scale_factor)
+
+func _place_weapon_sprite() -> void:
+	var facing: Vector2 = _combat_facing_direction()
+	var side: float = -1.0 if facing.x < 0.0 else 1.0
+	weapon_sprite.position = Vector2(18.0 * side, -24.0)
+	weapon_sprite.flip_h = side < 0.0
+	weapon_sprite.rotation = side * 0.35
+
+func _combat_facing_direction() -> Vector2:
+	var target_id: int = int(current_job.get("target_id", 0))
+	if target_id != 0:
+		var target_obj: Object = instance_from_id(target_id)
+		if target_obj != null and is_instance_valid(target_obj) and target_obj is Node2D:
+			var target_delta: Vector2 = (target_obj as Node2D).global_position - global_position
+			if target_delta.length_squared() > 0.0001:
+				return target_delta
+	if _last_move_direction.length_squared() > 0.0001:
+		return _last_move_direction
+	return Vector2.RIGHT
 
 func _is_job_target_reached(threshold: float) -> bool:
 	var target: Vector2 = _snap_to_tile(current_job.get("target", global_position))
@@ -2114,6 +2170,7 @@ func _finish_current_job() -> void:
 	_resume_job_after_move.clear()
 	_resume_after_move_enabled = false
 	_set_work_progress(0.0, false)
+	_update_weapon_sprite()
 	emit_status()
 
 func _t(key: String, params: Dictionary = {}, fallback: String = "") -> String:

@@ -27,7 +27,7 @@ func setup(next_tile_size: float) -> void:
 		_rebuild_maps()
 
 func notify_world_changed() -> void:
-	if get_tree() == null:
+	if not is_inside_tree():
 		return
 	_rebuild_maps()
 
@@ -67,10 +67,11 @@ func get_debug_stats() -> Dictionary:
 	return _debug_stats.duplicate(true)
 
 func _rebuild_maps() -> void:
-	if get_tree() == null:
+	if not is_inside_tree():
 		return
-	var blockers: Array = get_tree().get_nodes_in_group("blocking_structures")
-	var build_sites: Array = get_tree().get_nodes_in_group("build_sites")
+	var tree: SceneTree = get_tree()
+	var blockers: Array = tree.get_nodes_in_group("blocking_structures")
+	var build_sites: Array = tree.get_nodes_in_group("build_sites")
 	var sig: int = _compute_layout_signature(blockers, build_sites)
 	if sig == _layout_signature:
 		return
@@ -98,6 +99,8 @@ func _rebuild_maps() -> void:
 	revision_changed.emit(_revision)
 
 func _refresh_combat_blocked_tiles() -> void:
+	if not is_inside_tree():
+		return
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms < _combat_blocked_next_refresh_ms:
 		return
@@ -105,9 +108,10 @@ func _refresh_combat_blocked_tiles() -> void:
 	_combat_blocked_next_refresh_ms = now_ms + COMBAT_BLOCKED_REFRESH_MS
 	_combat_blocked_tiles.clear()
 	var unit_count: int = 0
+	var tree: SceneTree = get_tree()
 	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
 	for group_name in groups:
-		for node in get_tree().get_nodes_in_group(group_name):
+		for node in tree.get_nodes_in_group(group_name):
 			if node == null or not is_instance_valid(node):
 				continue
 			if not (node is Node2D):

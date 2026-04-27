@@ -12,6 +12,12 @@ priorities = ExtResource("4_colonist_priority")
 [node name="Sprite2D" type="Sprite2D" parent="."]
 offset = Vector2(0, -18)
 
+[node name="WeaponSprite" type="Sprite2D" parent="."]
+visible = false
+position = Vector2(18, -24)
+rotation = 0.35
+z_index = 1
+
 [node name="NavigationAgent2D" type="NavigationAgent2D" parent="."]
 path_desired_distance = 6.0
 target_desired_distance = 8.0

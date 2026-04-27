@@ -29,6 +29,7 @@
   "hud.raid.resolved": "습격 종료{kind}",
   "hud.raid.idle": "습격 대기{kind}",
   "hud.raid.test_button": "습격 테스트",
+  "hud.save_reset_button": "세이브 삭제",
   "hud.time.paused": "Time: Paused | {elapsed}",
   "hud.time.running": "Time: x{speed} | {elapsed}",
   "hud.time.default": "Time: x1.0",
