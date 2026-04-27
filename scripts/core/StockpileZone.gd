@@ -8,7 +8,7 @@ signal stockpile_changed(zone: Node)
 @export var min_zone_size: float = 32.0
 @export var resource_keys: Array[StringName] = [
 	&"Wood", &"Stone", &"Steel", &"FoodRaw", &"Meal", &"Bed", &"Handcart",
-	&"GatherTop", &"GatherBottom", &"StrawHat", &"Weapon",
+	&"Bicycle", &"GatherTop", &"GatherBottom", &"StrawHat", &"Weapon",
 	&"CombatTop", &"CombatBottom", &"CombatHat", &"Sword", &"Bow"
 ]
 
@@ -216,7 +216,7 @@ func apply_preset(next_preset: StringName) -> void:
 			zone_priority = 2
 		&"Build":
 			filter_mode = FilterMode.ALLOW_ONLY
-			filter_types = [&"Wood", &"Stone", &"Steel", &"Bed", &"Handcart"]
+			filter_types = [&"Wood", &"Stone", &"Steel", &"Bed", &"Handcart", &"Bicycle"]
 			zone_priority = 3
 		&"Industry":
 			filter_mode = FilterMode.ALLOW_ONLY
@@ -312,6 +312,8 @@ func _resource_color(resource_type: StringName) -> Color:
 			return Color(0.73, 0.54, 0.36, 1.0)
 		&"Handcart":
 			return Color(0.58, 0.44, 0.28, 1.0)
+		&"Bicycle":
+			return Color(0.24, 0.56, 0.86, 1.0)
 		&"GatherTop":
 			return Color(0.32, 0.64, 0.82, 1.0)
 		&"GatherBottom":
@@ -335,6 +337,8 @@ func _resource_short_name(resource_type: StringName) -> String:
 			return "Food"
 		&"StoneBlock":
 			return "Block"
+		&"Bicycle":
+			return "Bike"
 		&"GatherTop":
 			return "Top"
 		&"GatherBottom":

@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="VehicleDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/VehicleDef.gd" id="1_vehicle_def"]
+
+[resource]
+script = ExtResource("1_vehicle_def")
+id = &"Bicycle"
+display_name = "Bicycle"
+item_resource_id = &"Bicycle"
+max_health = 80.0
+move_speed = 250.0
+carry_capacity_bonus = 0
+can_work = false
+rider_can_attack = false
+participates_in_scheduling = false
+destroy_stun_seconds = 3.0

@@ -199,6 +199,8 @@ func queue_move_job(colonist: Node, target: Vector2) -> void:
 	_dirty_assign = true
 
 func issue_immediate_move(colonist: Node, target: Vector2, preserve_current_job: bool = true) -> void:
+	if colonist.has_method("can_accept_manual_move") and not bool(colonist.can_accept_manual_move()):
+		return
 	if preserve_current_job:
 		if colonist.has_method("capture_current_job_for_resume"):
 			colonist.capture_current_job_for_resume()
@@ -1053,6 +1055,8 @@ func _resolve_preferred_combat_job_type(colonist: Node) -> StringName:
 	return &"CombatMelee"
 
 func queue_need_jobs(colonist: Node, food_available: int) -> bool:
+	if colonist.has_method("can_do_job") and not colonist.can_do_job(&"EatStub") and not colonist.can_do_job(&"IdleRecover"):
+		return false
 	var colonist_id: int = colonist.get_instance_id()
 	var queued: bool = false
 	if colonist.hunger < 45.0 and food_available > 0:

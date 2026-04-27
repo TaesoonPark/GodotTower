@@ -401,7 +401,7 @@ func set_command_button_states(mode: StringName) -> void:
 func set_resource_stock(stock: Dictionary) -> void:
 	var keys := [
 		&"Wood", &"Stone", &"Steel", &"FoodRaw", &"Meal", &"Bed",
-		&"Handcart", &"GatherTop", &"GatherBottom", &"StrawHat",
+		&"Handcart", &"Bicycle", &"GatherTop", &"GatherBottom", &"StrawHat",
 		&"CombatTop", &"CombatBottom", &"CombatHat", &"Sword", &"Bow"
 	]
 	var chunks: Array[String] = []
@@ -515,16 +515,34 @@ func set_current_job_preview(colonist: Node) -> void:
 	if colonist == null:
 		current_job_label.text = _t("hud.current_job.empty")
 		return
+	var lines: Array[String] = []
 	if colonist.current_job.is_empty():
-		current_job_label.text = _t("hud.current_job.idle")
-		return
-	current_job_label.text = _t("hud.current_job.status", {"job": StringName(colonist.current_job.get("type", &"Idle"))})
+		lines.append(_t("hud.current_job.idle"))
+	else:
+		lines.append(_t("hud.current_job.status", {"job": StringName(colonist.current_job.get("type", &"Idle"))}))
+	if colonist.has_method("get_mounted_vehicle_status"):
+		var vehicle_status: Dictionary = colonist.get_mounted_vehicle_status()
+		if not vehicle_status.is_empty():
+			lines.append(_t("hud.vehicle.status", {
+				"name": String(vehicle_status.get("name", "Vehicle")),
+				"hp": "%.0f" % float(vehicle_status.get("health", 0.0)),
+				"max_hp": "%.0f" % float(vehicle_status.get("max_health", 0.0))
+			}))
+	if colonist.has_method("is_stunned") and bool(colonist.is_stunned()):
+		var remaining: float = 0.0
+		if colonist.has_method("get_stun_remaining_seconds"):
+			remaining = float(colonist.get_stun_remaining_seconds())
+		lines.append(_t("hud.stun.remaining", {"seconds": "%.1f" % remaining}))
+	current_job_label.text = "\n".join(lines)
 
 func set_carry_capacity_preview(colonist: Node) -> void:
 	if colonist == null or colonist.stats == null:
 		carry_capacity_label.text = _t("hud.carry.empty")
 		return
-	carry_capacity_label.text = _t("hud.carry.status", {"capacity": int(colonist.stats.haul_carry_capacity)})
+	var capacity: int = int(colonist.stats.haul_carry_capacity)
+	if colonist.has_method("get_effective_carry_capacity"):
+		capacity = int(colonist.get_effective_carry_capacity())
+	carry_capacity_label.text = _t("hud.carry.status", {"capacity": capacity})
 func set_stockpile_inventory_preview(stockpile_zone: Node) -> void:
 	var selected: bool = stockpile_zone != null and is_instance_valid(stockpile_zone)
 	if selected:

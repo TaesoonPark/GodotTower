@@ -66,14 +66,29 @@ func _run_test() -> void:
 		existing_handcart_ids[int(node.get_instance_id())] = true
 
 	var use_pos: Vector2 = main._snap_to_tile(stock_rect.get_center() + Vector2(140.0, 0.0))
+	colonist.global_position = main._snap_to_tile(use_pos - Vector2(240.0, 0.0))
 	main._set_selected([colonist])
 	main._context_stockpile_zone_id = zone.get_instance_id()
 	main._context_stockpile_use_pos = use_pos
 	main._on_context_action_requested(&"UseHandcartFromStockpile")
-	await get_tree().process_frame
+	for _i in range(4):
+		await get_tree().process_frame
+
+	if int(zone.get_stored_amount(&"Handcart")) != 1:
+		_finish(false, "HANDCART_USE_RELEASE_FAIL: stockpile handcart was removed before colonist arrived")
+		return
+	for node in get_tree().get_nodes_in_group("handcarts"):
+		if node == null or not is_instance_valid(node):
+			continue
+		if not existing_handcart_ids.has(int(node.get_instance_id())):
+			_finish(false, "HANDCART_USE_RELEASE_FAIL: stockpile use action spawned handcart before colonist arrived")
+			return
 
 	var handcart: Node2D = null
-	for _step in range(120):
+	var assigned: bool = false
+	var owner_id: int = colonist.get_instance_id()
+	for _step in range(900):
+		await get_tree().process_frame
 		for node in get_tree().get_nodes_in_group("handcarts"):
 			if node == null or not is_instance_valid(node):
 				continue
@@ -81,30 +96,21 @@ func _run_test() -> void:
 				continue
 			handcart = node
 			break
-		if handcart != null:
+		if handcart != null and int(handcart.get_meta("assigned_colonist_id")) == owner_id:
+			assigned = true
 			break
-		await get_tree().process_frame
 
-	var owner_id: int = colonist.get_instance_id()
 	if handcart == null:
-		_finish(false, "HANDCART_USE_RELEASE_FAIL: stockpile use action did not spawn handcart")
+		_finish(false, "HANDCART_USE_RELEASE_FAIL: stockpile use action did not spawn handcart after arrival")
 		return
 	if handcart.global_position.distance_to(use_pos) > 48.0:
 		_finish(false, "HANDCART_USE_RELEASE_FAIL: spawned handcart moved away from stockpile use point")
 		return
-	if handcart.has_meta("assigned_colonist_id") and int(handcart.get_meta("assigned_colonist_id")) != 0:
-		_finish(false, "HANDCART_USE_RELEASE_FAIL: handcart was assigned before colonist reached it")
-		return
-	var assigned: bool = false
-	for _step in range(800):
-		await get_tree().process_frame
-		if not is_instance_valid(handcart):
-			break
-		if int(handcart.get_meta("assigned_colonist_id")) == owner_id:
-			assigned = true
-			break
 	if not assigned:
-		_finish(false, "HANDCART_USE_RELEASE_FAIL: colonist never reached handcart to use it")
+		_finish(false, "HANDCART_USE_RELEASE_FAIL: colonist never reached stockpile handcart to use it")
+		return
+	if int(zone.get_stored_amount(&"Handcart")) != 0:
+		_finish(false, "HANDCART_USE_RELEASE_FAIL: stockpile handcart was not consumed on arrival")
 		return
 	for _step in range(120):
 		await get_tree().process_frame

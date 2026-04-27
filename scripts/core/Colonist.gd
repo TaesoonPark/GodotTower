@@ -48,6 +48,8 @@ var external_move_speed_multiplier: float = 1.0
 var external_accuracy_bonus: float = 0.0
 var need_decay_multiplier: float = 1.0
 var wearing_clothes: bool = false
+var mounted_vehicle_id: int = 0
+var stun_remaining_sec: float = 0.0
 var equipment_slots: Dictionary = {
 	&"Top": &"",
 	&"Bottom": &"",
@@ -173,12 +175,20 @@ func _physics_process(delta: float) -> void:
 		if _need_tick_left <= 0.0:
 			tick_needs(NEED_TICK_INTERVAL_SEC)
 			_need_tick_left = NEED_TICK_INTERVAL_SEC
+		_process_stun(sim_delta)
+		if is_stunned():
+			_clear_path_cache()
+			nav.target_position = global_position
+			_set_work_progress(0.0, false)
+			_update_weapon_sprite()
+			continue
 		var before_move: Vector2 = global_position
 		_process_movement(sim_delta)
 		var move_delta: Vector2 = global_position - before_move
 		if move_delta.length_squared() > 0.0001:
 			_last_move_direction = move_delta
 		_update_haul_handcart_follow(move_delta)
+		_update_mounted_vehicle_follow(move_delta)
 		update_job_completion(sim_delta)
 		_process_active_work(sim_delta)
 		_update_weapon_sprite()
@@ -241,7 +251,7 @@ func _process_movement(delta: float) -> void:
 		var idle_cell: Vector2 = _snap_to_tile(global_position)
 		if global_position.distance_to(idle_cell) > CELL_CENTER_EPSILON:
 			var idle_speed_mul: float = (1.5 if food_speed_buff_remaining > 0.0 else 1.0) * maxf(0.5, external_move_speed_multiplier) * _nearby_command_move_multiplier()
-			_move_toward_cell(idle_cell, stats.move_speed * idle_speed_mul, move_delta)
+			_move_toward_cell(idle_cell, get_effective_move_speed() * idle_speed_mul, move_delta)
 		_reset_build_stall_watch()
 		_reset_move_progress_watch()
 		_clear_path_cache()
@@ -249,7 +259,7 @@ func _process_movement(delta: float) -> void:
 		_move_repath_fail_streak = 0
 		return
 	var speed_mul: float = (1.5 if food_speed_buff_remaining > 0.0 else 1.0) * maxf(0.5, external_move_speed_multiplier) * _nearby_command_move_multiplier()
-	var move_speed: float = stats.move_speed * speed_mul
+	var move_speed: float = get_effective_move_speed() * speed_mul
 	if global_position.distance_to(goal) <= 24.0:
 		var before_center_step: Vector2 = global_position
 		var reached_center: bool = _move_toward_cell(goal, move_speed, move_delta)
@@ -283,7 +293,7 @@ func _process_movement(delta: float) -> void:
 		var to_goal: Vector2 = goal - global_position
 		var dist_to_goal: float = to_goal.length()
 		if dist_to_goal > 0.001 and not _is_move_segment_blocked(global_position, goal):
-			var max_step: float = stats.move_speed * speed_mul * move_delta
+			var max_step: float = get_effective_move_speed() * speed_mul * move_delta
 			var fallback_pos: Vector2 = global_position + to_goal.normalized() * minf(dist_to_goal, max_step)
 			if not _is_blocked_position(fallback_pos):
 				next_pos = fallback_pos
@@ -897,8 +907,123 @@ func tick_needs(delta: float) -> void:
 	mood = clampf(mood - (stats.mood_decay_per_sec + mood_penalty) * delta, 0.0, 100.0)
 	emit_status()
 
+func _process_stun(delta: float) -> void:
+	if stun_remaining_sec <= 0.0:
+		return
+	stun_remaining_sec = maxf(0.0, stun_remaining_sec - delta)
+	if not current_job.is_empty():
+		cancel_current_job()
+	if stun_remaining_sec <= 0.0:
+		emit_status()
+
 func get_priority(job_type: StringName) -> int:
 	return priorities.get_priority(job_type)
+
+func mount_vehicle(vehicle: Object) -> bool:
+	if vehicle == null or not is_instance_valid(vehicle) or not (vehicle is Node2D):
+		return false
+	if is_stunned():
+		return false
+	var vehicle_node: Node2D = vehicle as Node2D
+	var next_vehicle_id: int = vehicle_node.get_instance_id()
+	if mounted_vehicle_id == next_vehicle_id and is_mounted():
+		return true
+	if is_mounted():
+		dismount_vehicle()
+	if not current_job.is_empty():
+		cancel_current_job()
+	var current_rider: int = _get_vehicle_rider_id(vehicle)
+	if current_rider != 0 and current_rider != get_instance_id():
+		return false
+	var assigned: bool = false
+	if vehicle.has_method("assign_rider"):
+		assigned = bool(vehicle.call("assign_rider", get_instance_id()))
+	else:
+		vehicle.set_meta("rider_colonist_id", get_instance_id())
+		assigned = true
+	if not assigned:
+		return false
+	mounted_vehicle_id = next_vehicle_id
+	global_position = _snap_to_tile(vehicle_node.global_position)
+	_update_mounted_vehicle_follow(Vector2.ZERO)
+	emit_status()
+	return true
+
+func dismount_vehicle(stun_seconds: float = 0.0) -> void:
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle != null and is_instance_valid(vehicle):
+		if vehicle.has_method("clear_rider"):
+			vehicle.call("clear_rider", get_instance_id())
+		elif vehicle.has_meta("rider_colonist_id"):
+			vehicle.set_meta("rider_colonist_id", 0)
+		if vehicle is Node2D:
+			(vehicle as Node2D).global_position = _snap_to_tile(global_position)
+	mounted_vehicle_id = 0
+	if not current_job.is_empty():
+		cancel_current_job()
+	if stun_seconds > 0.0:
+		apply_stun(stun_seconds)
+	else:
+		emit_status()
+
+func apply_stun(seconds: float) -> void:
+	if seconds <= 0.0:
+		return
+	stun_remaining_sec = maxf(stun_remaining_sec, seconds)
+	if not current_job.is_empty():
+		cancel_current_job()
+	nav.target_position = global_position
+	_set_work_progress(0.0, false)
+	emit_status()
+
+func is_mounted() -> bool:
+	return _get_mounted_vehicle() != null
+
+func is_stunned() -> bool:
+	return stun_remaining_sec > 0.0
+
+func can_accept_manual_move() -> bool:
+	return not is_stunned()
+
+func get_effective_move_speed() -> float:
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle != null and is_instance_valid(vehicle):
+		if vehicle.has_method("get_move_speed"):
+			return maxf(1.0, float(vehicle.call("get_move_speed")))
+		if vehicle.has_meta("vehicle_move_speed"):
+			return maxf(1.0, float(vehicle.get_meta("vehicle_move_speed")))
+		var speed_variant: Variant = vehicle.get("move_speed")
+		if speed_variant != null:
+			return maxf(1.0, float(speed_variant))
+	return maxf(1.0, float(stats.move_speed))
+
+func get_effective_carry_capacity() -> int:
+	var capacity: int = maxi(1, int(stats.haul_carry_capacity))
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle != null and is_instance_valid(vehicle):
+		if vehicle.has_method("get_carry_capacity_bonus"):
+			capacity += maxi(0, int(vehicle.call("get_carry_capacity_bonus")))
+		elif vehicle.has_meta("vehicle_carry_capacity_bonus"):
+			capacity += maxi(0, int(vehicle.get_meta("vehicle_carry_capacity_bonus")))
+	return capacity
+
+func get_mounted_vehicle_status() -> Dictionary:
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle == null or not is_instance_valid(vehicle):
+		return {}
+	var name_text: String = String(vehicle.get("display_name"))
+	if name_text.is_empty() and vehicle.has_meta("vehicle_id"):
+		name_text = String(vehicle.get_meta("vehicle_id"))
+	var hp: float = float(vehicle.get("health")) if vehicle.get("health") != null else 0.0
+	var max_hp: float = float(vehicle.get("max_health")) if vehicle.get("max_health") != null else hp
+	return {
+		"name": name_text,
+		"health": hp,
+		"max_health": max_hp
+	}
+
+func get_stun_remaining_seconds() -> float:
+	return maxf(0.0, stun_remaining_sec)
 
 func assign_job(job: Dictionary) -> void:
 	current_job = job
@@ -1336,6 +1461,15 @@ func _refresh_equipment_combat_profile() -> void:
 	set_combat_profile(EQUIPMENT_STATS.apply_equipment_to_profile(base_profile, equipment_slots))
 
 func can_do_job(job_type: StringName) -> bool:
+	if is_stunned():
+		return false
+	if is_mounted():
+		if not _mounted_vehicle_participates_in_scheduling():
+			return false
+		if _is_work_job_type(job_type) and not _mounted_vehicle_can_work():
+			return false
+		if (job_type == &"CombatMelee" or job_type == &"CombatRanged") and not _mounted_vehicle_rider_can_attack():
+			return false
 	if selected:
 		return job_type == &"CombatMelee" or job_type == &"CombatRanged"
 	match job_type:
@@ -1760,7 +1894,7 @@ func _pickup_additional_nearby_drops(resource_type: StringName, remaining_capaci
 	return picked_total
 
 func _effective_haul_capacity(job: Dictionary) -> int:
-	var base_capacity: int = maxi(1, int(stats.haul_carry_capacity))
+	var base_capacity: int = get_effective_carry_capacity()
 	var job_type: StringName = StringName(job.get("type", &""))
 	if job_type != &"HaulResource" and job_type != &"HaulStockpileToDepot":
 		return base_capacity
@@ -1805,6 +1939,83 @@ func _update_haul_handcart_follow(move_delta: Vector2) -> void:
 	elif handcart_obj is Node2D:
 		var handcart_node: Node2D = handcart_obj
 		handcart_node.global_position = global_position - follow_dir.normalized() * 16.0
+
+func _update_mounted_vehicle_follow(move_delta: Vector2) -> void:
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle == null or not is_instance_valid(vehicle):
+		return
+	var follow_dir: Vector2 = move_delta
+	if follow_dir.length_squared() <= 0.0001:
+		var goal: Vector2 = _resolve_move_goal()
+		if goal != Vector2.INF:
+			follow_dir = goal - global_position
+	if follow_dir.length_squared() <= 0.0001:
+		follow_dir = _last_move_direction
+	if follow_dir.length_squared() <= 0.0001:
+		follow_dir = Vector2.RIGHT
+	if vehicle.has_method("update_mount_position"):
+		vehicle.call("update_mount_position", global_position, follow_dir)
+	elif vehicle is Node2D:
+		(vehicle as Node2D).global_position = global_position
+
+func _get_mounted_vehicle() -> Object:
+	if mounted_vehicle_id == 0:
+		return null
+	var vehicle: Object = instance_from_id(mounted_vehicle_id)
+	if vehicle == null or not is_instance_valid(vehicle):
+		mounted_vehicle_id = 0
+		return null
+	return vehicle
+
+func _get_vehicle_rider_id(vehicle: Object) -> int:
+	if vehicle == null or not is_instance_valid(vehicle):
+		return 0
+	if vehicle.has_method("get_rider_id"):
+		return int(vehicle.call("get_rider_id"))
+	if vehicle.has_meta("rider_colonist_id"):
+		return int(vehicle.get_meta("rider_colonist_id"))
+	return 0
+
+func _mounted_vehicle_participates_in_scheduling() -> bool:
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle == null or not is_instance_valid(vehicle):
+		return true
+	if vehicle.has_meta("vehicle_participates_in_scheduling"):
+		return bool(vehicle.get_meta("vehicle_participates_in_scheduling"))
+	var value: Variant = vehicle.get("participates_in_scheduling")
+	return bool(value) if value != null else true
+
+func _mounted_vehicle_can_work() -> bool:
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle == null or not is_instance_valid(vehicle):
+		return true
+	if vehicle.has_meta("vehicle_can_work"):
+		return bool(vehicle.get_meta("vehicle_can_work"))
+	var value: Variant = vehicle.get("can_work")
+	return bool(value) if value != null else true
+
+func _mounted_vehicle_rider_can_attack() -> bool:
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle == null or not is_instance_valid(vehicle):
+		return true
+	if vehicle.has_meta("vehicle_rider_can_attack"):
+		return bool(vehicle.get_meta("vehicle_rider_can_attack"))
+	var value: Variant = vehicle.get("rider_can_attack")
+	return bool(value) if value != null else true
+
+func _is_work_job_type(job_type: StringName) -> bool:
+	return job_type == &"BuildSite" \
+		or job_type == &"RepairStructure" \
+		or job_type == &"DemolishStructure" \
+		or job_type == &"MaintainTrap" \
+		or job_type == &"Gather" \
+		or job_type == &"Hunt" \
+		or job_type == &"HaulResource" \
+		or job_type == &"HaulStockpileToDepot" \
+		or job_type == &"CraftRecipe" \
+		or job_type == &"ResearchTask" \
+		or job_type == &"PlantCrop" \
+		or job_type == &"HarvestCrop"
 
 func _find_owned_handcart(owner_id: int) -> Object:
 	if owner_id == 0:
@@ -1864,6 +2075,12 @@ func is_dead() -> bool:
 func apply_combat_damage(amount: int) -> void:
 	if amount <= 0 or is_dead():
 		return
+	var vehicle: Object = _get_mounted_vehicle()
+	if vehicle != null and is_instance_valid(vehicle):
+		if vehicle.has_method("apply_vehicle_damage"):
+			vehicle.call("apply_vehicle_damage", amount)
+			emit_status()
+			return
 	health = maxf(0.0, health - float(amount))
 	emit_status()
 	if health <= 0.0:

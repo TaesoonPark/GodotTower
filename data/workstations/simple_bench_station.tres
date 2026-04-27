@@ -7,4 +7,4 @@ script = ExtResource("1_workstation_def")
 id = &"SimpleBenchStation"
 display_name = "Simple Bench Station"
 linked_building_id = &"SimpleBench"
-recipe_ids = Array[StringName]([&"CutStone", &"MakeBed", &"MakeHandcart", &"MakeGatherTop", &"MakeGatherBottom", &"MakeCombatTop", &"MakeCombatBottom", &"MakeCombatHat", &"ForgeSword", &"CraftBow"])
+recipe_ids = Array[StringName]([&"CutStone", &"MakeBed", &"MakeHandcart", &"MakeBicycle", &"MakeGatherTop", &"MakeGatherBottom", &"MakeCombatTop", &"MakeCombatBottom", &"MakeCombatHat", &"ForgeSword", &"CraftBow"])
