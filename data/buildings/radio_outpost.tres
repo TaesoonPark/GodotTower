@@ -1,0 +1,20 @@
+[gd_resource type="Resource" script_class="BuildingDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/BuildingDef.gd" id="1_building_def"]
+
+[resource]
+script = ExtResource("1_building_def")
+id = &"RadioOutpost"
+display_name = "Radio Outpost"
+category = "Exploration"
+required_work = 1.0
+footprint_size = Vector2(192, 256)
+rotatable = true
+build_cost = {}
+direct_place_color = Color(0.31, 0.35, 0.34, 1)
+blueprint_color = Color(0.31, 0.35, 0.34, 0.72)
+blocks_movement = true
+blocks_ranged_line_of_sight = true
+cover_bonus = 1.0
+max_health = 500.0
+repair_work = 18.0

@@ -8,7 +8,7 @@ static func has_ranged_line_of_sight(tree: SceneTree, from_pos: Vector2, to_pos:
 		if not _is_los_blocker(node):
 			continue
 		var structure: Node2D = node as Node2D
-		var footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(40.0, 40.0)
+		var footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(64.0, 64.0)
 		var rect := Rect2(structure.global_position - footprint * 0.5, footprint)
 		if rect.has_point(from_pos) or rect.has_point(to_pos):
 			continue

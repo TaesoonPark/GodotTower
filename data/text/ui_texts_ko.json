@@ -162,7 +162,7 @@
   "colonist.job.rest": "휴식",
   "colonist.job.combat_melee": "근접 전투",
   "colonist.job.combat_ranged": "원거리 전투",
-  "raider.weapon.ranged": "활",
+  "raider.weapon.ranged": "라이플",
   "raider.weapon.melee": "칼",
   "raider.label": "Raider({weapon}) HP:{hp}"
 }

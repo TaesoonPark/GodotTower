@@ -30,7 +30,7 @@ func _run_test() -> void:
 		&"Top": &"CombatTop",
 		&"Bottom": &"CombatBottom",
 		&"Hat": &"CombatHat",
-		&"Weapon": &"Bow"
+		&"Weapon": &"Rifle"
 	})
 	main._set_selected([colonist])
 	main._refresh_hud()
@@ -45,7 +45,7 @@ func _run_test() -> void:
 	if lines.size() < 5:
 		_finish(false, "HUD_EQUIPMENT_MULTILINE_FAIL: equipment text not multiline text=%s" % text)
 		return
-	for expected in ["상의: Combat Top", "하의: Combat Bottom", "모자: Combat Hat", "무기: Bow"]:
+	for expected in ["상의: Combat Top", "하의: Combat Bottom", "모자: Combat Hat", "무기: Rifle"]:
 		if not text.contains(expected):
 			_finish(false, "HUD_EQUIPMENT_MULTILINE_FAIL: missing '%s' in text=%s" % [expected, text])
 			return

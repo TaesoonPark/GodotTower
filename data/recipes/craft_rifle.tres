@@ -1,0 +1,17 @@
+[gd_resource type="Resource" script_class="RecipeDef" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/data/RecipeDef.gd" id="1_recipe_def"]
+
+[resource]
+script = ExtResource("1_recipe_def")
+id = &"CraftRifle"
+display_name = "Craft Rifle"
+workstation_id = &"SimpleBenchStation"
+work_required = 1.0
+ingredients = {
+&"Wood": 1,
+&"Steel": 1
+}
+products = {
+&"Rifle": 1
+}

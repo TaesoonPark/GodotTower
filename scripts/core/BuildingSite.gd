@@ -13,7 +13,8 @@ var required_work: float = 30.0
 var work_progress: float = 0.0
 var complete: bool = false
 var job_queued: bool = false
-var footprint_size: Vector2 = Vector2(40, 40)
+var footprint_size: Vector2 = Vector2(64, 64)
+var building_rotation: int = 0
 var complete_color: Color = Color(0.35, 0.75, 0.35, 1.0)
 var blueprint_color: Color = Color(0.45, 0.55, 0.85, 0.7)
 var blocks_movement: bool = false
@@ -45,15 +46,17 @@ func _ready() -> void:
 	if progress_sprite.texture == null:
 		progress_sprite.texture = _make_texture(max(12, int(footprint_size.x - 4.0)), 6, Color(0.3, 0.95, 0.4, 0.85))
 	_update_visual()
+	call_deferred("_refresh_wall_variant_neighbors")
 	site_changed.emit(self)
 
-func setup_building(def: Resource, start_complete: bool = false) -> void:
+func setup_building(def: Resource, start_complete: bool = false, rotation_index: int = 0) -> void:
 	if def == null:
 		return
 	building_id = def.id
+	building_rotation = _normalized_building_rotation(def, rotation_index)
 	building_name = def.display_name
 	required_work = maxf(1.0, def.required_work)
-	footprint_size = def.footprint_size
+	footprint_size = _effective_footprint(def, building_rotation)
 	complete_color = def.direct_place_color
 	blueprint_color = def.blueprint_color
 	blocks_movement = bool(def.blocks_movement)
@@ -75,6 +78,7 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 	build_cost = def.build_cost.duplicate(true)
 	materials_delivered = false
 	set_meta("building_id", building_id)
+	set_meta("building_rotation", building_rotation)
 	set_meta("required_work", required_work)
 	set_meta("footprint_size", footprint_size)
 	set_meta("blocks_movement", blocks_movement)
@@ -110,6 +114,8 @@ func setup_building(def: Resource, start_complete: bool = false) -> void:
 		_build_complete_visual()
 	if is_node_ready():
 		_update_visual()
+	if building_id == &"Wall":
+		call_deferred("_refresh_wall_variant_neighbors")
 	site_changed.emit(self)
 
 func set_job_queued(v: bool) -> void:
@@ -173,7 +179,7 @@ func _update_visual() -> void:
 		progress_sprite.visible = true
 
 func _build_complete_visual() -> void:
-	if GAME_SPRITE.get_building_texture(building_id) == null:
+	if GAME_SPRITE.get_building_texture(building_id, building_rotation) == null:
 		var roof := Sprite2D.new()
 		roof.texture = _make_texture(int(footprint_size.x), max(6, int(footprint_size.y * 0.25)), complete_color.darkened(0.25))
 		roof.position = Vector2(0, -footprint_size.y * 0.5)
@@ -192,15 +198,34 @@ func _on_completed() -> void:
 		add_to_group("command_structures")
 	if farm_growth_bonus > 0.0 or farm_yield_bonus > 0.0:
 		add_to_group("farm_support_structures")
+	call_deferred("_refresh_wall_variant_neighbors")
 
 func _exit_tree() -> void:
 	site_removed.emit(self)
 
 func _resolve_base_texture() -> Texture2D:
-	var sprite_tex: Texture2D = GAME_SPRITE.get_building_texture(building_id)
+	var sprite_tex: Texture2D = GAME_SPRITE.get_building_texture(building_id, building_rotation)
 	if sprite_tex != null:
 		return sprite_tex
 	return _make_texture(int(footprint_size.x), int(footprint_size.y), Color.WHITE)
+
+func _normalized_building_rotation(def: Resource, rotation_index: int) -> int:
+	if def == null or not bool(def.get("rotatable")):
+		return 0
+	return int(posmod(rotation_index, 4))
+
+func _effective_footprint(def: Resource, rotation_index: int) -> Vector2:
+	if def == null:
+		return footprint_size
+	var base_footprint: Vector2 = def.footprint_size
+	if bool(def.get("rotatable")) and int(posmod(rotation_index, 4)) % 2 == 1:
+		return Vector2(base_footprint.y, base_footprint.x)
+	return base_footprint
+
+func _refresh_wall_variant_neighbors() -> void:
+	if building_id != &"Wall" or not is_inside_tree():
+		return
+	GAME_SPRITE.refresh_wall_variants_around(get_tree(), global_position, maxf(4.0, footprint_size.x))
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)

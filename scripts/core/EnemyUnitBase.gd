@@ -58,7 +58,7 @@ var _structure_attack_target_id: int = 0
 var _structure_attack_target_refresh_ms: int = 0
 var _target_refresh_left: float = 0.0
 var _ai_phase_left: float = 0.0
-var tile_size: float = 40.0
+var tile_size: float = 64.0
 var _enemy_pathing: EnemyPathing = null
 var _enemy_flow_field_service: Node = null
 var _enemy_engagement_coordinator: Node = null
@@ -536,19 +536,23 @@ func _can_start_melee_combat_lock(target: Node2D, attack_range: float, desired: 
 	return _is_melee_engaged_with_target(target, attack_range, desired)
 
 func _is_melee_engaged_with_target(target: Node2D, attack_range: float, desired: Vector2 = Vector2.INF) -> bool:
+	var target_cell: Vector2 = _snap_to_tile(target.global_position)
+	var own_cell: Vector2 = _snap_to_tile(global_position)
+	var own_ring: int = _melee_cell_ring(own_cell, target_cell)
+	if own_ring >= 1 \
+		and own_ring <= _melee_engagement_ring(target.get_instance_id(), attack_range) \
+		and _melee_cell_in_weapon_range(own_cell, target_cell, attack_range) \
+		and _is_melee_cell_available(own_cell) \
+		and global_position.distance_to(own_cell) <= CELL_CENTER_EPSILON:
+		global_position = own_cell
+		_emit_moved_if_needed()
+		return true
 	if desired == Vector2.INF:
 		desired = _resolve_melee_engagement_goal(target, attack_range)
-	var target_cell: Vector2 = _snap_to_tile(target.global_position)
 	var engagement_ring: int = _melee_engagement_ring(target.get_instance_id(), attack_range)
 	var desired_ring: int = _melee_cell_ring(desired, target_cell)
 	if desired_ring >= 1 and desired_ring <= engagement_ring and _melee_cell_in_weapon_range(desired, target_cell, attack_range) and global_position.distance_to(desired) <= CELL_CENTER_EPSILON:
 		global_position = desired
-		_emit_moved_if_needed()
-		return true
-	var own_cell: Vector2 = _snap_to_tile(global_position)
-	var ring: int = _melee_cell_ring(own_cell, target_cell)
-	if ring >= 1 and ring <= engagement_ring and _melee_cell_in_weapon_range(own_cell, target_cell, attack_range) and _is_melee_cell_available(own_cell) and global_position.distance_to(own_cell) <= CELL_CENTER_EPSILON:
-		global_position = own_cell
 		_emit_moved_if_needed()
 		return true
 	return false
@@ -1251,6 +1255,8 @@ func _is_combat_unit_blocking_tile(world_pos: Vector2) -> bool:
 	return false
 
 func _is_node_in_combat_state(node: Node) -> bool:
+	if node.get("combat_ready") == true:
+		return true
 	if node.has_method("is_melee_combat_locked") and bool(node.is_melee_combat_locked()):
 		return true
 	var job_variant: Variant = node.get("current_job")

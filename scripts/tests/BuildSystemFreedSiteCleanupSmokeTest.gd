@@ -37,7 +37,7 @@ func _run_test() -> void:
 	if not main.build_system._sites.is_empty():
 		_finish(false, "BUILD_FREED_SITE_CLEANUP_FAIL: freed site was not removed")
 		return
-	if bool(main.build_system._is_footprint_occupied(site_pos, Vector2(40.0, 40.0))):
+	if bool(main.build_system._is_footprint_occupied(site_pos, Vector2(64.0, 64.0))):
 		_finish(false, "BUILD_FREED_SITE_CLEANUP_FAIL: freed site still occupied footprint")
 		return
 

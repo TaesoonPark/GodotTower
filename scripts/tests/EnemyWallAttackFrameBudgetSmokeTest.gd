@@ -100,7 +100,7 @@ func _spawn_enemies(main: Node, target: Node2D, center: Vector2) -> Array[Node2D
 		var enemy: Node2D = RAIDER_SCENE.instantiate()
 		enemy.global_position = main._snap_to_tile(center + offsets[i])
 		if enemy.has_method("set_tile_size"):
-			enemy.set_tile_size(40.0)
+			enemy.set_tile_size(64.0)
 		main.units_root.add_child(enemy)
 		enemy.set("_target_colonist_id", target.get_instance_id())
 		enemy.set("_target_refresh_left", 0.0)

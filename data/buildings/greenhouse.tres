@@ -8,7 +8,7 @@ id = &"Greenhouse"
 display_name = "Greenhouse"
 category = "Production"
 required_work = 1.0
-footprint_size = Vector2(80, 80)
+footprint_size = Vector2(128, 128)
 build_cost = {
 &"Steel": 3,
 &"Wood": 2,

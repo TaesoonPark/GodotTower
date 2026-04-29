@@ -7,7 +7,7 @@ const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
 
 const HAUL_QUEUE_TIMEOUT_MS: int = 5000
 const HAUL_ASSIGN_TIMEOUT_MS: int = 12000
-const WORK_ADJACENT_OFFSET: float = 40.0
+const WORK_ADJACENT_OFFSET: float = 64.0
 const MAX_ASSIGN_PER_TICK: int = 8
 const MAX_JOB_SCAN_PER_COLONIST: int = 48
 const COMBAT_PREEMPT_DISTANCE: float = 160.0
@@ -214,6 +214,10 @@ func issue_immediate_move(colonist: Node, target: Vector2, preserve_current_job:
 		"assigned_to": colonist.get_instance_id(),
 		"__resume_after_move": preserve_current_job
 	})
+	_dirty_assign = true
+
+func clear_jobs_for_colonist(colonist_id: int) -> void:
+	_remove_jobs_for_colonist(colonist_id)
 	_dirty_assign = true
 
 func queue_build_job(site: Node) -> bool:
@@ -831,8 +835,8 @@ func request_combat_jobs(
 		if hold_before_engage and rally_pos == Vector2.INF:
 			continue
 		var has_pending_move: bool = _has_pending_move_job(colonist_id)
-		var is_selected: bool = bool(colonist.get("selected"))
-		if is_selected:
+		var holds_current_cell: bool = bool(colonist.get("selected")) or bool(colonist.get("combat_ready"))
+		if holds_current_cell:
 			if has_pending_move:
 				_remove_pending_move_jobs_for_colonist(colonist_id)
 			if hold_before_engage:
@@ -1495,6 +1499,7 @@ func _find_adjacent_work_position(site: Node2D) -> Vector2:
 		center + Vector2(-WORK_ADJACENT_OFFSET, WORK_ADJACENT_OFFSET),
 		center + Vector2(-WORK_ADJACENT_OFFSET, -WORK_ADJACENT_OFFSET)
 	]
+	candidates = _order_work_positions_for_builders(candidates)
 	var site_id: int = site.get_instance_id()
 	for pos in candidates:
 		if _is_blocked_by_structure(pos):
@@ -1512,6 +1517,7 @@ func _find_adjacent_work_position(site: Node2D) -> Vector2:
 		center + Vector2(0.0, WORK_ADJACENT_OFFSET * 2.0),
 		center + Vector2(0.0, -WORK_ADJACENT_OFFSET * 2.0)
 	]
+	ring2 = _order_work_positions_for_builders(ring2)
 	for pos in ring2:
 		if _is_blocked_by_structure(pos):
 			continue
@@ -1519,6 +1525,36 @@ func _find_adjacent_work_position(site: Node2D) -> Vector2:
 			continue
 		return pos
 	return Vector2.INF
+
+func _order_work_positions_for_builders(candidates: Array[Vector2]) -> Array[Vector2]:
+	var builders: Array[Node2D] = []
+	for colonist in _get_cached_colonists():
+		if colonist == null or not is_instance_valid(colonist):
+			continue
+		if not (colonist is Node2D):
+			continue
+		if colonist.has_method("can_do_job") and not bool(colonist.can_do_job(&"BuildSite")):
+			continue
+		builders.append(colonist as Node2D)
+	if builders.is_empty():
+		return candidates
+	var ordered: Array[Vector2] = candidates.duplicate()
+	ordered.sort_custom(func(a: Vector2, b: Vector2) -> bool:
+		var da: float = _nearest_builder_distance_sq(a, builders)
+		var db: float = _nearest_builder_distance_sq(b, builders)
+		if not is_equal_approx(da, db):
+			return da < db
+		return candidates.find(a) < candidates.find(b)
+	)
+	return ordered
+
+func _nearest_builder_distance_sq(pos: Vector2, builders: Array[Node2D]) -> float:
+	var best: float = INF
+	for builder in builders:
+		if builder == null or not is_instance_valid(builder):
+			continue
+		best = minf(best, builder.global_position.distance_squared_to(pos))
+	return best
 
 func _is_work_position_reserved(world_pos: Vector2, for_site_id: int) -> bool:
 	for job in _jobs:

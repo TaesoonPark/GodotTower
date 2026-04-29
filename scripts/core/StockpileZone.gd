@@ -5,11 +5,11 @@ const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
 
 signal stockpile_changed(zone: Node)
 
-@export var min_zone_size: float = 32.0
+@export var min_zone_size: float = 64.0
 @export var resource_keys: Array[StringName] = [
 	&"Wood", &"Stone", &"Steel", &"FoodRaw", &"Meal", &"Bed", &"Handcart",
 	&"Bicycle", &"GatherTop", &"GatherBottom", &"StrawHat", &"Weapon",
-	&"CombatTop", &"CombatBottom", &"CombatHat", &"Sword", &"Bow"
+	&"CombatTop", &"CombatBottom", &"CombatHat", &"Sword", &"Rifle"
 ]
 
 enum FilterMode {
@@ -18,7 +18,7 @@ enum FilterMode {
 	DENY_LIST = 2
 }
 
-var zone_size: Vector2 = Vector2(120, 80)
+var zone_size: Vector2 = Vector2(192, 128)
 var stored: Dictionary = {}
 var filter_mode: int = FilterMode.ALL
 var filter_types: Array[StringName] = []
@@ -126,7 +126,7 @@ func get_resource_at_point(world_point: Vector2) -> StringName:
 		if dist_sq < best_dist_sq:
 			best_dist_sq = dist_sq
 			best_type = StringName(slot.get("resource_type", &""))
-	# Input click position is grid-snapped (40px), so allow a small nearest-slot fallback.
+	# Input click position is grid-snapped, so allow a small nearest-slot fallback.
 	if allow_fallback and best_type != &"" and best_dist_sq <= 30.0 * 30.0:
 		return best_type
 	return &""
@@ -211,7 +211,7 @@ func apply_preset(next_preset: StringName) -> void:
 			filter_mode = FilterMode.ALLOW_ONLY
 			filter_types = [
 				&"CombatTop", &"CombatBottom", &"CombatHat",
-				&"Sword", &"Bow", &"Steel", &"Wood"
+				&"Sword", &"Rifle", &"Steel", &"Wood"
 			]
 			zone_priority = 2
 		&"Build":
@@ -220,11 +220,11 @@ func apply_preset(next_preset: StringName) -> void:
 			zone_priority = 3
 		&"Industry":
 			filter_mode = FilterMode.ALLOW_ONLY
-			filter_types = [&"Steel", &"Stone", &"Wood", &"Weapon", &"Sword", &"Bow"]
+			filter_types = [&"Steel", &"Stone", &"Wood", &"Weapon", &"Sword", &"Rifle"]
 			zone_priority = 1
 		&"Emergency":
 			filter_mode = FilterMode.ALLOW_ONLY
-			filter_types = [&"Meal", &"FoodRaw", &"CombatTop", &"CombatBottom", &"CombatHat", &"Bow", &"Sword"]
+			filter_types = [&"Meal", &"FoodRaw", &"CombatTop", &"CombatBottom", &"CombatHat", &"Rifle", &"Sword"]
 			zone_priority = 6
 		&"Harvest":
 			filter_mode = FilterMode.ALLOW_ONLY
@@ -326,7 +326,7 @@ func _resource_color(resource_type: StringName) -> Color:
 			return Color(0.82, 0.48, 0.22, 1.0)
 		&"Sword":
 			return Color(0.74, 0.74, 0.86, 1.0)
-		&"Bow":
+		&"Rifle":
 			return Color(0.56, 0.42, 0.24, 1.0)
 		_:
 			return Color(0.8, 0.8, 0.8, 1.0)

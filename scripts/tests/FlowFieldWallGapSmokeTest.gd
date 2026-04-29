@@ -56,7 +56,7 @@ func _run_test() -> void:
 	var raider: Node2D = RAIDER_SCENE.instantiate()
 	raider.global_position = Vector2(3200.0, 1840.0)
 	if raider.has_method("set_tile_size"):
-		raider.set_tile_size(40.0)
+		raider.set_tile_size(64.0)
 	main.units_root.add_child(raider)
 	main._raid_state = &"Active"
 	main._cached_alive_enemies = [raider]

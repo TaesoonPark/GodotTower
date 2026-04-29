@@ -56,24 +56,18 @@ func _run_test() -> void:
 		"assigned_to": 0
 	})
 	await get_tree().process_frame
-	if not weapon_sprite.visible:
-		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: sword hidden during combat")
-		return
-	if weapon_sprite.texture != GAME_SPRITE.get_drop_texture(&"Sword"):
-		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: sword texture not applied")
-		return
-	if weapon_sprite.position.x <= 0.0:
-		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: sword not placed toward right-side target")
+	if weapon_sprite.visible:
+		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: sword overlay visible during combat")
 		return
 
 	colonist.cancel_current_job()
 	await get_tree().process_frame
 	if weapon_sprite.visible:
-		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: weapon visible after combat cancel")
+		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: weapon overlay visible after combat cancel")
 		return
 
 	zombie.global_position = colonist.global_position + Vector2(-80.0, 0.0)
-	colonist.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Bow"})
+	colonist.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Rifle"})
 	colonist.assign_job({
 		"type": &"CombatMelee",
 		"target": zombie.global_position,
@@ -82,14 +76,8 @@ func _run_test() -> void:
 		"assigned_to": 0
 	})
 	await get_tree().process_frame
-	if not weapon_sprite.visible:
-		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: bow hidden during combat")
-		return
-	if weapon_sprite.texture != GAME_SPRITE.get_drop_texture(&"Bow"):
-		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: bow texture not applied")
-		return
-	if weapon_sprite.position.x >= 0.0:
-		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: bow not placed toward left-side target")
+	if weapon_sprite.visible:
+		_finish(false, "EQUIPMENT_WEAPON_SPRITE_FAIL: rifle overlay visible during combat")
 		return
 
-	_finish(true, "EQUIPMENT_WEAPON_SPRITE_PASS: equipped weapon sprite follows combat state and target side")
+	_finish(true, "EQUIPMENT_WEAPON_SPRITE_PASS: weapon overlay remains hidden while equipment data is active")

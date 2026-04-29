@@ -48,7 +48,7 @@ func _run_test() -> void:
 	var raider: Node2D = RAIDER_SCENE.instantiate()
 	raider.global_position = Vector2(wall_x - 50.0, target_y)
 	if raider.has_method("set_tile_size"):
-		raider.set_tile_size(40.0)
+		raider.set_tile_size(64.0)
 	main.units_root.add_child(raider)
 	await get_tree().process_frame
 	raider.move_speed = 1600.0

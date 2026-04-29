@@ -1,7 +1,7 @@
 extends Node
 class_name PathingOccupancy
 
-@export var tile_size: float = 40.0
+@export var tile_size: float = 64.0
 
 signal revision_changed(revision: int)
 
@@ -130,6 +130,8 @@ func _refresh_combat_blocked_tiles() -> void:
 	_debug_stats["last_dynamic_ms"] = float(Time.get_ticks_usec() - start_us) / 1000.0
 
 func _is_node_in_combat_blocking_state(node: Node) -> bool:
+	if node.get("combat_ready") == true:
+		return true
 	if node.has_method("is_melee_combat_locked") and bool(node.is_melee_combat_locked()):
 		return true
 	var job_variant: Variant = node.get("current_job")

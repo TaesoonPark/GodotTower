@@ -43,7 +43,7 @@ func _run_test() -> void:
 	var raider: Node2D = RAIDER_SCENE.instantiate()
 	raider.global_position = wall_pos + Vector2(-48.0, 0.0)
 	if raider.has_method("set_tile_size"):
-		raider.set_tile_size(40.0)
+		raider.set_tile_size(64.0)
 	main.units_root.add_child(raider)
 	await get_tree().process_frame
 	raider.structure_attack_damage = 10000.0
@@ -57,7 +57,7 @@ func _run_test() -> void:
 		_finish(false, "ENEMY_BREAK_SITE_CLEANUP_FAIL: destroyed built site stayed tracked")
 		return
 	main.build_system.request_build_jobs(main.job_system)
-	if bool(main.build_system._is_footprint_occupied(wall_pos, Vector2(40.0, 40.0))):
+	if bool(main.build_system._is_footprint_occupied(wall_pos, Vector2(64.0, 64.0))):
 		_finish(false, "ENEMY_BREAK_SITE_CLEANUP_FAIL: destroyed built site still occupied footprint")
 		return
 

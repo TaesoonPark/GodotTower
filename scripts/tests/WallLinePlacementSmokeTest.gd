@@ -3,6 +3,7 @@ extends Node
 const MAIN_SCENE: PackedScene = preload("res://scenes/main/Main.tscn")
 const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
+const TILE_SIZE: float = 64.0
 
 func _ready() -> void:
 	call_deferred("_run_test")
@@ -36,9 +37,9 @@ func _run_test() -> void:
 		await get_tree().process_frame
 
 	main._on_building_selected(&"Wall")
-	var y: float = 1120.0
-	var start_pos: Vector2 = Vector2(3320.0, y)
-	var end_pos: Vector2 = Vector2(3720.0, y)
+	var y: float = 1152.0
+	var start_pos: Vector2 = main._snap_to_tile(Vector2(3328.0, y))
+	var end_pos: Vector2 = start_pos + Vector2(TILE_SIZE * 10.0, 0.0)
 	main._on_drag_selection(start_pos, end_pos)
 
 	for _i in range(2):
@@ -48,7 +49,7 @@ func _run_test() -> void:
 	var x: float = start_pos.x
 	while x <= end_pos.x + 0.1:
 		expected_tiles.append(Vector2(x, y))
-		x += 40.0
+		x += TILE_SIZE
 
 	var sites: Array = get_tree().get_nodes_in_group("build_sites")
 	var missing: Array[String] = []
@@ -68,7 +69,7 @@ func _run_test() -> void:
 	if not missing.is_empty():
 		for tile_pos in expected_tiles:
 			var blockers: int = int(main._collect_resource_blockers_for_build(tile_pos, &"Wall").size())
-			var occupied: bool = bool(main.build_system._is_footprint_occupied(tile_pos, Vector2(40.0, 40.0)))
+			var occupied: bool = bool(main.build_system._is_footprint_occupied(tile_pos, Vector2(TILE_SIZE, TILE_SIZE)))
 			print("WALL_LINE_TEST_INFO: tile=", tile_pos, " blockers=", blockers, " occupied=", occupied)
 		print("WALL_LINE_TEST_INFO: deferred_count=", main._deferred_build_requests.size())
 		print("WALL_LINE_TEST_INFO: structures_count=", get_tree().get_nodes_in_group("structures").size())

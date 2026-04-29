@@ -74,8 +74,8 @@ static func _get_def_float(def: Resource, property: StringName, fallback: float)
 
 static func _resource_path_for(item_id: StringName) -> String:
 	match item_id:
-		&"Bow":
-			return "res://data/resources/bow.tres"
+		&"Rifle":
+			return "res://data/resources/rifle.tres"
 		&"Sword":
 			return "res://data/resources/sword.tres"
 		&"Weapon":

@@ -35,7 +35,7 @@ func _run_test() -> void:
 			colonist.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Sword"})
 		colonist.set_selected(false)
 	if blocker.has_method("set_equipment_slots"):
-		blocker.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Bow"})
+		blocker.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Rifle"})
 
 	var target_pos: Vector2 = main._snap_to_tile(Vector2(4800.0, 3000.0))
 	attacker.global_position = main._snap_to_tile(target_pos + Vector2(-160.0, 0.0))
@@ -43,7 +43,7 @@ func _run_test() -> void:
 	var zombie = ZOMBIE_SCENE.instantiate()
 	zombie.global_position = target_pos
 	if zombie.has_method("set_tile_size"):
-		zombie.set_tile_size(40.0)
+		zombie.set_tile_size(64.0)
 	main.units_root.add_child(zombie)
 	await get_tree().process_frame
 	zombie.health = 10000.0
@@ -71,8 +71,8 @@ func _run_test() -> void:
 		await get_tree().process_frame
 		var attacker_cell: Vector2 = main._snap_to_tile(attacker.global_position)
 		var target_cell: Vector2 = main._snap_to_tile(zombie.global_position)
-		var dx: int = absi(int(round((attacker_cell.x - target_cell.x) / 40.0)))
-		var dy: int = absi(int(round((attacker_cell.y - target_cell.y) / 40.0)))
+		var dx: int = absi(int(round((attacker_cell.x - target_cell.x) / 64.0)))
+		var dy: int = absi(int(round((attacker_cell.y - target_cell.y) / 64.0)))
 		if maxi(dx, dy) == 1:
 			reached_adjacent = true
 			break

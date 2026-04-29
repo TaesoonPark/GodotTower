@@ -125,7 +125,7 @@ func _run_test() -> void:
 		_finish(false, "SELECT_HOLD_TEST_FAIL: selected combat moved off position")
 		return
 
-	main._on_left_click(Vector2(40.0, 40.0))
+	main._on_left_click(Vector2(64.0, 64.0))
 	await get_tree().process_frame
 	if bool(primary.get("selected")):
 		_finish(false, "SELECT_HOLD_TEST_FAIL: deselect did not clear selection")

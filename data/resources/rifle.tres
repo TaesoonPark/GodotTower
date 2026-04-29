@@ -1,0 +1,16 @@
+[gd_resource type="Resource" script_class="ResourceDef" format=3 uid="uid://dwab3cl2i8f42"]
+
+[ext_resource type="Script" uid="uid://dvopc6okawwsa" path="res://scripts/data/ResourceDef.gd" id="1_resource_def"]
+
+[resource]
+script = ExtResource("1_resource_def")
+id = &"Rifle"
+display_name = "Rifle"
+stack_limit = 40
+category = "Weapon"
+equipment_weapon_mode = &"Ranged"
+equipment_melee_attack = 6.0
+equipment_ranged_attack = 14.0
+equipment_ranged_range = 246.0
+equipment_attack_cooldown_sec = 1.05
+equipment_accuracy_bonus = 0.08

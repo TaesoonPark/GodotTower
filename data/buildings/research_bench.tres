@@ -8,7 +8,7 @@ id = &"ResearchBench"
 display_name = "Research Bench"
 category = "Research"
 required_work = 1.0
-footprint_size = Vector2(80, 40)
+footprint_size = Vector2(128, 64)
 build_cost = {
 &"Wood": 1,
 &"Stone": 1

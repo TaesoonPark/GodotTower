@@ -79,8 +79,8 @@ func _assert_unique_locked_cells(main: Node, colonists: Array) -> bool:
 		if target_obj != null and is_instance_valid(target_obj) and target_obj is Node2D:
 			var own_cell: Vector2 = main._snap_to_tile(colonist.global_position)
 			var target_cell: Vector2 = main._snap_to_tile((target_obj as Node2D).global_position)
-			var dx: int = absi(int(round((own_cell.x - target_cell.x) / 40.0)))
-			var dy: int = absi(int(round((own_cell.y - target_cell.y) / 40.0)))
+			var dx: int = absi(int(round((own_cell.x - target_cell.x) / 64.0)))
+			var dy: int = absi(int(round((own_cell.y - target_cell.y) / 64.0)))
 			if maxi(dx, dy) > 1:
 				_finish(false, "RALLY_MELEE_TRANSITION_NO_OVERLAP_FAIL: locked melee outside adjacent cell own=%s target=%s" % [str(own_cell), str(target_cell)])
 				return false

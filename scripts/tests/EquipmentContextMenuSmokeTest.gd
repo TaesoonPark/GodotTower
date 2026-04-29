@@ -46,30 +46,30 @@ func _run_test() -> void:
 	if zone == null:
 		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: stockpile missing")
 		return
-	if int(zone.add_resource(&"Bow", 1)) <= 0:
-		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: failed to seed bow")
+	if int(zone.add_resource(&"Rifle", 1)) <= 0:
+		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: failed to seed rifle")
 		return
-	main.resource_stock[&"Bow"] = int(main.resource_stock.get(&"Bow", 0)) + 1
+	main.resource_stock[&"Rifle"] = int(main.resource_stock.get(&"Rifle", 0)) + 1
 	await get_tree().process_frame
 
-	var bow_pick: Vector2 = _slot_pick_world(zone, &"Bow")
-	if bow_pick == Vector2.INF:
-		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: bow slot missing")
+	var rifle_pick: Vector2 = _slot_pick_world(zone, &"Rifle")
+	if rifle_pick == Vector2.INF:
+		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: rifle slot missing")
 		return
-	if not bool(main._try_show_equipment_context_from_right_click(bow_pick, Vector2(24.0, 24.0))):
-		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: stockpile bow did not show equip menu")
+	if not bool(main._try_show_equipment_context_from_right_click(rifle_pick, Vector2(24.0, 24.0))):
+		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: stockpile rifle did not show equip menu")
 		return
 	if StringName(main.hud.get("_context_action_id")) != &"EquipSelectedItem":
-		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: stockpile bow context action mismatch")
+		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: stockpile rifle context action mismatch")
 		return
 	main._on_context_action_requested(&"EquipSelectedItem")
 	await get_tree().process_frame
 	var equipment: Dictionary = colonist.get_equipment_snapshot()
-	if StringName(equipment.get(&"Weapon", &"")) != &"Bow":
-		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: bow was not equipped")
+	if StringName(equipment.get(&"Weapon", &"")) != &"Rifle":
+		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: rifle was not equipped")
 		return
-	if int(zone.get_stored_amount(&"Bow")) != 0:
-		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: bow was not removed from stockpile")
+	if int(zone.get_stored_amount(&"Rifle")) != 0:
+		_finish(false, "EQUIPMENT_CONTEXT_MENU_FAIL: rifle was not removed from stockpile")
 		return
 
 	var hat_drop: Node = main._spawn_resource_drop(&"CombatHat", 1, Vector2(5360.0, 2560.0))

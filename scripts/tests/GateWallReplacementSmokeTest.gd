@@ -21,7 +21,7 @@ func _run_test() -> void:
 	for _i in range(20):
 		await get_tree().process_frame
 
-	var blueprint_wall_pos: Vector2 = Vector2(3880.0, 2200.0)
+	var blueprint_wall_pos: Vector2 = Vector2(3904.0, 2176.0)
 	main.build_system.set_selected_building(&"Wall")
 	if not main.build_system.place_building(blueprint_wall_pos, true):
 		_finish(false, "GATE_WALL_REPLACE_FAIL: initial wall blueprint placement failed")
@@ -39,7 +39,7 @@ func _run_test() -> void:
 	main._cancel_build_site(_find_build_site(&"Gate", blueprint_wall_pos))
 	await get_tree().process_frame
 
-	var wall_pos: Vector2 = Vector2(3960.0, 2200.0)
+	var wall_pos: Vector2 = Vector2(4096.0, 2176.0)
 	var colonists: Array = get_tree().get_nodes_in_group("colonists")
 	for idx in range(colonists.size()):
 		var colonist = colonists[idx]

@@ -20,7 +20,7 @@ func _spawn_zombie(main: Node, pos: Vector2) -> Node2D:
 	var zombie = ZOMBIE_SCENE.instantiate()
 	zombie.global_position = pos
 	if zombie.has_method("set_tile_size"):
-		zombie.set_tile_size(40.0)
+		zombie.set_tile_size(64.0)
 	main.units_root.add_child(zombie)
 	return zombie
 

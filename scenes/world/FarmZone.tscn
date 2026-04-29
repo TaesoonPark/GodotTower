@@ -6,12 +6,14 @@
 script = ExtResource("1_farm_zone_script")
 
 [node name="Fill" type="Polygon2D" parent="."]
-color = Color(0.28, 0.76, 0.3, 0.18)
+visible = false
+color = Color(0.28, 0.76, 0.3, 0)
 
 [node name="Outline" type="Line2D" parent="."]
-default_color = Color(0.36, 0.9, 0.4, 0.95)
+default_color = Color(0.34, 0.25, 0.16, 0.82)
 width = 2.0
 closed = false
 
 [node name="Label" type="Label" parent="."]
+visible = false
 text = "Farm"

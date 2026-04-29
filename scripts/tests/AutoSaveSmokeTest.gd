@@ -134,7 +134,7 @@ func _verify_loaded_state(main: Node, stock_center: Vector2, farm_center: Vector
 	if main.colonists.size() != 4:
 		return "AUTOSAVE_TEST_FAIL: colonist count did not restore"
 	var first = main.colonists[0]
-	if first.global_position.distance_to(Vector2(3800.0, 2200.0)) > 0.1:
+	if first.global_position.distance_to(main._snap_to_tile(Vector2(3800.0, 2200.0))) > 0.1:
 		return "AUTOSAVE_TEST_FAIL: colonist position did not restore"
 	if int(round(first.health)) != 77 or int(round(first.hunger)) != 66:
 		return "AUTOSAVE_TEST_FAIL: colonist needs did not restore"

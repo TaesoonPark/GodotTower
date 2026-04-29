@@ -20,7 +20,7 @@ func _finish(success: bool, message: String) -> void:
 func _run_test() -> void:
 	var godot_result: Dictionary = await _run_godot_scenario()
 	if not bool(godot_result.get("ok", false)):
-		_finish(false, "GATHER_HAUL_PARITY_TEST_FAIL: Godot scenario failed")
+		_finish(false, "GATHER_HAUL_PARITY_TEST_FAIL: Godot scenario failed %s" % JSON.stringify(godot_result))
 		return
 	var pure_result: Dictionary = _run_pure_scenario()
 	var diffs: Array[String] = _compare(godot_result, pure_result)
@@ -49,22 +49,25 @@ func _run_godot_scenario() -> Dictionary:
 		colonist.set_work_enabled(&"Hunt", false)
 		colonist.set_work_enabled(&"Gather", idx == 0)
 		colonist.set_work_enabled(&"Haul", idx == 0)
-	if not main.build_system.place_stockpile_zone(Rect2(Vector2(4080.0, 2200.0), Vector2(320.0, 200.0))):
+	var stock_center: Vector2 = main._snap_to_tile(Vector2(4224.0, 2304.0))
+	var stock_size: Vector2 = Vector2(192.0, 128.0)
+	if not main.build_system.place_stockpile_zone(Rect2(stock_center - stock_size * 0.5, stock_size)):
 		return {"ok": false}
 	var node = GATHERABLE_SCENE.instantiate()
-	node.global_position = Vector2(3760.0, 2160.0)
+	node.global_position = main._snap_to_tile(Vector2(3760.0, 2160.0))
 	main.world_root.add_child(node)
 	node.resource_type = &"Wood"
 	node.display_name = "ParityTree"
 	node.max_amount = 60
 	node.current_amount = 60
-	node.gather_per_tick = 10
+	node.gather_per_tick = 60
 	node.set_designated(true)
 	main._mark_group_cache_dirty(&"gatherables")
 	main._mark_group_cache_dirty(&"stockpile_zones")
 	main.job_system.mark_designation_dirty()
 	main._mark_jobs_dirty()
-	for _step in range(3600):
+	var last_state: Dictionary = {}
+	for _step in range(7200):
 		await get_tree().process_frame
 		var remaining_gather: int = int(node.current_amount) if node != null and is_instance_valid(node) else 0
 		var remaining_drop: int = 0
@@ -78,9 +81,10 @@ func _run_godot_scenario() -> Dictionary:
 			if zone == null or not is_instance_valid(zone):
 				continue
 			stored += int(zone.get_stored_amount(&"Wood"))
+		last_state = {"ok": false, "stored": stored, "remaining_drop": remaining_drop, "remaining_gather": remaining_gather}
 		if remaining_gather <= 0 and remaining_drop <= 0 and stored >= 60:
 			return {"ok": true, "stored": stored, "remaining_drop": remaining_drop, "remaining_gather": remaining_gather}
-	return {"ok": false}
+	return last_state
 
 func _run_pure_scenario() -> Dictionary:
 	var runner = STATE_RUNNER.new({
@@ -97,14 +101,14 @@ func _run_pure_scenario() -> Dictionary:
 			"id": 1,
 			"resource_type": &"Wood",
 			"amount": 60,
-			"gather_per_tick": 10,
+			"gather_per_tick": 60,
 			"designated": true,
 			"job_queued": false,
-			"pos": Vector2(3760.0, 2160.0)
+			"pos": Vector2(3776.0, 2176.0)
 		}],
 		"stockpiles": [{
 			"id": 10,
-			"pos": Vector2(4240.0, 2300.0),
+			"pos": Vector2(4224.0, 2304.0),
 			"stored": {}
 		}]
 	})

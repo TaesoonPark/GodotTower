@@ -6,6 +6,7 @@ const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
 const ENEMY_COUNT: int = 64
 const FRAME_BUDGET_USEC: int = 100000
+const TILE_SIZE: float = 64.0
 
 func _ready() -> void:
 	call_deferred("_run_test")
@@ -29,8 +30,8 @@ func _run_test() -> void:
 		_finish(false, "ENEMY_TARGET_EXIT_PERF_FAIL: missing colonist")
 		return
 	var target: Node2D = colonists[0] as Node2D
-	var inside: Vector2 = Vector2(3840.0, 2160.0)
-	var outside: Vector2 = Vector2(3440.0, 2160.0)
+	var inside: Vector2 = main._snap_to_tile(Vector2(3840.0, 2160.0))
+	var outside: Vector2 = main._snap_to_tile(Vector2(3440.0, 2160.0))
 	target.global_position = inside
 	target.set("health", 100000.0)
 	if target.has_method("cancel_current_job"):
@@ -39,7 +40,7 @@ func _run_test() -> void:
 		var colonist: Node2D = colonists[i] as Node2D
 		if colonist == null or not is_instance_valid(colonist):
 			continue
-		colonist.global_position = Vector2(4480.0, 1840.0 + float(i) * 80.0)
+		colonist.global_position = main._snap_to_tile(Vector2(4480.0, 1840.0 + float(i) * TILE_SIZE))
 		colonist.set("health", 100000.0)
 		if colonist.has_method("cancel_current_job"):
 			colonist.cancel_current_job()
@@ -80,21 +81,21 @@ func _run_test() -> void:
 
 func _place_wall_box(main: Node, center: Vector2) -> void:
 	main.build_system.set_selected_building(&"Wall")
-	for x in range(int(center.x - 80.0), int(center.x + 81.0), 40):
-		main.build_system.place_building(Vector2(float(x), center.y - 80.0), false)
-		main.build_system.place_building(Vector2(float(x), center.y + 80.0), false)
-	for y in range(int(center.y - 40.0), int(center.y + 41.0), 40):
-		main.build_system.place_building(Vector2(center.x - 80.0, float(y)), false)
-		main.build_system.place_building(Vector2(center.x + 80.0, float(y)), false)
+	for x in range(int(center.x - TILE_SIZE * 2.0), int(center.x + TILE_SIZE * 2.0 + 1.0), int(TILE_SIZE)):
+		main.build_system.place_building(Vector2(float(x), center.y - TILE_SIZE * 2.0), false)
+		main.build_system.place_building(Vector2(float(x), center.y + TILE_SIZE * 2.0), false)
+	for y in range(int(center.y - TILE_SIZE), int(center.y + TILE_SIZE + 1.0), int(TILE_SIZE)):
+		main.build_system.place_building(Vector2(center.x - TILE_SIZE * 2.0, float(y)), false)
+		main.build_system.place_building(Vector2(center.x + TILE_SIZE * 2.0, float(y)), false)
 
 func _spawn_enemies(main: Node, target: Node2D, center: Vector2) -> Array[Node2D]:
 	var enemies: Array[Node2D] = []
-	var offsets: Array[Vector2] = _build_offsets(ENEMY_COUNT, 40.0)
+	var offsets: Array[Vector2] = _build_offsets(ENEMY_COUNT, TILE_SIZE)
 	for i in range(ENEMY_COUNT):
 		var enemy: Node2D = RAIDER_SCENE.instantiate()
 		enemy.global_position = main._snap_to_tile(center + offsets[i])
 		if enemy.has_method("set_tile_size"):
-			enemy.set_tile_size(40.0)
+			enemy.set_tile_size(TILE_SIZE)
 		main.units_root.add_child(enemy)
 		enemy.set("_target_colonist_id", target.get_instance_id())
 		enemy.set("_target_refresh_left", 0.0)

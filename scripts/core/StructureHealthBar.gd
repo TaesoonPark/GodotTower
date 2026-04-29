@@ -16,7 +16,7 @@ static func update_bar(structure: Node, hp: float, max_hp: float) -> void:
 		return
 	bar = _ensure_bar(structure as Node2D)
 	var ratio: float = clampf(hp / max_hp, 0.0, 1.0)
-	var footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(40.0, 40.0)
+	var footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(64.0, 64.0)
 	var width: float = _bar_width(footprint)
 	bar.visible = true
 	bar.position = Vector2(0.0, -footprint.y * 0.5 - 8.0)
@@ -32,7 +32,7 @@ static func _ensure_bar(structure: Node2D) -> Node2D:
 	var existing: Node2D = _get_bar(structure)
 	if existing != null:
 		return existing
-	var footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(40.0, 40.0)
+	var footprint: Vector2 = structure.get_meta("footprint_size") if structure.has_meta("footprint_size") else Vector2(64.0, 64.0)
 	var width: int = int(round(_bar_width(footprint)))
 	var bar := Node2D.new()
 	bar.name = BAR_NAME

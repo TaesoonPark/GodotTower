@@ -38,8 +38,8 @@ func _assert_unique_cells_and_locked_adjacent(main: Node, units: Array, target: 
 			if unit.global_position.distance_to(cell) > 0.01:
 				_finish(false, "%s_FAIL: locked unit not centered pos=%s snap=%s" % [label, str(unit.global_position), str(cell)])
 				return false
-			var dx: int = absi(int(round((cell.x - target_cell.x) / 40.0)))
-			var dy: int = absi(int(round((cell.y - target_cell.y) / 40.0)))
+			var dx: int = absi(int(round((cell.x - target_cell.x) / 64.0)))
+			var dy: int = absi(int(round((cell.y - target_cell.y) / 64.0)))
 			if maxi(dx, dy) > 1:
 				_finish(false, "%s_FAIL: locked unit outside sword melee cell pos=%s target=%s" % [label, str(cell), str(target_cell)])
 				return false
@@ -64,7 +64,7 @@ func _run_test() -> void:
 	var zombie = ZOMBIE_SCENE.instantiate()
 	zombie.global_position = target_pos
 	if zombie.has_method("set_tile_size"):
-		zombie.set_tile_size(40.0)
+		zombie.set_tile_size(64.0)
 	main.units_root.add_child(zombie)
 	await get_tree().process_frame
 	zombie.health = 10000.0
@@ -78,7 +78,7 @@ func _run_test() -> void:
 			fighter = COLONIST_SCENE.instantiate()
 			fighter.name = "ExtraMelee%d" % i
 			if fighter.has_method("set_tile_size"):
-				fighter.set_tile_size(40.0)
+				fighter.set_tile_size(64.0)
 			main.units_root.add_child(fighter)
 			await get_tree().process_frame
 		fighter.global_position = main._snap_to_tile(target_pos + Vector2(-80.0, -80.0 + float(i % 5) * 40.0))

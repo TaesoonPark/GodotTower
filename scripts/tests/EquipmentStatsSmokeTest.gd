@@ -17,21 +17,21 @@ func _finish(success: bool, message: String) -> void:
 	get_tree().quit(EXIT_FAIL)
 
 func _run_test() -> void:
-	var bow_def: Resource = EQUIPMENT_STATS.get_resource_def(&"Bow")
+	var rifle_def: Resource = EQUIPMENT_STATS.get_resource_def(&"Rifle")
 	var sword_def: Resource = EQUIPMENT_STATS.get_resource_def(&"Sword")
-	if bow_def == null or sword_def == null:
+	if rifle_def == null or sword_def == null:
 		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: weapon resource definitions missing")
 		return
 
 	var fake_base: Dictionary = EQUIPMENT_STATS.make_colonist_base_profile(0.74, 4.0, 1.0)
 	fake_base["ranged_range"] = 12.0
 	fake_base["attack_cooldown_sec"] = 9.0
-	var fake_bow: Dictionary = EQUIPMENT_STATS.apply_equipment_to_profile(fake_base, {&"Weapon": &"Bow"})
-	if not is_equal_approx(float(fake_bow.get("ranged_range", 0.0)), float(bow_def.get("equipment_ranged_range"))):
-		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: bow range did not override base profile")
+	var fake_rifle: Dictionary = EQUIPMENT_STATS.apply_equipment_to_profile(fake_base, {&"Weapon": &"Rifle"})
+	if not is_equal_approx(float(fake_rifle.get("ranged_range", 0.0)), float(rifle_def.get("equipment_ranged_range"))):
+		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: rifle range did not override base profile")
 		return
-	if not is_equal_approx(float(fake_bow.get("attack_cooldown_sec", 0.0)), float(bow_def.get("equipment_attack_cooldown_sec"))):
-		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: bow cooldown did not override base profile")
+	if not is_equal_approx(float(fake_rifle.get("attack_cooldown_sec", 0.0)), float(rifle_def.get("equipment_attack_cooldown_sec"))):
+		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: rifle cooldown did not override base profile")
 		return
 
 	var main = MAIN_SCENE.instantiate()
@@ -44,13 +44,13 @@ func _run_test() -> void:
 		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: no colonist spawned")
 		return
 	var colonist: Node = colonists[0]
-	colonist.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Bow"})
-	var bow_profile: Dictionary = colonist.get_combat_profile()
-	if StringName(bow_profile.get("weapon_mode", &"")) != &"Ranged":
-		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: bow did not set ranged mode")
+	colonist.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Rifle"})
+	var rifle_profile: Dictionary = colonist.get_combat_profile()
+	if StringName(rifle_profile.get("weapon_mode", &"")) != &"Ranged":
+		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: rifle did not set ranged mode")
 		return
-	if not is_equal_approx(float(bow_profile.get("ranged_range", 0.0)), float(bow_def.get("equipment_ranged_range"))):
-		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: colonist bow range was not resource-driven")
+	if not is_equal_approx(float(rifle_profile.get("ranged_range", 0.0)), float(rifle_def.get("equipment_ranged_range"))):
+		_finish(false, "EQUIPMENT_STATS_TEST_FAIL: colonist rifle range was not resource-driven")
 		return
 
 	colonist.set_equipment_slots({&"Top": &"", &"Bottom": &"", &"Hat": &"", &"Weapon": &"Sword"})

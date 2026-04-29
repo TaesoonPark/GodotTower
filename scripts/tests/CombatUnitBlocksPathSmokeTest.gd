@@ -48,7 +48,7 @@ func _run_test() -> void:
 	var zombie = ZOMBIE_SCENE.instantiate()
 	zombie.global_position = target_pos
 	if zombie.has_method("set_tile_size"):
-		zombie.set_tile_size(40.0)
+		zombie.set_tile_size(64.0)
 	main.units_root.add_child(zombie)
 	await get_tree().process_frame
 	zombie.health = 10000.0
@@ -58,7 +58,7 @@ func _run_test() -> void:
 	var enemy_probe = ZOMBIE_SCENE.instantiate()
 	enemy_probe.global_position = target_pos + Vector2(-160.0, 40.0)
 	if enemy_probe.has_method("set_tile_size"):
-		enemy_probe.set_tile_size(40.0)
+		enemy_probe.set_tile_size(64.0)
 	main.units_root.add_child(enemy_probe)
 	await get_tree().process_frame
 	enemy_probe.health = 10000.0

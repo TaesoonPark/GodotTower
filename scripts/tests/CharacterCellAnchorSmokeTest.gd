@@ -4,6 +4,7 @@ const MAIN_SCENE: PackedScene = preload("res://scenes/main/Main.tscn")
 const ZOMBIE_SCENE: PackedScene = preload("res://scenes/units/Zombie.tscn")
 const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
+const TILE_SIZE: float = 64.0
 
 func _ready() -> void:
 	call_deferred("_run_test")
@@ -32,7 +33,7 @@ func _run_test() -> void:
 	var movers: Array = colonists.slice(0, 3)
 	var start: Vector2 = main._snap_to_tile(Vector2(3600.0, 2160.0))
 	for i in range(movers.size()):
-		movers[i].global_position = start + Vector2(0.0, float(i) * 40.0)
+		movers[i].global_position = start + Vector2(0.0, float(i) * TILE_SIZE)
 	for colonist in movers:
 		if colonist.has_method("cancel_current_job"):
 			colonist.cancel_current_job()
@@ -41,7 +42,7 @@ func _run_test() -> void:
 	main._issue_selected_move_command(Vector2(3840.0, 2160.0))
 
 	var all_done: bool = false
-	for _step in range(260):
+	for _step in range(600):
 		await get_tree().process_frame
 		all_done = true
 		for colonist in movers:
@@ -66,8 +67,8 @@ func _run_test() -> void:
 		fighter.cancel_current_job()
 	var zombie = ZOMBIE_SCENE.instantiate()
 	if zombie.has_method("set_tile_size"):
-		zombie.set_tile_size(40.0)
-	zombie.global_position = main._snap_to_tile(fighter.global_position + Vector2(160.0, 0.0))
+		zombie.set_tile_size(TILE_SIZE)
+	zombie.global_position = main._snap_to_tile(fighter.global_position + Vector2(TILE_SIZE * 4.0, 0.0))
 	main.units_root.add_child(zombie)
 	await get_tree().process_frame
 	zombie.health = 10000.0

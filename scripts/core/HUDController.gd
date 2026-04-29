@@ -402,7 +402,7 @@ func set_resource_stock(stock: Dictionary) -> void:
 	var keys := [
 		&"Wood", &"Stone", &"Steel", &"FoodRaw", &"Meal", &"Bed",
 		&"Handcart", &"Bicycle", &"GatherTop", &"GatherBottom", &"StrawHat",
-		&"CombatTop", &"CombatBottom", &"CombatHat", &"Sword", &"Bow"
+		&"CombatTop", &"CombatBottom", &"CombatHat", &"Sword", &"Rifle"
 	]
 	var chunks: Array[String] = []
 	for key in keys:

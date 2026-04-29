@@ -52,7 +52,7 @@ func _run_test() -> void:
 		var zombie = ZOMBIE_SCENE.instantiate()
 		zombie.global_position = main._snap_to_tile(pos)
 		if zombie.has_method("set_tile_size"):
-			zombie.set_tile_size(40.0)
+			zombie.set_tile_size(64.0)
 		main.units_root.add_child(zombie)
 		await get_tree().process_frame
 		zombie.health = 10000.0
@@ -73,8 +73,8 @@ func _run_test() -> void:
 				break
 			var enemy_cell: Vector2 = main._snap_to_tile(enemy.global_position)
 			var target_cell: Vector2 = main._snap_to_tile(target.global_position)
-			var cell_dx: int = absi(int(round((enemy_cell.x - target_cell.x) / 40.0)))
-			var cell_dy: int = absi(int(round((enemy_cell.y - target_cell.y) / 40.0)))
+			var cell_dx: int = absi(int(round((enemy_cell.x - target_cell.x) / 64.0)))
+			var cell_dy: int = absi(int(round((enemy_cell.y - target_cell.y) / 64.0)))
 			if enemy.global_position.distance_to(enemy_cell) > 0.01 or enemy_cell.distance_to(target_cell) <= 0.1 or maxi(cell_dx, cell_dy) > 1:
 				all_settled = false
 				break
@@ -96,8 +96,8 @@ func _run_test() -> void:
 		if enemy_cell.distance_to(target_cell) <= 0.1:
 			_finish(false, "ENEMY_FRIENDLY_SPACING_TEST_FAIL: enemy overlapped colonist dist=%.2f" % dist)
 			return
-		var cell_dx: int = absi(int(round((enemy_cell.x - target_cell.x) / 40.0)))
-		var cell_dy: int = absi(int(round((enemy_cell.y - target_cell.y) / 40.0)))
+		var cell_dx: int = absi(int(round((enemy_cell.x - target_cell.x) / 64.0)))
+		var cell_dy: int = absi(int(round((enemy_cell.y - target_cell.y) / 64.0)))
 		if maxi(cell_dx, cell_dy) > 1:
 			_finish(false, "ENEMY_FRIENDLY_SPACING_TEST_FAIL: enemy failed to engage adjacent cell dist=%.2f" % dist)
 			return

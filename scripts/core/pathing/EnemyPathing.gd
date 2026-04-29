@@ -12,7 +12,7 @@ const BASE_MAX_REBUILDS_PER_FRAME: int = 3
 static var _frame_id: int = -1
 static var _frame_rebuilds: int = 0
 
-var tile_size: float = 40.0
+var tile_size: float = 64.0
 var _path_points: Array[Vector2] = []
 var _path_index: int = 0
 var _last_path_goal: Vector2 = Vector2.INF

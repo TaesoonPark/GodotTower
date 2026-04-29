@@ -8,7 +8,7 @@ id = &"IrrigationPump"
 display_name = "Irrigation Pump"
 category = "Production"
 required_work = 1.0
-footprint_size = Vector2(80, 40)
+footprint_size = Vector2(128, 64)
 build_cost = {
 &"Steel": 2,
 &"Stone": 1,

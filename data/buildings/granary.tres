@@ -8,7 +8,7 @@ id = &"Granary"
 display_name = "Granary"
 category = "Production"
 required_work = 1.0
-footprint_size = Vector2(80, 80)
+footprint_size = Vector2(128, 128)
 build_cost = {
 &"Wood": 3,
 &"Stone": 2

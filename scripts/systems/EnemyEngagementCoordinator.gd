@@ -7,7 +7,7 @@ const MELEE_GOAL_CACHE_MS: int = 1600
 const MELEE_SLOT_MAX_RING: int = 8
 const STAGING_MIN_RING: int = 4
 
-var tile_size: float = 40.0
+var tile_size: float = 64.0
 var _occupancy: Node = null
 var _frame_id: int = -1
 var _occupied_ids_by_cell: Dictionary = {}
@@ -183,8 +183,10 @@ func _resolve_active_melee_goal(enemy: Node2D, target_id: int, target_cell: Vect
 
 func _resolve_staging_goal(enemy: Node2D, target_cell: Vector2, attack_range: float) -> Vector2:
 	var staging_ring: int = clampi(maxi(STAGING_MIN_RING, _engagement_ring(attack_range) + 3), 1, MELEE_SLOT_MAX_RING)
-	var slots: Array[Vector2] = _sort_slots_by_distance(_build_single_ring_slots(target_cell, staging_ring), enemy.global_position)
-	var start_idx: int = absi(enemy.get_instance_id()) % maxi(1, slots.size())
+	var slots: Array[Vector2] = _build_single_ring_slots(target_cell, staging_ring)
+	var start_idx: int = _closest_slot_index(slots, enemy.global_position)
+	if not slots.is_empty():
+		start_idx = (start_idx + absi(enemy.get_instance_id()) % mini(5, slots.size())) % slots.size()
 	for offset in range(slots.size()):
 		var idx: int = (start_idx + offset) % slots.size()
 		var candidate: Vector2 = slots[idx]
@@ -192,6 +194,16 @@ func _resolve_staging_goal(enemy: Node2D, target_cell: Vector2, attack_range: fl
 			_add_id_to_cell_cache(_claim_ids_by_cell, candidate, enemy.get_instance_id())
 			return candidate
 	return _snap_to_tile(enemy.global_position)
+
+func _closest_slot_index(slots: Array[Vector2], origin: Vector2) -> int:
+	var best_idx: int = 0
+	var best_dist_sq: float = INF
+	for i in range(slots.size()):
+		var dist_sq: float = origin.distance_squared_to(slots[i])
+		if dist_sq < best_dist_sq:
+			best_dist_sq = dist_sq
+			best_idx = i
+	return best_idx
 
 func _valid_cached_goal(enemy: Node2D, target_id: int, target_cell: Vector2, attack_range: float, allowed_ring: int, require_step_available: bool) -> Vector2:
 	if _get_node_int(enemy, "_melee_goal_cache_target_id") != target_id:

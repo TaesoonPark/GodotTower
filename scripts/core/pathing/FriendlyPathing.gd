@@ -11,14 +11,18 @@ const STUCK_REPATH_DISTANCE: float = 8.0
 const STUCK_REPATH_TIME_SEC: float = 1.4
 const BASE_MAX_REBUILDS_PER_FRAME: int = 4
 const PATH_CACHE_LIMIT: int = 48
+const FAILED_PATH_CACHE_LIMIT: int = 96
+const FAILED_PATH_RETRY_SEC: float = 1.2
 
 static var _frame_id: int = -1
 static var _frame_rebuilds: int = 0
 static var _path_cache: Dictionary = {}
 static var _path_cache_lru: Dictionary = {}
+static var _failed_path_cache: Dictionary = {}
+static var _failed_path_cache_lru: Dictionary = {}
 static var _path_cache_tick: int = 0
 
-var tile_size: float = 40.0
+var tile_size: float = 64.0
 var _path_points: Array[Vector2] = []
 var _path_index: int = 0
 var _last_path_goal: Vector2 = Vector2.INF
@@ -249,6 +253,8 @@ func _store_cached_path(cache_key: String, points: Array[Vector2]) -> void:
 	_path_cache_tick += 1
 	_path_cache[cache_key] = points.duplicate()
 	_path_cache_lru[cache_key] = _path_cache_tick
+	_failed_path_cache.erase(cache_key)
+	_failed_path_cache_lru.erase(cache_key)
 	while _path_cache.size() > PATH_CACHE_LIMIT:
 		var oldest_key: String = ""
 		var oldest_used: int = 2147483647
@@ -261,6 +267,56 @@ func _store_cached_path(cache_key: String, points: Array[Vector2]) -> void:
 			return
 		_path_cache.erase(oldest_key)
 		_path_cache_lru.erase(oldest_key)
+
+func _is_failed_path_cached(cache_key: String) -> bool:
+	if not _failed_path_cache.has(cache_key):
+		return false
+	var retry_after_ms: int = int(_failed_path_cache.get(cache_key, 0))
+	if Time.get_ticks_msec() >= retry_after_ms:
+		_failed_path_cache.erase(cache_key)
+		_failed_path_cache_lru.erase(cache_key)
+		return false
+	_path_cache_tick += 1
+	_failed_path_cache_lru[cache_key] = _path_cache_tick
+	return true
+
+func _store_failed_path(cache_key: String) -> void:
+	_path_cache_tick += 1
+	_failed_path_cache[cache_key] = Time.get_ticks_msec() + int(round(FAILED_PATH_RETRY_SEC * 1000.0))
+	_failed_path_cache_lru[cache_key] = _path_cache_tick
+	while _failed_path_cache.size() > FAILED_PATH_CACHE_LIMIT:
+		var oldest_key: String = ""
+		var oldest_used: int = 2147483647
+		for key in _failed_path_cache.keys():
+			var used: int = int(_failed_path_cache_lru.get(key, 0))
+			if oldest_key == "" or used < oldest_used:
+				oldest_key = String(key)
+				oldest_used = used
+		if oldest_key == "":
+			return
+		_failed_path_cache.erase(oldest_key)
+		_failed_path_cache_lru.erase(oldest_key)
+
+func _fail_path(cache_key: String) -> void:
+	_store_failed_path(cache_key)
+	_repath_left = maxf(_repath_left, FAILED_PATH_RETRY_SEC)
+
+func _has_open_adjacent_step(tile: Vector2i, is_blocked: Callable) -> bool:
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			if dx == 0 and dy == 0:
+				continue
+			var nx: int = tile.x + dx
+			var ny: int = tile.y + dy
+			if not _tile_walkable(nx, ny, tile.x, tile.y, is_blocked):
+				continue
+			if dx != 0 and dy != 0:
+				if not _tile_walkable(nx, tile.y, tile.x, tile.y, is_blocked):
+					continue
+				if not _tile_walkable(tile.x, ny, tile.x, tile.y, is_blocked):
+					continue
+			return true
+	return false
 
 func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callable) -> void:
 	var start_tile: Vector2i = _world_to_tile_vec(start_world)
@@ -277,6 +333,15 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 	var cache_key: String = _path_cache_key(start_tile, goal_tile)
 	if _try_restore_cached_path(cache_key, is_blocked):
 		return
+	if _is_failed_path_cached(cache_key):
+		_repath_left = maxf(_repath_left, FAILED_PATH_RETRY_SEC)
+		return
+	if not _tile_walkable(goal_tile.x, goal_tile.y, goal_tile.x, goal_tile.y, is_blocked):
+		_fail_path(cache_key)
+		return
+	if not _has_open_adjacent_step(start_tile, is_blocked) or not _has_open_adjacent_step(goal_tile, is_blocked):
+		_fail_path(cache_key)
+		return
 	var path: Array[Vector2] = _find_path_points(start_tile, goal_tile, SEARCH_MARGIN_TILES, _max_expansions_runtime, is_blocked)
 	if path.is_empty() and not _is_segment_clear(start_world, goal_world, is_blocked):
 		path = _find_path_points(
@@ -287,6 +352,7 @@ func _rebuild_path(start_world: Vector2, goal_world: Vector2, is_blocked: Callab
 			is_blocked
 		)
 	if path.is_empty():
+		_fail_path(cache_key)
 		return
 	_path_points = path
 	_store_cached_path(cache_key, _path_points)

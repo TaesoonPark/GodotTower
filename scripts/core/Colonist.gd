@@ -28,7 +28,7 @@ signal died(colonist: Node)
 
 @export var stats: Resource
 @export var priorities: Resource
-@export var sprite_height: float = 72.0
+@export var sprite_height: float = 64.0
 
 var health: float = 100.0
 var hunger: float = 100.0
@@ -36,6 +36,7 @@ var rest: float = 100.0
 var mood: float = 100.0
 
 var selected: bool = false
+var combat_ready: bool = false
 var current_job: Dictionary = {}
 var _resume_job_after_move: Dictionary = {}
 var _resume_after_move_enabled: bool = false
@@ -76,7 +77,7 @@ var work_enabled: Dictionary = {
 	&"Gather": true,
 	&"Hunt": true
 }
-var tile_size: float = 40.0
+var tile_size: float = 64.0
 const BUILD_WORK_TARGET_THRESHOLD: float = 18.0
 const BUILD_WORK_SITE_RANGE_TILES: float = 1.6
 const MOVE_STUCK_REPATH_SEC: float = 0.55
@@ -93,7 +94,11 @@ const CELL_CENTER_EPSILON: float = 0.75
 const MELEE_GOAL_CACHE_MS: int = 1600
 const MELEE_SLOT_COUNT: int = 8
 const MELEE_SLOT_MAX_RING: int = 8
-const HELD_WEAPON_HEIGHT: float = 28.0
+const BODY_ANIM_FRAME_SEC: float = 0.22
+const BODY_FRAME_FALLBACK: StringName = &"idle_front"
+const BODY_MOVE_EPSILON: float = 0.05
+const MAX_SIM_ACCUM_SEC: float = 0.16
+const MAX_SIM_STEPS_PER_PHYSICS: int = 2
 
 var _move_stuck_elapsed: float = 0.0
 var _move_repath_fail_streak: int = 0
@@ -103,7 +108,7 @@ var _reroute_target_pending: Vector2 = Vector2.INF
 var _friendly_pathing: FriendlyPathing = null
 var _pathing_occupancy: Node = null
 var _main_controller: Node = null
-var _last_move_direction: Vector2 = Vector2.RIGHT
+var _last_move_direction: Vector2 = Vector2.DOWN
 var _sim_accum: float = 0.0
 var _need_tick_left: float = 0.0
 var _combat_target_refresh_left: float = 0.0
@@ -127,6 +132,9 @@ var _melee_step_claim_cell: Vector2 = Vector2.INF
 var _melee_step_claim_next_ms: int = 0
 var _melee_lock_target_id: int = 0
 var _is_path_blocked_callable: Callable
+var _body_anim_elapsed: float = 0.0
+var _body_frame_id: StringName = &""
+var _body_facing_suffix: String = "front"
 
 @onready var nav: NavigationAgent2D = $NavigationAgent2D
 @onready var sprite: Sprite2D = $Sprite2D
@@ -142,11 +150,7 @@ func _ready() -> void:
 		priorities = JOB_PRIORITY_SCRIPT.new()
 	health = stats.max_health
 	_refresh_equipment_combat_profile()
-	if sprite != null:
-		var sprite_tex: Texture2D = GAME_SPRITE.get_unit_texture(&"colonist")
-		if sprite_tex != null:
-			sprite.texture = sprite_tex
-	_fit_sprite()
+	_set_body_sprite_frame(BODY_FRAME_FALLBACK)
 	_update_weapon_sprite()
 	_friendly_pathing = FRIENDLY_PATHING.new()
 	_friendly_pathing.setup(tile_size)
@@ -158,14 +162,16 @@ func _ready() -> void:
 	emit_status()
 
 func _physics_process(delta: float) -> void:
-	_sim_accum += delta
+	_sim_accum = minf(_sim_accum + delta, MAX_SIM_ACCUM_SEC)
 	var tick_interval: float = _lod_tick_interval()
 	if tick_interval > 0.0 and _sim_accum < tick_interval:
 		return
 	var sim_remaining: float = _sim_accum
-	while sim_remaining > 0.0 and (tick_interval <= 0.0 or sim_remaining >= tick_interval):
+	var step_count: int = 0
+	while sim_remaining > 0.0 and step_count < MAX_SIM_STEPS_PER_PHYSICS and (tick_interval <= 0.0 or sim_remaining >= tick_interval):
 		var sim_delta: float = minf(sim_remaining, 0.05)
 		sim_remaining -= sim_delta
+		step_count += 1
 		if food_speed_buff_remaining > 0.0:
 			food_speed_buff_remaining = maxf(0.0, food_speed_buff_remaining - sim_delta)
 		if _friendly_pathing != null:
@@ -180,6 +186,7 @@ func _physics_process(delta: float) -> void:
 			_clear_path_cache()
 			nav.target_position = global_position
 			_set_work_progress(0.0, false)
+			_update_body_sprite(Vector2.ZERO, sim_delta)
 			_update_weapon_sprite()
 			continue
 		var before_move: Vector2 = global_position
@@ -191,6 +198,7 @@ func _physics_process(delta: float) -> void:
 		_update_mounted_vehicle_follow(move_delta)
 		update_job_completion(sim_delta)
 		_process_active_work(sim_delta)
+		_update_body_sprite(move_delta, sim_delta)
 		_update_weapon_sprite()
 	_sim_accum = sim_remaining
 
@@ -424,6 +432,8 @@ func _is_combat_unit_blocking_tile(world_pos: Vector2) -> bool:
 	return false
 
 func _is_node_in_combat_state(node: Node) -> bool:
+	if node.get("combat_ready") == true:
+		return true
 	if node.has_method("is_melee_combat_locked") and bool(node.is_melee_combat_locked()):
 		return true
 	var job_variant: Variant = node.get("current_job")
@@ -465,7 +475,7 @@ func _resolve_move_goal() -> Vector2:
 				target_node = target_obj as Node2D
 				target_pos = target_node.global_position
 				current_job["target"] = target_pos
-		if selected:
+		if selected or combat_ready:
 			return _snap_to_tile(global_position)
 		var effective_type: StringName = _resolve_combat_job_type(jt)
 		if effective_type == &"CombatRanged":
@@ -497,18 +507,22 @@ func _try_retarget_build_site_work_position() -> bool:
 		center + Vector2(-tile_size, -tile_size)
 	]
 	var best: Vector2 = Vector2.INF
-	var best_dist: float = INF
+	var best_score: float = INF
+	var current_target: Vector2 = _snap_to_tile(current_job.get("target", center))
 	for p in candidates:
 		var snapped: Vector2 = _snap_to_tile(p)
 		if _is_blocked_position(snapped):
 			continue
-		var d: float = global_position.distance_to(snapped)
-		if d < best_dist:
-			best_dist = d
+		var score: float = global_position.distance_to(snapped)
+		if _is_move_segment_blocked(global_position, snapped):
+			score += tile_size * 12.0
+		if current_target.distance_to(snapped) <= 0.1:
+			score += tile_size * 4.0
+		if score < best_score:
+			best_score = score
 			best = snapped
 	if best == Vector2.INF:
 		return false
-	var current_target: Vector2 = _snap_to_tile(current_job.get("target", center))
 	if current_target.distance_to(best) <= 0.1:
 		return false
 	current_job["target"] = best
@@ -1392,6 +1406,27 @@ func set_selected(value: bool) -> void:
 	selected = value
 	queue_redraw()
 
+func set_combat_ready(value: bool) -> void:
+	if combat_ready == value:
+		return
+	combat_ready = value
+	if combat_ready:
+		_resume_job_after_move.clear()
+		_resume_after_move_enabled = false
+		var job_type: StringName = StringName(current_job.get("type", &""))
+		if not current_job.is_empty() and not _is_combat_job_type(job_type):
+			cancel_current_job()
+		if current_job.is_empty():
+			_clear_path_cache()
+			nav.target_position = _snap_to_tile(global_position)
+			_set_work_progress(0.0, false)
+	_invalidate_dynamic_combat_blockers()
+	queue_redraw()
+	emit_status()
+
+func is_combat_ready() -> bool:
+	return combat_ready
+
 func emit_status() -> void:
 	_update_job_label()
 	status_changed.emit(self)
@@ -1470,7 +1505,7 @@ func can_do_job(job_type: StringName) -> bool:
 			return false
 		if (job_type == &"CombatMelee" or job_type == &"CombatRanged") and not _mounted_vehicle_rider_can_attack():
 			return false
-	if selected:
+	if selected or combat_ready:
 		return job_type == &"CombatMelee" or job_type == &"CombatRanged"
 	match job_type:
 		&"BuildSite":
@@ -1505,6 +1540,64 @@ func _draw() -> void:
 		return
 	draw_arc(Vector2.ZERO, 28.0, 0.0, TAU, 48, Color(0.35, 0.9, 1.0), 2.0)
 
+func _is_combat_job_type(job_type: StringName) -> bool:
+	return job_type == &"CombatMelee" or job_type == &"CombatRanged"
+
+func _update_body_sprite(move_delta: Vector2, delta: float) -> void:
+	_body_anim_elapsed += delta
+	_set_body_sprite_frame(_select_body_frame(move_delta))
+
+func _select_body_frame(move_delta: Vector2) -> StringName:
+	var job_type: StringName = StringName(current_job.get("type", &""))
+	if job_type == &"CombatMelee" or job_type == &"CombatRanged":
+		var effective_job_type: StringName = _resolve_combat_job_type(job_type)
+		if effective_job_type == &"CombatRanged":
+			return StringName("aim_%s" % _body_direction_suffix(_combat_facing_direction()))
+		return StringName("idle_%s" % _body_direction_suffix(_combat_facing_direction()))
+	if move_delta.length_squared() > 0.0001:
+		var frame_index: int = int(floor(_body_anim_elapsed / BODY_ANIM_FRAME_SEC)) % 2
+		return StringName("walk_%s_%d" % [_stable_body_direction_suffix(move_delta), frame_index])
+	return StringName("idle_%s" % _body_facing_suffix)
+
+func _body_direction_suffix(direction: Vector2) -> String:
+	if absf(direction.x) > absf(direction.y):
+		return "right" if direction.x > 0.0 else "left"
+	if direction.y < 0.0:
+		return "back"
+	return "front"
+
+func _stable_body_direction_suffix(direction: Vector2) -> String:
+	var axis_x: float = absf(direction.x)
+	var axis_y: float = absf(direction.y)
+	if axis_x <= BODY_MOVE_EPSILON and axis_y <= BODY_MOVE_EPSILON:
+		return _body_facing_suffix
+	if axis_x > BODY_MOVE_EPSILON and axis_y > BODY_MOVE_EPSILON:
+		var horizontal_suffix: String = "right" if direction.x > 0.0 else "left"
+		var vertical_suffix: String = "back" if direction.y < 0.0 else "front"
+		if _body_facing_suffix == horizontal_suffix or _body_facing_suffix == vertical_suffix:
+			return _body_facing_suffix
+		_body_facing_suffix = horizontal_suffix
+		return _body_facing_suffix
+	var next_suffix: String = ""
+	if axis_x > axis_y:
+		next_suffix = "right" if direction.x > 0.0 else "left"
+	else:
+		next_suffix = "back" if direction.y < 0.0 else "front"
+	_body_facing_suffix = next_suffix
+	return _body_facing_suffix
+
+func _set_body_sprite_frame(frame_id: StringName) -> void:
+	if sprite == null or frame_id == _body_frame_id:
+		return
+	var tex: Texture2D = GAME_SPRITE.get_colonist_frame_texture(frame_id)
+	if tex == null:
+		tex = GAME_SPRITE.get_unit_texture(&"colonist")
+	if tex == null:
+		return
+	sprite.texture = tex
+	_body_frame_id = frame_id
+	_fit_sprite()
+
 func _fit_sprite() -> void:
 	if sprite.texture == null:
 		return
@@ -1517,38 +1610,7 @@ func _fit_sprite() -> void:
 func _update_weapon_sprite() -> void:
 	if weapon_sprite == null:
 		return
-	var job_type: StringName = StringName(current_job.get("type", &""))
-	if job_type != &"CombatMelee" and job_type != &"CombatRanged":
-		weapon_sprite.visible = false
-		return
-	var weapon_id: StringName = StringName(equipment_slots.get(&"Weapon", &""))
-	if weapon_id == &"":
-		weapon_sprite.visible = false
-		return
-	var weapon_tex: Texture2D = GAME_SPRITE.get_drop_texture(weapon_id)
-	if weapon_tex == null:
-		weapon_sprite.visible = false
-		return
-	weapon_sprite.texture = weapon_tex
-	_fit_weapon_sprite()
-	_place_weapon_sprite()
-	weapon_sprite.visible = true
-
-func _fit_weapon_sprite() -> void:
-	if weapon_sprite.texture == null:
-		return
-	var tex_size: Vector2 = weapon_sprite.texture.get_size()
-	if tex_size.y <= 0.0:
-		return
-	var scale_factor: float = HELD_WEAPON_HEIGHT / tex_size.y
-	weapon_sprite.scale = Vector2(scale_factor, scale_factor)
-
-func _place_weapon_sprite() -> void:
-	var facing: Vector2 = _combat_facing_direction()
-	var side: float = -1.0 if facing.x < 0.0 else 1.0
-	weapon_sprite.position = Vector2(18.0 * side, -24.0)
-	weapon_sprite.flip_h = side < 0.0
-	weapon_sprite.rotation = side * 0.35
+	weapon_sprite.visible = false
 
 func _combat_facing_direction() -> Vector2:
 	var target_id: int = int(current_job.get("target_id", 0))

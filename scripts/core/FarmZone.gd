@@ -6,10 +6,10 @@ const GAME_SPRITE: Script = preload("res://scripts/core/GameSprite.gd")
 signal zone_changed(zone: Node)
 signal farm_job_needed(zone: Node)
 
-@export var min_zone_size: float = 32.0
-@export var tile_size: float = 40.0
+@export var min_zone_size: float = 64.0
+@export var tile_size: float = 64.0
 
-var zone_size: Vector2 = Vector2(120, 80)
+var zone_size: Vector2 = Vector2(192, 128)
 var crop_type: StringName = &""
 var crop_catalog: Dictionary = {}
 var growth_time_multiplier: float = 1.0
@@ -17,6 +17,8 @@ var zone_fertility: float = 1.0
 var yield_multiplier: float = 1.0
 var fertility_resilience: float = 1.0
 var _plots: Dictionary = {}
+var _plot_ground_tiles: Dictionary = {}
+var _plot_ground_root: Node2D = null
 var _plot_markers: Dictionary = {}
 var _plot_marker_root: Node2D = null
 
@@ -40,10 +42,12 @@ func _ready() -> void:
 	add_to_group("farm_zones")
 	if zone_fertility <= 0.0:
 		zone_fertility = randf_range(0.85, 1.15)
+	_ensure_plot_ground_root()
 	_ensure_plot_marker_root()
 	if _plots.is_empty():
 		_rebuild_plots()
 	_refresh_shape()
+	_refresh_ground_tiles()
 	_refresh_plot_markers()
 	zone_changed.emit(self)
 
@@ -396,6 +400,7 @@ func _refresh_shape() -> void:
 	var p3 := Vector2(-half.x, half.y)
 	if fill_polygon != null:
 		fill_polygon.polygon = PackedVector2Array([p0, p1, p2, p3])
+		fill_polygon.visible = false
 	if outline != null:
 		outline.points = PackedVector2Array([p0, p1, p2, p3, p0])
 	_refresh_label()
@@ -403,19 +408,7 @@ func _refresh_shape() -> void:
 func _refresh_label() -> void:
 	if label == null:
 		return
-	var empty_count: int = 0
-	var grow_count: int = 0
-	var mature_count: int = 0
-	for tile in _plots.keys():
-		var state: StringName = StringName(_plots[tile].get("state", &"Empty"))
-		if state == &"Mature":
-			mature_count += 1
-		elif state == &"Growing":
-			grow_count += 1
-		else:
-			empty_count += 1
-	label.text = "Farm (%s)\nE:%d G:%d M:%d F:%.2f" % [get_crop_display_name(), empty_count, grow_count, mature_count, zone_fertility]
-	label.position = Vector2(-zone_size.x * 0.5 + 8.0, -zone_size.y * 0.5 - 36.0)
+	label.visible = false
 
 func _rebuild_plots() -> void:
 	_plots.clear()
@@ -445,7 +438,16 @@ func _rebuild_plots() -> void:
 				"consecutive_crop": 0,
 				"rotation_mult": 1.0
 			}
+	_refresh_ground_tiles()
 	_refresh_plot_markers()
+
+func _ensure_plot_ground_root() -> void:
+	if _plot_ground_root != null and is_instance_valid(_plot_ground_root):
+		return
+	_plot_ground_root = Node2D.new()
+	_plot_ground_root.name = "PlotGround"
+	_plot_ground_root.z_index = 0
+	add_child(_plot_ground_root)
 
 func _ensure_plot_marker_root() -> void:
 	if _plot_marker_root != null and is_instance_valid(_plot_marker_root):
@@ -454,6 +456,34 @@ func _ensure_plot_marker_root() -> void:
 	_plot_marker_root.name = "PlotMarkers"
 	_plot_marker_root.z_index = 2
 	add_child(_plot_marker_root)
+
+func _refresh_ground_tiles() -> void:
+	_ensure_plot_ground_root()
+	var stale_tiles: Array[Vector2i] = []
+	for tile_any in _plot_ground_tiles.keys():
+		var tile: Vector2i = tile_any
+		if not _plots.has(tile):
+			stale_tiles.append(tile)
+	for tile in stale_tiles:
+		var old_tile: Node2D = _plot_ground_tiles.get(tile, null)
+		if old_tile != null and is_instance_valid(old_tile):
+			old_tile.queue_free()
+		_plot_ground_tiles.erase(tile)
+	var field_tex: Texture2D = GAME_SPRITE.get_farm_texture(&"field_empty")
+	for tile_any in _plots.keys():
+		var tile: Vector2i = tile_any
+		var sprite: Sprite2D = _plot_ground_tiles.get(tile, null) as Sprite2D
+		if sprite == null:
+			var old_node: Node2D = _plot_ground_tiles.get(tile, null)
+			if old_node != null and is_instance_valid(old_node):
+				old_node.queue_free()
+			sprite = Sprite2D.new()
+			sprite.name = "PlotGround_%d_%d" % [tile.x, tile.y]
+			_plot_ground_root.add_child(sprite)
+			_plot_ground_tiles[tile] = sprite
+		sprite.texture = field_tex
+		sprite.position = to_local(get_plot_world(tile))
+		sprite.modulate = Color.WHITE
 
 func _refresh_plot_markers() -> void:
 	_ensure_plot_marker_root()

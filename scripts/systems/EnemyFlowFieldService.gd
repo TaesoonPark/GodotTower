@@ -13,8 +13,8 @@ const FIELD_INF_COST: int = 2147483647
 const ORTH_COST: int = 10
 const DIAG_COST: int = 14
 
-var tile_size: float = 40.0
-var world_size: Vector2 = Vector2(7680.0, 4320.0)
+var tile_size: float = 64.0
+var world_size: Vector2 = Vector2(7680.0, 4352.0)
 
 var _occupancy: Node = null
 var _revision: int = 0

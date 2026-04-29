@@ -5,7 +5,7 @@ const RAIDER_SCENE: PackedScene = preload("res://scenes/units/Raider.tscn")
 const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
 const ENEMY_COUNT: int = 64
-const TILE_SIZE: float = 40.0
+const TILE_SIZE: float = 64.0
 
 func _ready() -> void:
 	call_deferred("_run_test")
@@ -29,7 +29,7 @@ func _run_test() -> void:
 		_finish(false, "ENEMY_ENGAGEMENT_COORDINATOR_FAIL: missing colonist")
 		return
 	var target: Node2D = colonists[0] as Node2D
-	target.global_position = Vector2(3840.0, 2160.0)
+	target.global_position = main._snap_to_tile(Vector2(3840.0, 2160.0))
 	target.set("health", 100000.0)
 	if target.has_method("cancel_current_job"):
 		target.cancel_current_job()

@@ -8,7 +8,7 @@ id = &"LanternTower"
 display_name = "Lantern Tower"
 category = "Defense"
 required_work = 1.0
-footprint_size = Vector2(40, 80)
+footprint_size = Vector2(64, 128)
 build_cost = {
 &"Wood": 2,
 &"Steel": 1

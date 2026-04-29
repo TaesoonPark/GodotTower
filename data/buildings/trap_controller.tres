@@ -8,7 +8,7 @@ id = &"TrapController"
 display_name = "Trap Controller"
 category = "Defense"
 required_work = 1.0
-footprint_size = Vector2(40, 40)
+footprint_size = Vector2(64, 64)
 build_cost = {
 &"Steel": 2,
 &"Wood": 1

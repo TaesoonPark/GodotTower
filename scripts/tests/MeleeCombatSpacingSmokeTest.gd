@@ -32,7 +32,7 @@ func _run_test() -> void:
 	var zombie = ZOMBIE_SCENE.instantiate()
 	zombie.global_position = target_pos
 	if zombie.has_method("set_tile_size"):
-		zombie.set_tile_size(40.0)
+		zombie.set_tile_size(64.0)
 	main.units_root.add_child(zombie)
 	await get_tree().process_frame
 	zombie.health = 10000.0
@@ -78,8 +78,8 @@ func _run_test() -> void:
 		if fighter_cell.distance_to(enemy_cell) <= 0.1:
 			_finish(false, "MELEE_SPACING_TEST_FAIL: fighter overlapped enemy dist=%.2f" % dist_to_enemy)
 			return
-		var cell_dx: int = absi(int(round((fighter_cell.x - enemy_cell.x) / 40.0)))
-		var cell_dy: int = absi(int(round((fighter_cell.y - enemy_cell.y) / 40.0)))
+		var cell_dx: int = absi(int(round((fighter_cell.x - enemy_cell.x) / 64.0)))
+		var cell_dy: int = absi(int(round((fighter_cell.y - enemy_cell.y) / 64.0)))
 		if fighter.has_method("is_melee_combat_locked") and bool(fighter.is_melee_combat_locked()) and maxi(cell_dx, cell_dy) > 1:
 			_finish(false, "MELEE_SPACING_TEST_FAIL: fighter locked melee outside adjacent cell dist=%.2f pos=%s snap=%s enemy=%s job=%s" % [dist_to_enemy, str(fighter.global_position), str(fighter_cell), str(enemy_cell), str(fighter.current_job)])
 			return

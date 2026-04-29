@@ -3,6 +3,7 @@ extends Node
 const MAIN_SCENE: PackedScene = preload("res://scenes/main/Main.tscn")
 const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
+const TILE_SIZE: float = 64.0
 
 func _ready() -> void:
 	call_deferred("_run_test")
@@ -27,16 +28,17 @@ func _run_test() -> void:
 		return
 
 	var lead: Node2D = colonists[0]
-	var wall_x: float = 3360.0
-	var wall_y: float = 2160.0
+	var wall_center: Vector2 = main._snap_to_tile(Vector2(3360.0, 2160.0))
+	var wall_x: float = wall_center.x
+	var wall_y: float = wall_center.y
 	for i in range(colonists.size()):
 		var colonist: Node2D = colonists[i]
-		colonist.global_position = Vector2(wall_x - 120.0, wall_y + float(i) * 80.0)
+		colonist.global_position = Vector2(wall_x - TILE_SIZE * 2.0, wall_y + float(i) * TILE_SIZE)
 		if colonist.has_method("cancel_current_job"):
 			colonist.cancel_current_job()
 
 	main.build_system.set_selected_building(&"Wall")
-	for y in range(int(wall_y - 80.0), int(wall_y + 81.0), 40):
+	for y in range(int(wall_y - TILE_SIZE), int(wall_y + TILE_SIZE + 1.0), int(TILE_SIZE)):
 		if not main.build_system.place_building(Vector2(wall_x, float(y)), false):
 			_finish(false, "FRIENDLY_WALL_BLOCKING_FAIL: wall setup failed")
 			return

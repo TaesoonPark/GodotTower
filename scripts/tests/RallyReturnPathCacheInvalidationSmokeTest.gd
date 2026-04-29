@@ -3,7 +3,7 @@ extends Node
 const FRIENDLY_PATHING: Script = preload("res://scripts/core/pathing/FriendlyPathing.gd")
 const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
-const TILE_SIZE: float = 40.0
+const TILE_SIZE: float = 64.0
 
 var _block_cached_first_step: bool = false
 
