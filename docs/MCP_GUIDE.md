@@ -1,12 +1,12 @@
 # MCP Guide (GodotTower)
 
-Last updated: 2026-04-19
+Last updated: 2026-04-29
 
 ## Purpose
 This file is the single reference for:
 - MCP runtime selection
 - playtest execution flow
-- `@coding-solo/godot-mcp` vs `gopeak` feature differences
+- optional external MCP runtime notes
 - TDD usage guidance
 
 ## Default MCP Runtime
@@ -21,11 +21,11 @@ Current project default is `@coding-solo/godot-mcp`.
 npx -y @coding-solo/godot-mcp
 ```
 
-## Advanced MCP Runtime (Optional)
+## Advanced MCP Runtime (Optional External)
 
-Optional advanced runtime is `gopeak`.
+GoPeak is not vendored in this repository. If a future task needs it, run it as
+an external MCP runtime and keep final pass/fail checks on repository tests.
 
-- Local copy: `tools/gopeak-mcp/`
 - Typical launch:
 
 ```bash
@@ -97,14 +97,6 @@ bash scripts/setup-playtest-env.sh
 ```bash
 # Published versions
 npm view @coding-solo/godot-mcp version
-npm view gopeak version
-
-# Local gopeak version
-cat tools/gopeak-mcp/package.json | grep '"version"'
-
-# gopeak smoke
-cd tools/gopeak-mcp
-npm run smoke
 ```
 
 ## Archive
@@ -112,4 +104,3 @@ npm run smoke
 Pre-integration docs were archived at:
 
 `docs/archive/2026-04-19/`
-
