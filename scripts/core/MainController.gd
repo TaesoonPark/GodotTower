@@ -4763,11 +4763,12 @@ func _drop_enemy_equipment(enemy: Node) -> void:
 		return
 	var slots: Dictionary = enemy.get_equipment_snapshot()
 	var slot_order := [&"Top", &"Bottom", &"Hat", &"Weapon"]
+	var base_pos: Vector2 = _snap_to_tile(enemy.global_position)
 	var offsets: Array[Vector2] = [
-		Vector2(-8.0, -6.0),
-		Vector2(8.0, -6.0),
-		Vector2(-8.0, 6.0),
-		Vector2(8.0, 6.0)
+		Vector2(-TILE_SIZE, 0.0),
+		Vector2(TILE_SIZE, 0.0),
+		Vector2(0.0, -TILE_SIZE),
+		Vector2(0.0, TILE_SIZE)
 	]
 	for i in range(slot_order.size()):
 		var slot_key: StringName = slot_order[i]
@@ -4775,7 +4776,7 @@ func _drop_enemy_equipment(enemy: Node) -> void:
 		if item_id == &"":
 			continue
 		var offset: Vector2 = offsets[i] if i < offsets.size() else Vector2.ZERO
-		_spawn_resource_drop(item_id, 1, enemy.global_position + offset)
+		_spawn_resource_drop(item_id, 1, base_pos + offset)
 
 func _get_alive_raiders() -> Array:
 	var out: Array = []

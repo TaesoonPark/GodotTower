@@ -28,6 +28,8 @@ const STRUCTURE_ATTACK_TARGET_REFRESH_MS: int = 450
 const STRUCTURE_ATTACK_TARGET_FAIL_REFRESH_MS: int = 120
 const STRUCTURE_ATTACK_SCAN_BUDGET_PER_FRAME: int = 10
 const POST_BREACH_FLOW_DEFER_MS: int = 350
+const BODY_ANIM_FRAME_SEC: float = 0.18
+const BODY_MOVE_EPSILON: float = 0.01
 
 static var _melee_attacker_cache_frame: int = -1
 static var _melee_attacker_ids_by_target: Dictionary = {}
@@ -74,6 +76,9 @@ var _weapon_mode: StringName = &"Melee"
 var _default_weapon_mode: StringName = &"Melee"
 var _move_goal: Vector2 = Vector2.INF
 var _move_goal_exact: bool = false
+var _body_anim_elapsed: float = 0.0
+var _body_facing_suffix: String = "front"
+var _body_frame_id: StringName = &""
 var _last_move_tile: Vector2i = Vector2i(999999, 999999)
 var _last_move_bucket: Vector2i = Vector2i(999999, 999999)
 var _spawn_unclip_left: float = 3.0
@@ -146,10 +151,8 @@ func _ready() -> void:
 	if nav != null:
 		nav.set_physics_process(false)
 	if sprite != null and sprite.texture == null:
-		var sprite_tex: Texture2D = GAME_SPRITE.get_unit_texture(_resolve_unit_sprite_id())
-		if sprite_tex != null:
-			sprite.texture = sprite_tex
-		else:
+		_set_body_sprite_frame(&"idle_front")
+		if sprite.texture == null:
 			sprite.texture = _make_texture(28, 34, Color(0.86, 0.22, 0.22, 1.0))
 	_ensure_unblocked_spawn()
 	_last_move_tile = _world_to_tile(global_position)
@@ -268,7 +271,9 @@ func _physics_process(delta: float) -> void:
 		sim_remaining -= sim_delta
 		step_count += 1
 		var move_start_us: int = Time.get_ticks_usec() if perf_enabled else 0
+		var before_move: Vector2 = global_position
 		_process_movement(sim_delta)
+		_update_body_sprite(global_position - before_move, sim_delta)
 		if perf_enabled:
 			perf_move_us += Time.get_ticks_usec() - move_start_us
 		_ai_phase_left = maxf(0.0, _ai_phase_left - sim_delta)
@@ -1419,6 +1424,45 @@ func _refresh_label() -> void:
 	if label == null:
 		return
 	label.text = _get_label_text(int(round(health)))
+
+func _update_body_sprite(move_delta: Vector2, delta: float) -> void:
+	_body_anim_elapsed += delta
+	_set_body_sprite_frame(_select_body_frame(move_delta))
+
+func _select_body_frame(move_delta: Vector2) -> StringName:
+	if move_delta.length_squared() > 0.0001:
+		var frame_index: int = int(floor(_body_anim_elapsed / BODY_ANIM_FRAME_SEC)) % 2
+		return StringName("walk_%s_%d" % [_stable_body_direction_suffix(move_delta), frame_index])
+	return StringName("idle_%s" % _body_facing_suffix)
+
+func _stable_body_direction_suffix(direction: Vector2) -> String:
+	var axis_x: float = absf(direction.x)
+	var axis_y: float = absf(direction.y)
+	if axis_x <= BODY_MOVE_EPSILON and axis_y <= BODY_MOVE_EPSILON:
+		return _body_facing_suffix
+	if axis_x > BODY_MOVE_EPSILON and axis_y > BODY_MOVE_EPSILON:
+		var horizontal_suffix: String = "right" if direction.x > 0.0 else "left"
+		var vertical_suffix: String = "back" if direction.y < 0.0 else "front"
+		if _body_facing_suffix == horizontal_suffix or _body_facing_suffix == vertical_suffix:
+			return _body_facing_suffix
+		_body_facing_suffix = horizontal_suffix
+		return _body_facing_suffix
+	var next_suffix: String = ""
+	if axis_x > axis_y:
+		next_suffix = "right" if direction.x > 0.0 else "left"
+	else:
+		next_suffix = "back" if direction.y < 0.0 else "front"
+	_body_facing_suffix = next_suffix
+	return _body_facing_suffix
+
+func _set_body_sprite_frame(frame_id: StringName) -> void:
+	if sprite == null or frame_id == _body_frame_id:
+		return
+	var tex: Texture2D = GAME_SPRITE.get_unit_frame_texture(_resolve_unit_sprite_id(), frame_id)
+	if tex == null:
+		return
+	sprite.texture = tex
+	_body_frame_id = frame_id
 
 func _get_label_text(hp: int) -> String:
 	return "Enemy HP:%d" % hp

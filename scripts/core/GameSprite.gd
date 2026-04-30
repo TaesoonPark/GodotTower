@@ -70,6 +70,17 @@ static func get_unit_texture(unit_id: StringName) -> Texture2D:
 	var key: StringName = StringName(String(unit_id).to_lower())
 	return _load_by_path(String(UNIT_PATHS.get(key, "")))
 
+static func get_unit_frame_texture(unit_id: StringName, frame_id: StringName) -> Texture2D:
+	var unit_key: String = _to_snake(String(unit_id).to_lower())
+	var frame_key: String = String(frame_id).to_lower()
+	if unit_key.is_empty() or frame_key.is_empty():
+		return get_unit_texture(unit_id)
+	var path: String = "res://assets/sprites/units/%s_frames/%s.png" % [unit_key, frame_key]
+	var tex: Texture2D = _load_by_path(path)
+	if tex != null:
+		return tex
+	return get_unit_texture(unit_id)
+
 static func get_colonist_frame_texture(frame_id: StringName) -> Texture2D:
 	return _load_by_path(String(COLONIST_FRAME_PATHS.get(frame_id, "")))
 

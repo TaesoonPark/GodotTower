@@ -1,0 +1,6 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" uid="uid://bsr4jo33x8g9k" path="res://scripts/tests/EnemyDropSpreadSmokeTest.gd" id="1_test_script"]
+
+[node name="EnemyDropSpreadSmokeTest" type="Node"]
+script = ExtResource("1_test_script")
