@@ -467,11 +467,9 @@
 ## 22회차 (5차 반복 2)
 ### 구현 기능
 - 신규 건물 `LanternTower` 추가.
-- 신규 건물 `TrapController` 추가.
 - 신규 건물 `SupplyDepot` 추가.
 ### 수정 파일
 - `data/buildings/lantern_tower.tres`
-- `data/buildings/trap_controller.tres`
 - `data/buildings/supply_depot.tres`
 
 ## 23회차 (5차 반복 3)

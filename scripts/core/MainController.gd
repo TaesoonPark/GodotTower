@@ -6466,26 +6466,7 @@ func _update_defense_traps(delta: float, enemies: Array = []) -> void:
 			traps_changed = true
 		if cooldown_left > 0.0:
 			continue
-		var target: Node = null
-		var best_dist_sq: float = pow(36.0 * maxf(1.0, _trap_range_bonus_from_research), 2.0)
-		var range_tiles: int = maxi(1, int(ceil(sqrt(best_dist_sq) / trap_cell_size)))
-		var trap_bucket: Vector2i = Vector2i(
-			int(floor(trap.global_position.x / trap_cell_size)),
-			int(floor(trap.global_position.y / trap_cell_size))
-		)
-		for by in range(trap_bucket.y - range_tiles, trap_bucket.y + range_tiles + 1):
-			for bx in range(trap_bucket.x - range_tiles, trap_bucket.x + range_tiles + 1):
-				var local_key: int = _pack_tile_key(Vector2i(bx, by))
-				if not enemy_buckets.has(local_key):
-					continue
-				var bucket_enemies: Array = enemy_buckets[local_key]
-				for raider in bucket_enemies:
-					if raider == null or not is_instance_valid(raider):
-						continue
-					var dist_sq: float = trap.global_position.distance_squared_to(raider.global_position)
-					if dist_sq <= best_dist_sq:
-						best_dist_sq = dist_sq
-						target = raider
+		var target: Node = _find_enemy_inside_trap_footprint(trap, enemy_buckets, trap_cell_size)
 		if target == null:
 			continue
 		if target.has_method("apply_combat_damage"):
@@ -6499,6 +6480,44 @@ func _update_defense_traps(delta: float, enemies: Array = []) -> void:
 		_structure_maintenance_dirty = true
 		_hud_dirty = true
 	_trap_update_cursor = (start_idx + max_to_process) % trap_count
+
+func _find_enemy_inside_trap_footprint(trap: Node, enemy_buckets: Dictionary, trap_cell_size: float) -> Node:
+	if not (trap is Node2D):
+		return null
+	var trap_node: Node2D = trap as Node2D
+	var footprint: Vector2 = trap.get_meta("footprint_size") if trap.has_meta("footprint_size") else Vector2(TILE_SIZE, TILE_SIZE)
+	footprint.x = maxf(1.0, footprint.x)
+	footprint.y = maxf(1.0, footprint.y)
+	var occupied_rect := Rect2(trap_node.global_position - footprint * 0.5, footprint).grow(0.5)
+	var min_bucket := Vector2i(
+		int(floor(occupied_rect.position.x / trap_cell_size)),
+		int(floor(occupied_rect.position.y / trap_cell_size))
+	)
+	var max_bucket := Vector2i(
+		int(floor((occupied_rect.position.x + occupied_rect.size.x) / trap_cell_size)),
+		int(floor((occupied_rect.position.y + occupied_rect.size.y) / trap_cell_size))
+	)
+	var target: Node = null
+	var best_dist_sq: float = INF
+	for by in range(min_bucket.y, max_bucket.y + 1):
+		for bx in range(min_bucket.x, max_bucket.x + 1):
+			var local_key: int = _pack_tile_key(Vector2i(bx, by))
+			if not enemy_buckets.has(local_key):
+				continue
+			var bucket_enemies: Array = enemy_buckets[local_key]
+			for raider in bucket_enemies:
+				if raider == null or not is_instance_valid(raider):
+					continue
+				if not (raider is Node2D):
+					continue
+				var enemy_pos: Vector2 = (raider as Node2D).global_position
+				if not occupied_rect.has_point(enemy_pos):
+					continue
+				var dist_sq: float = trap_node.global_position.distance_squared_to(enemy_pos)
+				if dist_sq < best_dist_sq:
+					best_dist_sq = dist_sq
+					target = raider
+	return target
 
 func _pack_tile_key(tile: Vector2i) -> int:
 	var packed_x: int = (tile.x + 32768) & 0xFFFF
