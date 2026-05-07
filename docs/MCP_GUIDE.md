@@ -1,25 +1,51 @@
 # MCP Guide (GodotTower)
 
-Last updated: 2026-04-29
+Last updated: 2026-05-07
 
 ## Purpose
 This file is the single reference for:
 - MCP runtime selection
 - playtest execution flow
+- Context7 documentation lookup
 - optional external MCP runtime notes
 - TDD usage guidance
 
-## Default MCP Runtime
+## Default MCP Runtime Pair
 
-Current project default is `@coding-solo/godot-mcp`.
+Current project default is a two-server MCP setup:
 
-- Config: `mcp/godot-mcp.shared.json`
-- Bootstrap: `scripts/start-godot-mcp.sh`
-- Launch command:
+- `godot`: run/playtest/debug feedback through `@coding-solo/godot-mcp`
+- `context7`: current external library and API documentation through `@upstash/context7-mcp`
+- Shared config: `mcp/godot-mcp.shared.json`
+- Cursor project config: `.cursor/mcp.json`
+
+Godot bootstrap:
 
 ```bash
-npx -y @coding-solo/godot-mcp
+bash scripts/start-godot-mcp.sh
 ```
+
+Context7 stdio bootstrap:
+
+```bash
+npx -y @upstash/context7-mcp
+```
+
+`CONTEXT7_API_KEY` is optional, but recommended if Context7 rate limits become a problem.
+
+## Codex MCP Registration
+
+The current machine has these global Codex MCP servers registered:
+
+```bash
+codex mcp add godot --env DEBUG=true -- bash "$(pwd)/scripts/start-godot-mcp.sh"
+codex mcp add context7 -- npx -y @upstash/context7-mcp
+codex mcp list
+```
+
+After changing MCP config, restart the Codex session so the new tools are loaded.
+
+Use `godot` MCP for project execution and debug output. Use `context7` when a task depends on current Godot, GDScript, MCP, or external package documentation.
 
 ## Advanced MCP Runtime (Optional External)
 
@@ -97,6 +123,11 @@ bash scripts/setup-playtest-env.sh
 ```bash
 # Published versions
 npm view @coding-solo/godot-mcp version
+npm view @upstash/context7-mcp version
+
+# MCP bootstrap checks
+npx -y @upstash/context7-mcp --help
+codex mcp list
 ```
 
 ## Archive
