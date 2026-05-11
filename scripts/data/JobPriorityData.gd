@@ -22,7 +22,7 @@ func get_priority(job_type: StringName) -> int:
 			return build
 		&"Craft", &"CraftRecipe", &"ResearchTask":
 			return craft
-		&"Combat":
+		&"Combat", &"CombatMelee", &"CombatRanged":
 			return combat
 		&"EatStub":
 			return eat
