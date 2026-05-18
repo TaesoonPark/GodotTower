@@ -268,6 +268,8 @@ func _process_movement(delta: float) -> void:
 		return
 	var speed_mul: float = (1.5 if food_speed_buff_remaining > 0.0 else 1.0) * maxf(0.5, external_move_speed_multiplier) * _nearby_command_move_multiplier()
 	var move_speed: float = get_effective_move_speed() * speed_mul
+	if _try_process_melee_positioning(goal, move_speed, move_delta):
+		return
 	if global_position.distance_to(goal) <= 24.0:
 		var before_center_step: Vector2 = global_position
 		var reached_center: bool = _move_toward_cell(goal, move_speed, move_delta)
@@ -283,8 +285,6 @@ func _process_movement(delta: float) -> void:
 			return
 		if global_position.distance_squared_to(before_center_step) > 0.0001:
 			return
-	if _try_process_melee_positioning(goal, move_speed, move_delta):
-		return
 	var result: Dictionary = {}
 	if _friendly_pathing != null:
 		result = _friendly_pathing.move_step(
@@ -2221,18 +2221,18 @@ func _process_combat_job(job_type: StringName) -> void:
 	var killed: bool = false
 	if hit and target_obj.has_method("is_dead"):
 		killed = bool(target_obj.is_dead())
-	_report_combat_event(hit, damage, killed, effective_job_type)
+	_report_combat_event(hit, damage, killed, effective_job_type, target_node)
 	current_job["next_attack_ms"] = now_ms + int(round(1000.0 * maxf(0.1, float(combat_profile.get("attack_cooldown_sec", 1.1)))))
 	if target_obj.has_method("is_dead") and bool(target_obj.is_dead()):
 		_finish_current_job()
 
-func _report_combat_event(hit: bool, damage: int, killed: bool, attack_mode: StringName) -> void:
+func _report_combat_event(hit: bool, damage: int, killed: bool, attack_mode: StringName, target_node: Node2D) -> void:
 	if _main_controller == null or not is_instance_valid(_main_controller):
 		_main_controller = get_tree().get_first_node_in_group("main_controller")
 	if _main_controller == null or not is_instance_valid(_main_controller):
 		return
 	if _main_controller.has_method("report_combat_event"):
-		_main_controller.report_combat_event(&"Colonist", hit, damage, killed, attack_mode)
+		_main_controller.report_combat_event(&"Colonist", hit, damage, killed, attack_mode, target_node)
 
 func _spawn_projectile(from_pos: Vector2, to_pos: Vector2, hit: bool) -> void:
 	var proj := Line2D.new()
@@ -2302,7 +2302,7 @@ func _is_melee_engaged_with_target(target_node: Node2D, attack_range: float, des
 	var target_cell: Vector2 = _snap_to_tile(target_node.global_position)
 	var engagement_ring: int = _melee_engagement_ring(target_node.get_instance_id(), attack_range)
 	var desired_ring: int = _melee_cell_ring(desired, target_cell)
-	if desired != Vector2.INF and desired_ring >= 1 and desired_ring <= engagement_ring and _melee_cell_in_weapon_range(desired, target_cell, attack_range) and global_position.distance_to(desired) <= CELL_CENTER_EPSILON:
+	if desired != Vector2.INF and desired_ring >= 1 and desired_ring <= engagement_ring and _melee_cell_in_weapon_range(desired, target_cell, attack_range) and _is_melee_cell_available(desired) and global_position.distance_to(desired) <= CELL_CENTER_EPSILON:
 		global_position = desired
 		return true
 	var own_cell: Vector2 = _snap_to_tile(global_position)
@@ -2376,7 +2376,28 @@ func _is_melee_lock_active() -> bool:
 	if target_obj.has_method("is_dead") and bool(target_obj.is_dead()):
 		_finish_current_job()
 		return false
+	if _has_other_melee_locked_unit_on_cell(_snap_to_tile(global_position)):
+		_clear_melee_combat_lock()
+		return false
 	return true
+
+func _has_other_melee_locked_unit_on_cell(cell: Vector2) -> bool:
+	var snapped: Vector2 = _snap_to_tile(cell)
+	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
+	for group_name in groups:
+		for node in get_tree().get_nodes_in_group(group_name):
+			if node == null or not is_instance_valid(node) or node == self:
+				continue
+			if not (node is Node2D):
+				continue
+			if node.has_method("is_dead") and bool(node.is_dead()):
+				continue
+			if _snap_to_tile((node as Node2D).global_position).distance_to(snapped) > 0.1:
+				continue
+			var lock_variant: Variant = node.get("_melee_lock_target_id")
+			if lock_variant != null and int(lock_variant) != 0:
+				return true
+	return false
 
 func _try_supply_build_site(site_obj: Object) -> bool:
 	if site_obj == null or not is_instance_valid(site_obj):

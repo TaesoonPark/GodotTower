@@ -24,6 +24,12 @@ const AUTOSAVE_INTERVAL_SEC: float = 60.0
 const PATHING_OCCUPANCY_SCRIPT: Script = preload("res://scripts/systems/PathingOccupancy.gd")
 const ENEMY_FLOW_FIELD_SERVICE_SCRIPT: Script = preload("res://scripts/systems/EnemyFlowFieldService.gd")
 const ENEMY_ENGAGEMENT_COORDINATOR_SCRIPT: Script = preload("res://scripts/systems/EnemyEngagementCoordinator.gd")
+const WORLD_INDEX_SERVICE_SCRIPT: Script = preload("res://scripts/systems/WorldIndexService.gd")
+const TRAP_SERVICE_SCRIPT: Script = preload("res://scripts/systems/TrapService.gd")
+const SAVE_LOAD_SERVICE_SCRIPT: Script = preload("res://scripts/systems/SaveLoadService.gd")
+const PERF_TELEMETRY_SERVICE_SCRIPT: Script = preload("res://scripts/systems/PerfTelemetryService.gd")
+const SIMULATION_DISPATCH_SERVICE_SCRIPT: Script = preload("res://scripts/systems/SimulationDispatchService.gd")
+const COMBAT_RAID_SERVICE_SCRIPT: Script = preload("res://scripts/systems/CombatRaidService.gd")
 const STRUCTURE_HEALTH_BAR: Script = preload("res://scripts/core/StructureHealthBar.gd")
 const EQUIPMENT_STATS: Script = preload("res://scripts/core/EquipmentStats.gd")
 const HANDCART_SCRIPT: Script = preload("res://scripts/core/Handcart.gd")
@@ -39,6 +45,9 @@ const EDGE_SCROLL_SPEED: float = 980.0
 const MIN_ZOOM: float = 0.65
 const MAX_ZOOM: float = 1.85
 const ZOOM_STEP: float = 0.08
+const COMBAT_FEEDBACK_BODY_OFFSET: Vector2 = Vector2(0.0, -30.0)
+const COMBAT_FEEDBACK_FLOAT_DISTANCE: float = 46.0
+const COMBAT_FEEDBACK_DURATION: float = 0.65
 
 @onready var world_root: Node2D = $WorldRoot
 @onready var units_root: Node2D = $UnitsRoot
@@ -161,6 +170,12 @@ var _day_night_cycle_seconds: float = 240.0
 var _pathing_occupancy: PathingOccupancy = null
 var _enemy_flow_field_service: Node = null
 var _enemy_engagement_coordinator: Node = null
+var _world_index_service: Node = null
+var _trap_service: Node = null
+var _save_load_service: Node = null
+var _perf_telemetry_service: Node = null
+var _simulation_dispatch_service: Node = null
+var _combat_raid_service: Node = null
 var _cached_alive_enemies: Array = []
 var _hud_dirty: bool = true
 var _hud_time_dirty: bool = false
@@ -194,7 +209,6 @@ var _trap_update_accum: float = 0.0
 var _farm_tick_accum: float = 0.0
 var _trap_move_event_next_ms: int = 0
 const TRAP_MAX_PER_UPDATE: int = 42
-var _trap_update_cursor: int = 0
 var _active_jobs_next_ms: int = 0
 var _has_demolish_overlay: bool = false
 var _last_hud_time_tick: int = -1
@@ -241,6 +255,54 @@ func _ready() -> void:
 	else:
 		add_child(_enemy_engagement_coordinator)
 	_enemy_engagement_coordinator.setup(TILE_SIZE, _pathing_occupancy)
+	_world_index_service = WORLD_INDEX_SERVICE_SCRIPT.new()
+	_world_index_service.name = "WorldIndexService"
+	_world_index_service.add_to_group("world_index_service")
+	if systems_node != null:
+		systems_node.add_child(_world_index_service)
+	else:
+		add_child(_world_index_service)
+	if _world_index_service.has_signal("pathing_world_changed"):
+		_world_index_service.connect("pathing_world_changed", Callable(self, "_mark_pathing_dirty"))
+	_trap_service = TRAP_SERVICE_SCRIPT.new()
+	_trap_service.name = "TrapService"
+	_trap_service.add_to_group("trap_service")
+	if systems_node != null:
+		systems_node.add_child(_trap_service)
+	else:
+		add_child(_trap_service)
+	_trap_service.setup(TILE_SIZE, TRAP_MAX_PER_UPDATE)
+	_save_load_service = SAVE_LOAD_SERVICE_SCRIPT.new()
+	_save_load_service.name = "SaveLoadService"
+	_save_load_service.add_to_group("save_load_service")
+	if systems_node != null:
+		systems_node.add_child(_save_load_service)
+	else:
+		add_child(_save_load_service)
+	_save_load_service.setup(self, SAVE_DIR, SAVE_FILE_SUFFIX, DEFAULT_AUTOSAVE_SLOT_ID, SAVE_VERSION)
+	_perf_telemetry_service = PERF_TELEMETRY_SERVICE_SCRIPT.new()
+	_perf_telemetry_service.name = "PerfTelemetryService"
+	_perf_telemetry_service.add_to_group("perf_telemetry_service")
+	if systems_node != null:
+		systems_node.add_child(_perf_telemetry_service)
+	else:
+		add_child(_perf_telemetry_service)
+	_perf_telemetry_service.setup(_perf_logging_enabled, PERF_RING_SIZE)
+	_simulation_dispatch_service = SIMULATION_DISPATCH_SERVICE_SCRIPT.new()
+	_simulation_dispatch_service.name = "SimulationDispatchService"
+	_simulation_dispatch_service.add_to_group("simulation_dispatch_service")
+	if systems_node != null:
+		systems_node.add_child(_simulation_dispatch_service)
+	else:
+		add_child(_simulation_dispatch_service)
+	_combat_raid_service = COMBAT_RAID_SERVICE_SCRIPT.new()
+	_combat_raid_service.name = "CombatRaidService"
+	_combat_raid_service.add_to_group("combat_raid_service")
+	if systems_node != null:
+		systems_node.add_child(_combat_raid_service)
+	else:
+		add_child(_combat_raid_service)
+	_combat_raid_service.setup(_day_night_cycle_seconds)
 	if _pathing_occupancy.has_signal("revision_changed"):
 		_pathing_occupancy.connect("revision_changed", Callable(self, "_on_pathing_occupancy_revision_changed"))
 	_init_group_cache()
@@ -248,6 +310,8 @@ func _ready() -> void:
 	_perf_report_next_ms = now_ms + 5000
 	_perf_last_ticks_usec = Time.get_ticks_usec()
 	_reset_combat_window()
+	if _perf_telemetry_service != null and is_instance_valid(_perf_telemetry_service):
+		_perf_telemetry_service.start(now_ms, _perf_last_ticks_usec)
 	_configure_world_bounds()
 	_randomize_world_spawns()
 	var building_defs: Array = _load_building_defs()
@@ -447,6 +511,7 @@ func _init_group_cache() -> void:
 		&"stockpile_zones",
 		&"resource_drops",
 		&"vehicles",
+		&"handcarts",
 		&"gatherables",
 		&"huntables",
 		&"structures",
@@ -457,6 +522,9 @@ func _init_group_cache() -> void:
 		&"repairable_structures",
 		&"build_sites"
 	]
+	if _world_index_service != null and is_instance_valid(_world_index_service):
+		_world_index_service.setup(hot_groups)
+		return
 	for group_name in hot_groups:
 		_group_cache_dirty[group_name] = true
 	if get_tree() != null:
@@ -466,6 +534,8 @@ func _init_group_cache() -> void:
 			get_tree().connect("node_removed", Callable(self, "_on_tree_node_removed"))
 
 func _on_tree_node_added(_node: Node) -> void:
+	if _world_index_service != null and is_instance_valid(_world_index_service):
+		return
 	_mark_group_cache_for_node(_node)
 	if _node == null:
 		return
@@ -473,6 +543,8 @@ func _on_tree_node_added(_node: Node) -> void:
 		_mark_pathing_dirty()
 
 func _on_tree_node_removed(_node: Node) -> void:
+	if _world_index_service != null and is_instance_valid(_world_index_service):
+		return
 	_mark_group_cache_for_node(_node)
 	if _node == null:
 		return
@@ -480,13 +552,22 @@ func _on_tree_node_removed(_node: Node) -> void:
 		_mark_pathing_dirty()
 
 func _mark_group_cache_dirty(group_name: StringName) -> void:
+	if _world_index_service != null and is_instance_valid(_world_index_service):
+		_world_index_service.mark_group_dirty(group_name)
+		return
 	_group_cache_dirty[group_name] = true
 
 func _mark_all_group_cache_dirty() -> void:
+	if _world_index_service != null and is_instance_valid(_world_index_service):
+		_world_index_service.mark_all_dirty()
+		return
 	for group_name_any in _group_cache_dirty.keys():
 		_group_cache_dirty[group_name_any] = true
 
 func _mark_group_cache_for_node(node: Node) -> void:
+	if _world_index_service != null and is_instance_valid(_world_index_service):
+		_world_index_service.mark_node_groups_dirty(node)
+		return
 	if node == null:
 		return
 	for group_name_any in _group_cache_dirty.keys():
@@ -495,6 +576,8 @@ func _mark_group_cache_for_node(node: Node) -> void:
 			_group_cache_dirty[group_name] = true
 
 func _get_group_nodes_cached(group_name: StringName) -> Array:
+	if _world_index_service != null and is_instance_valid(_world_index_service):
+		return _world_index_service.get_nodes_cached(group_name)
 	if not is_inside_tree():
 		return []
 	if bool(_group_cache_dirty.get(group_name, true)):
@@ -536,9 +619,13 @@ func _process(delta: float) -> void:
 	_process_autosave_timer()
 
 func has_save_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if _save_load_service != null and is_instance_valid(_save_load_service):
+		return bool(_save_load_service.has_save_slot(slot_id))
 	return FileAccess.file_exists(_save_slot_path(slot_id))
 
 func delete_save_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if _save_load_service != null and is_instance_valid(_save_load_service):
+		return bool(_save_load_service.delete_save_slot(slot_id))
 	if _save_load_in_progress:
 		return false
 	var path: String = _save_slot_path(slot_id)
@@ -569,6 +656,8 @@ func reset_save_and_reload_game_scene(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID
 	return true
 
 func save_game_to_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if _save_load_service != null and is_instance_valid(_save_load_service):
+		return bool(_save_load_service.save_game_to_slot(slot_id))
 	if _save_load_in_progress:
 		return false
 	var safe_slot: String = _sanitize_save_slot_id(slot_id)
@@ -588,6 +677,11 @@ func save_game_to_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
 	return true
 
 func load_game_from_slot(slot_id: String = DEFAULT_AUTOSAVE_SLOT_ID) -> bool:
+	if _save_load_service != null and is_instance_valid(_save_load_service):
+		var service_ok: bool = bool(_save_load_service.load_game_from_slot(slot_id))
+		if service_ok:
+			_schedule_next_autosave()
+		return service_ok
 	if _save_load_in_progress:
 		return false
 	var path: String = _save_slot_path(slot_id)
@@ -613,8 +707,13 @@ func _is_primary_main_scene_run() -> bool:
 	var tree: SceneTree = get_tree()
 	return tree != null and tree.current_scene == self
 
+func _is_save_load_in_progress() -> bool:
+	if _save_load_service != null and is_instance_valid(_save_load_service):
+		return bool(_save_load_service.is_in_progress())
+	return _save_load_in_progress
+
 func _process_autosave_timer() -> void:
-	if not _autosave_enabled or _save_load_in_progress:
+	if not _autosave_enabled or _is_save_load_in_progress():
 		return
 	if _next_autosave_ms <= 0:
 		_schedule_next_autosave()
@@ -633,9 +732,13 @@ func _schedule_next_autosave() -> void:
 	_next_autosave_ms = Time.get_ticks_msec() + int(round(AUTOSAVE_INTERVAL_SEC * 1000.0))
 
 func _save_slot_path(slot_id: String) -> String:
+	if _save_load_service != null and is_instance_valid(_save_load_service):
+		return String(_save_load_service.save_slot_path(slot_id))
 	return "%s/%s%s" % [SAVE_DIR, _sanitize_save_slot_id(slot_id), SAVE_FILE_SUFFIX]
 
 func _sanitize_save_slot_id(slot_id: String) -> String:
+	if _save_load_service != null and is_instance_valid(_save_load_service):
+		return String(_save_load_service.sanitize_save_slot_id(slot_id))
 	var safe: String = slot_id.strip_edges()
 	safe = safe.replace("/", "_").replace("\\", "_").replace(":", "_").replace("..", "_")
 	if safe.is_empty():
@@ -2278,7 +2381,22 @@ func _dispatch_event_updates() -> void:
 			_hud_selection_dirty = false
 		dt_hud_us = Time.get_ticks_usec() - t_us
 	var dt_total_us: int = Time.get_ticks_usec() - dispatch_start_us
-	if _perf_logging_enabled and _raid_state == &"Active" and dt_total_us >= 40000:
+	if _simulation_dispatch_service != null and is_instance_valid(_simulation_dispatch_service):
+		_simulation_dispatch_service.report_hitch(
+			_perf_logging_enabled,
+			_raid_state,
+			dt_total_us,
+			dt_pathing_us,
+			dt_combat_us,
+			dt_traps_us,
+			dt_farm_us,
+			dt_maint_us,
+			dt_econ_us,
+			dt_jobs_us,
+			dt_hud_us,
+			_cached_alive_enemies.size()
+		)
+	elif _perf_logging_enabled and _raid_state == &"Active" and dt_total_us >= 40000:
 		print("[Perf][Hitch][Dispatch] total=%.2f path=%.2f combat=%.2f traps=%.2f farm=%.2f maint=%.2f econ=%.2f jobs=%.2f hud=%.2f enemies=%d" % [
 			float(dt_total_us) / 1000.0,
 			float(dt_pathing_us) / 1000.0,
@@ -3387,7 +3505,8 @@ func _on_structure_added(_structure: Node) -> void:
 	_mark_combat_dirty()
 	_hud_dirty = true
 	if _structure != null and is_instance_valid(_structure) and _structure.has_meta("building_id"):
-		if StringName(_structure.get_meta("building_id")) == &"Wall":
+		var building_id: StringName = StringName(_structure.get_meta("building_id"))
+		if building_id == &"Wall" or building_id == &"FiringWall":
 			_refresh_wall_variants_at(_structure.global_position if _structure is Node2D else Vector2.INF)
 
 func _refresh_all_wall_variants() -> void:
@@ -3810,17 +3929,34 @@ func _try_place_building_by_id(world_pos: Vector2, building_id: StringName, rota
 
 func _try_queue_gate_wall_replacement(world_pos: Vector2) -> bool:
 	var snapped_pos: Vector2 = _snap_to_tile(world_pos)
-	var wall_site_target: Node = _find_build_site_near(snapped_pos, TILE_SIZE * 0.75, &"Wall")
+	var wall_site_target: Node = _find_gate_replaceable_build_site_near(snapped_pos, TILE_SIZE * 0.75)
 	if wall_site_target != null:
 		var gate_pos: Vector2 = wall_site_target.global_position if wall_site_target is Node2D else snapped_pos
 		_cancel_build_site(wall_site_target)
 		build_system.set_selected_building(&"Gate")
 		return _try_place_selected_building(gate_pos, true, 0)
-	var wall_target: Node = _find_structure_by_building_near(snapped_pos, &"Wall", TILE_SIZE * 0.75)
+	var wall_target: Node = _find_gate_replaceable_structure_near(snapped_pos, TILE_SIZE * 0.75)
 	if wall_target == null:
 		return false
 	_queue_demolish_structure(wall_target, &"Gate")
 	return true
+
+func _find_gate_replaceable_build_site_near(world_pos: Vector2, radius: float) -> Node:
+	for building_id in _gate_replaceable_wall_ids():
+		var site: Node = _find_build_site_near(world_pos, radius, building_id)
+		if site != null:
+			return site
+	return null
+
+func _find_gate_replaceable_structure_near(world_pos: Vector2, radius: float) -> Node:
+	for building_id in _gate_replaceable_wall_ids():
+		var structure: Node = _find_structure_by_building_near(world_pos, building_id, radius)
+		if structure != null:
+			return structure
+	return null
+
+func _gate_replaceable_wall_ids() -> Array[StringName]:
+	return [&"Wall", &"FiringWall"]
 
 func _deferred_build_key(world_pos: Vector2, building_id: StringName, rotation_index: int = 0) -> String:
 	var snapped: Vector2 = _snap_building_to_grid(world_pos, building_id, rotation_index)
@@ -6421,108 +6557,23 @@ func _configure_farm_zone_catalog(zone: Node) -> void:
 		zone.set_fertility_resilience(_farm_resilience_bonus_from_research)
 
 func _update_defense_traps(delta: float, enemies: Array = []) -> void:
-	if _game_paused:
-		return
 	var raiders: Array = enemies
 	if raiders.is_empty():
 		raiders = _get_alive_raiders()
-	var traps_changed: bool = false
-	var trap_cell_size: float = TILE_SIZE * 4.0
-	var enemy_buckets: Dictionary = {}
-	for raider in raiders:
-		if raider == null or not is_instance_valid(raider):
-			continue
-		var bucket: Vector2i = Vector2i(
-			int(floor(raider.global_position.x / trap_cell_size)),
-			int(floor(raider.global_position.y / trap_cell_size))
-		)
-		var key: int = _pack_tile_key(bucket)
-		if not enemy_buckets.has(key):
-			enemy_buckets[key] = []
-		var bucket_enemies: Array = enemy_buckets[key]
-		bucket_enemies.append(raider)
-		enemy_buckets[key] = bucket_enemies
 	var trap_nodes: Array = _get_group_nodes_cached(&"trap_structures")
-	if trap_nodes.is_empty():
+	if _trap_service == null or not is_instance_valid(_trap_service):
 		return
-	var trap_count: int = trap_nodes.size()
-	var max_to_process: int = mini(TRAP_MAX_PER_UPDATE, trap_count)
-	var start_idx: int = posmod(_trap_update_cursor, trap_count)
-	for i in range(max_to_process):
-		var trap = trap_nodes[(start_idx + i) % trap_count]
-		if trap == null or not is_instance_valid(trap):
-			continue
-		var trap_damage: int = int(trap.get_meta("trap_damage")) if trap.has_meta("trap_damage") else 0
-		if trap_damage <= 0:
-			continue
-		trap_damage = int(round(float(trap_damage) * _trap_damage_bonus_from_research))
-		var charges: int = int(trap.get_meta("trap_charges")) if trap.has_meta("trap_charges") else 0
-		if charges <= 0:
-			continue
-		var cooldown_left: float = float(trap.get_meta("trap_cooldown_left")) if trap.has_meta("trap_cooldown_left") else 0.0
-		if cooldown_left > 0.0:
-			cooldown_left = maxf(0.0, cooldown_left - delta)
-			trap.set_meta("trap_cooldown_left", cooldown_left)
-			traps_changed = true
-		if cooldown_left > 0.0:
-			continue
-		var target: Node = _find_enemy_inside_trap_footprint(trap, enemy_buckets, trap_cell_size)
-		if target == null:
-			continue
-		if target.has_method("apply_combat_damage"):
-			target.apply_combat_damage(trap_damage)
-		var cooldown: float = float(trap.get_meta("trap_cooldown_sec")) if trap.has_meta("trap_cooldown_sec") else 3.0
-		trap.set_meta("trap_cooldown_left", maxf(0.3, cooldown / maxf(1.0, _trap_cooldown_bonus_from_research)))
-		charges -= 1
-		trap.set_meta("trap_charges", charges)
-		traps_changed = true
+	var traps_changed: bool = bool(_trap_service.update_defense_traps(
+		delta,
+		raiders,
+		trap_nodes,
+		_trap_damage_bonus_from_research,
+		_trap_cooldown_bonus_from_research,
+		_game_paused
+	))
 	if traps_changed:
 		_structure_maintenance_dirty = true
 		_hud_dirty = true
-	_trap_update_cursor = (start_idx + max_to_process) % trap_count
-
-func _find_enemy_inside_trap_footprint(trap: Node, enemy_buckets: Dictionary, trap_cell_size: float) -> Node:
-	if not (trap is Node2D):
-		return null
-	var trap_node: Node2D = trap as Node2D
-	var footprint: Vector2 = trap.get_meta("footprint_size") if trap.has_meta("footprint_size") else Vector2(TILE_SIZE, TILE_SIZE)
-	footprint.x = maxf(1.0, footprint.x)
-	footprint.y = maxf(1.0, footprint.y)
-	var occupied_rect := Rect2(trap_node.global_position - footprint * 0.5, footprint).grow(0.5)
-	var min_bucket := Vector2i(
-		int(floor(occupied_rect.position.x / trap_cell_size)),
-		int(floor(occupied_rect.position.y / trap_cell_size))
-	)
-	var max_bucket := Vector2i(
-		int(floor((occupied_rect.position.x + occupied_rect.size.x) / trap_cell_size)),
-		int(floor((occupied_rect.position.y + occupied_rect.size.y) / trap_cell_size))
-	)
-	var target: Node = null
-	var best_dist_sq: float = INF
-	for by in range(min_bucket.y, max_bucket.y + 1):
-		for bx in range(min_bucket.x, max_bucket.x + 1):
-			var local_key: int = _pack_tile_key(Vector2i(bx, by))
-			if not enemy_buckets.has(local_key):
-				continue
-			var bucket_enemies: Array = enemy_buckets[local_key]
-			for raider in bucket_enemies:
-				if raider == null or not is_instance_valid(raider):
-					continue
-				if not (raider is Node2D):
-					continue
-				var enemy_pos: Vector2 = (raider as Node2D).global_position
-				if not occupied_rect.has_point(enemy_pos):
-					continue
-				var dist_sq: float = trap_node.global_position.distance_squared_to(enemy_pos)
-				if dist_sq < best_dist_sq:
-					best_dist_sq = dist_sq
-					target = raider
-	return target
-
-func _pack_tile_key(tile: Vector2i) -> int:
-	var packed_x: int = (tile.x + 32768) & 0xFFFF
-	var packed_y: int = (tile.y + 32768) & 0xFFFF
-	return (packed_x << 16) | packed_y
 
 func _get_cached_research_options() -> Array:
 	var sig: int = int(research_lookup.size() * 97 + _research_completed.size() * 31 + (String(_active_research_id).hash() % 997))
@@ -6551,6 +6602,16 @@ func _get_cached_research_options() -> Array:
 	return _cached_research_options
 
 func _record_frame_profile(delta: float) -> void:
+	if _perf_telemetry_service != null and is_instance_valid(_perf_telemetry_service):
+		_perf_telemetry_service.record_frame(
+			_raid_state,
+			_cached_alive_enemies.size(),
+			colonists.size(),
+			_enemy_engagement_coordinator,
+			_pathing_occupancy,
+			_enemy_flow_field_service
+		)
+		return
 	if not _perf_logging_enabled:
 		return
 	var now_usec: int = Time.get_ticks_usec()
@@ -6612,6 +6673,9 @@ func _record_frame_profile(delta: float) -> void:
 	_perf_report_next_ms = now_ms + 5000
 
 func _report_enemy_perf_snapshot() -> void:
+	if _perf_telemetry_service != null and is_instance_valid(_perf_telemetry_service):
+		_perf_telemetry_service.report_enemy_perf_snapshot(_enemy_engagement_coordinator, _pathing_occupancy, _enemy_flow_field_service)
+		return
 	var enemy_perf: Dictionary = EnemyUnitBase.consume_perf_stats()
 	var coordinator_stats: Dictionary = {}
 	if _enemy_engagement_coordinator != null and is_instance_valid(_enemy_engagement_coordinator) and _enemy_engagement_coordinator.has_method("get_debug_stats"):
@@ -6637,6 +6701,8 @@ func _report_enemy_perf_snapshot() -> void:
 	])
 
 func _reset_combat_window() -> void:
+	if _perf_telemetry_service != null and is_instance_valid(_perf_telemetry_service):
+		_perf_telemetry_service.reset_combat_window()
 	_combat_window = {
 		"colonist_attempts": 0,
 		"colonist_hits": 0,
@@ -6650,7 +6716,11 @@ func _reset_combat_window() -> void:
 		"enemy_kills": 0
 	}
 
-func report_combat_event(source_side: StringName, hit: bool, damage: int, kill: bool, attack_mode: StringName = &"") -> void:
+func report_combat_event(source_side: StringName, hit: bool, damage: int, kill: bool, attack_mode: StringName = &"", target_node: Node = null) -> void:
+	_spawn_combat_feedback_text(source_side, hit, damage, kill, target_node)
+	if _perf_telemetry_service != null and is_instance_valid(_perf_telemetry_service):
+		_perf_telemetry_service.report_combat_event(source_side, hit, damage, kill, attack_mode)
+		return
 	if _combat_window.is_empty():
 		_reset_combat_window()
 	if source_side == &"Colonist":
@@ -6672,6 +6742,58 @@ func report_combat_event(source_side: StringName, hit: bool, damage: int, kill: 
 			_combat_window["enemy_damage"] = int(_combat_window.get("enemy_damage", 0)) + maxi(0, damage)
 		if kill:
 			_combat_window["enemy_kills"] = int(_combat_window.get("enemy_kills", 0)) + 1
+
+func _spawn_combat_feedback_text(source_side: StringName, hit: bool, damage: int, kill: bool, target_node: Node) -> void:
+	if target_node == null or not is_instance_valid(target_node) or not (target_node is Node2D):
+		return
+	var text: String = "MISS"
+	var text_color: Color = Color(0.78, 0.82, 0.88, 0.95)
+	var font_size: int = 15
+	if hit:
+		text = str(maxi(0, damage))
+		text_color = Color(1.0, 0.30, 0.24, 1.0) if source_side == &"Enemy" else Color(1.0, 0.82, 0.26, 1.0)
+		font_size = 20 if kill else 18
+	var label := Label.new()
+	label.name = "CombatFeedbackText"
+	label.text = text
+	label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	label.custom_minimum_size = Vector2(72.0, 24.0)
+	label.size = label.custom_minimum_size
+	label.z_as_relative = false
+	label.z_index = 1000
+	label.add_to_group("combat_feedback_text")
+	label.add_theme_font_size_override("font_size", font_size)
+	label.add_theme_color_override("font_color", text_color)
+	label.add_theme_color_override("font_shadow_color", Color(0.0, 0.0, 0.0, 0.75))
+	label.add_theme_constant_override("shadow_offset_x", 1)
+	label.add_theme_constant_override("shadow_offset_y", 1)
+	var parent_node: Node = units_root if units_root != null and is_instance_valid(units_root) else self
+	parent_node.add_child(label)
+	var target_2d: Node2D = target_node as Node2D
+	var origin: Vector2 = _combat_feedback_origin(target_2d)
+	var jitter_seed: int = int(Time.get_ticks_msec() + target_2d.get_instance_id() + damage * 17)
+	origin.x += float(posmod(jitter_seed, 17) - 8)
+	var local_origin: Vector2 = origin
+	if parent_node is Node2D:
+		local_origin = (parent_node as Node2D).to_local(origin)
+	label.position = local_origin - label.size * 0.5
+	label.scale = Vector2(0.84, 0.84)
+	var start_pos: Vector2 = label.position
+	var end_pos: Vector2 = start_pos + Vector2(0.0, -COMBAT_FEEDBACK_FLOAT_DISTANCE)
+	var tw := label.create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(label, "position", end_pos, COMBAT_FEEDBACK_DURATION).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(label, "scale", Vector2(1.18, 1.18), 0.12).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_property(label, "modulate:a", 0.0, COMBAT_FEEDBACK_DURATION * 0.65).set_delay(COMBAT_FEEDBACK_DURATION * 0.35)
+	tw.chain().tween_callback(label.queue_free)
+
+func _combat_feedback_origin(target_node: Node2D) -> Vector2:
+	var sprite: Sprite2D = target_node.get_node_or_null("Sprite2D") as Sprite2D
+	if sprite != null:
+		return sprite.global_position + sprite.offset + Vector2(0.0, -8.0)
+	return target_node.global_position + COMBAT_FEEDBACK_BODY_OFFSET
 
 func _report_combat_window_if_due(now_ms: int) -> void:
 	if _raid_state != &"Active":
@@ -6702,6 +6824,8 @@ func _report_combat_window_if_due(now_ms: int) -> void:
 	_combat_log_next_ms = now_ms + 5000
 
 func _compute_enemy_sim_interval_scale(enemy_count: int) -> float:
+	if _combat_raid_service != null and is_instance_valid(_combat_raid_service):
+		return float(_combat_raid_service.compute_enemy_sim_interval_scale(_raid_state, enemy_count))
 	if _raid_state != &"Active":
 		return 1.0
 	if enemy_count <= 16:
@@ -6715,6 +6839,8 @@ func _compute_enemy_sim_interval_scale(enemy_count: int) -> float:
 	return 2.3
 
 func _compute_friendly_pathing_budget_scale(enemy_count: int) -> float:
+	if _combat_raid_service != null and is_instance_valid(_combat_raid_service):
+		return float(_combat_raid_service.compute_friendly_pathing_budget_scale(_raid_state, enemy_count))
 	if _raid_state != &"Active":
 		return 1.0
 	if enemy_count <= 0:
@@ -6726,6 +6852,9 @@ func _compute_friendly_pathing_budget_scale(enemy_count: int) -> float:
 	return 3.5
 
 func _apply_enemy_sim_budget(enemies: Array, interval_scale: float) -> void:
+	if _combat_raid_service != null and is_instance_valid(_combat_raid_service):
+		_combat_raid_service.apply_enemy_sim_budget(enemies, interval_scale)
+		return
 	for enemy in enemies:
 		if enemy == null or not is_instance_valid(enemy):
 			continue
@@ -6733,6 +6862,9 @@ func _apply_enemy_sim_budget(enemies: Array, interval_scale: float) -> void:
 			enemy.set_sim_interval_scale(interval_scale)
 
 func _apply_friendly_pathing_budget(scale: float) -> void:
+	if _combat_raid_service != null and is_instance_valid(_combat_raid_service):
+		_combat_raid_service.apply_friendly_pathing_budget(colonists, scale)
+		return
 	for colonist in colonists:
 		if colonist == null or not is_instance_valid(colonist):
 			continue
@@ -6980,6 +7112,12 @@ func _day_night_combat_accuracy_bonus() -> float:
 	return lerpf(-0.03, 0.025, _day_night_lerp())
 
 func _apply_day_night_to_enemies(enemies: Array = []) -> void:
+	if _combat_raid_service != null and is_instance_valid(_combat_raid_service):
+		var target_enemies_for_service: Array = enemies
+		if target_enemies_for_service.is_empty():
+			target_enemies_for_service = _get_alive_raiders()
+		_combat_raid_service.apply_day_night_to_enemies(target_enemies_for_service, _elapsed_game_seconds, _enemy_night_slow_bonus_from_research)
+		return
 	var t: float = _day_night_lerp()
 	var move_mul: float = lerpf(0.95, 1.05, t)
 	if _is_night_time():

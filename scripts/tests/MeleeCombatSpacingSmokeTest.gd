@@ -96,4 +96,24 @@ func _run_test() -> void:
 		_finish(false, "MELEE_SPACING_TEST_FAIL: melee fighters overlapped pair_dist=%.2f" % min_pair_dist)
 		return
 
+	var forced_overlap_cell: Vector2 = main._snap_to_tile(zombie.global_position + Vector2(-64.0, 0.0))
+	for i in range(2):
+		var fighter = fighters[i]
+		fighter.global_position = forced_overlap_cell
+		fighter.set("_melee_lock_target_id", zombie.get_instance_id())
+		fighter.current_job["type"] = &"CombatMelee"
+		fighter.current_job["target"] = forced_overlap_cell
+		fighter.current_job["target_id"] = zombie.get_instance_id()
+		fighter.current_job["melee_locked"] = true
+	for _step in range(240):
+		await get_tree().process_frame
+	var occupied_cells: Dictionary = {}
+	for fighter in fighters:
+		var fighter_cell: Vector2 = main._snap_to_tile(fighter.global_position)
+		var key: String = "%d,%d" % [int(round(fighter_cell.x)), int(round(fighter_cell.y))]
+		if occupied_cells.has(key):
+			_finish(false, "MELEE_SPACING_TEST_FAIL: overlapped locked fighters did not recover cell=%s" % key)
+			return
+		occupied_cells[key] = true
+
 	_finish(true, "MELEE_SPACING_TEST_PASS: melee fighters keep separate centered engagement cells")

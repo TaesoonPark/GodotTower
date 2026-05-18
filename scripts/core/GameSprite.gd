@@ -64,6 +64,15 @@ const WALL_VARIANT_PATHS: Dictionary = {
 	&"corner_down_left": "res://assets/sprites/buildings/wall_corner_down_left.png"
 }
 
+const FIRING_WALL_VARIANT_PATHS: Dictionary = {
+	&"horizontal": "res://assets/sprites/buildings/firing_wall.png",
+	&"vertical": "res://assets/sprites/buildings/firing_wall_vertical.png",
+	&"corner_up_right": "res://assets/sprites/buildings/firing_wall_corner_up_right.png",
+	&"corner_up_left": "res://assets/sprites/buildings/firing_wall_corner_up_left.png",
+	&"corner_down_right": "res://assets/sprites/buildings/firing_wall_corner_down_right.png",
+	&"corner_down_left": "res://assets/sprites/buildings/firing_wall_corner_down_left.png"
+}
+
 static var _texture_cache: Dictionary = {}
 
 static func get_unit_texture(unit_id: StringName) -> Texture2D:
@@ -106,7 +115,9 @@ static func get_drop_texture(resource_type: StringName) -> Texture2D:
 
 static func get_building_texture(building_id: StringName, rotation_index: int = 0) -> Texture2D:
 	if building_id == &"Wall":
-		return get_wall_texture(&"horizontal")
+		return get_wall_texture(&"horizontal", building_id)
+	if building_id == &"FiringWall":
+		return get_wall_texture(&"horizontal", building_id)
 	var key: String = _to_snake(String(building_id))
 	var variant_path: String = "res://assets/sprites/buildings/%s_%s.png" % [key, _building_rotation_suffix(rotation_index)]
 	if _path_exists(variant_path):
@@ -127,8 +138,9 @@ static func _building_rotation_suffix(rotation_index: int) -> String:
 		_:
 			return "south"
 
-static func get_wall_texture(variant: StringName) -> Texture2D:
-	var path: String = String(WALL_VARIANT_PATHS.get(variant, WALL_VARIANT_PATHS[&"horizontal"]))
+static func get_wall_texture(variant: StringName, building_id: StringName = &"Wall") -> Texture2D:
+	var paths: Dictionary = FIRING_WALL_VARIANT_PATHS if building_id == &"FiringWall" else WALL_VARIANT_PATHS
+	var path: String = String(paths.get(variant, paths[&"horizontal"]))
 	return _load_by_path(path)
 
 static func refresh_all_wall_variants(tree: SceneTree, grid_size: float) -> void:
@@ -231,7 +243,7 @@ static func _apply_wall_variant_with_map(node: Node, walls_by_tile: Dictionary, 
 	var up: bool = walls_by_tile.has(_wall_tile_key(tile + Vector2i.UP))
 	var down: bool = walls_by_tile.has(_wall_tile_key(tile + Vector2i.DOWN))
 	var variant: StringName = _wall_variant_for_connections(left, right, up, down)
-	var tex: Texture2D = get_wall_texture(variant)
+	var tex: Texture2D = get_wall_texture(variant, _wall_building_id(node))
 	if tex != null:
 		sprite.texture = tex
 	node.set_meta("wall_sprite_variant", variant)
@@ -264,7 +276,17 @@ static func _is_wall_node(node: Node) -> bool:
 		var property_value: Variant = node.get("building_id")
 		if property_value != null:
 			building_id = StringName(property_value)
-	return building_id == &"Wall"
+	return building_id == &"Wall" or building_id == &"FiringWall"
+
+static func _wall_building_id(node: Node) -> StringName:
+	if node == null:
+		return &""
+	if node.has_meta("building_id"):
+		return StringName(node.get_meta("building_id"))
+	var property_value: Variant = node.get("building_id")
+	if property_value == null:
+		return &""
+	return StringName(property_value)
 
 static func _find_wall_sprite(node: Node) -> Sprite2D:
 	var base_sprite: Node = node.get_node_or_null("BaseSprite")

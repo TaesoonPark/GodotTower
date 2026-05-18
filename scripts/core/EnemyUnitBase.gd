@@ -522,6 +522,9 @@ func _try_process_melee_combat_lock() -> bool:
 	_move_goal_exact = false
 	var attack_mode: StringName = &"Melee"
 	var attack_range: float = _resolve_attack_range(attack_mode)
+	if _has_other_melee_locked_unit_on_cell(_snap_to_tile(global_position)):
+		_clear_melee_combat_lock()
+		return false
 	if not _is_melee_engaged_with_target(target, attack_range):
 		return true
 	var dist: float = global_position.distance_to(target.global_position)
@@ -556,7 +559,7 @@ func _is_melee_engaged_with_target(target: Node2D, attack_range: float, desired:
 		desired = _resolve_melee_engagement_goal(target, attack_range)
 	var engagement_ring: int = _melee_engagement_ring(target.get_instance_id(), attack_range)
 	var desired_ring: int = _melee_cell_ring(desired, target_cell)
-	if desired_ring >= 1 and desired_ring <= engagement_ring and _melee_cell_in_weapon_range(desired, target_cell, attack_range) and global_position.distance_to(desired) <= CELL_CENTER_EPSILON:
+	if desired_ring >= 1 and desired_ring <= engagement_ring and _melee_cell_in_weapon_range(desired, target_cell, attack_range) and _is_melee_cell_available(desired) and global_position.distance_to(desired) <= CELL_CENTER_EPSILON:
 		global_position = desired
 		_emit_moved_if_needed()
 		return true
@@ -636,6 +639,24 @@ func _clear_melee_combat_lock() -> void:
 	if had_lock:
 		_invalidate_dynamic_combat_blockers()
 
+func _has_other_melee_locked_unit_on_cell(cell: Vector2) -> bool:
+	var snapped: Vector2 = _snap_to_tile(cell)
+	var groups: Array[StringName] = [&"colonists", &"raiders", &"zombies"]
+	for group_name in groups:
+		for node in get_tree().get_nodes_in_group(group_name):
+			if node == null or not is_instance_valid(node) or node == self:
+				continue
+			if not (node is Node2D):
+				continue
+			if node.has_method("is_dead") and bool(node.is_dead()):
+				continue
+			if _snap_to_tile((node as Node2D).global_position).distance_to(snapped) > 0.1:
+				continue
+			var lock_variant: Variant = node.get("_melee_lock_target_id")
+			if lock_variant != null and int(lock_variant) != 0:
+				return true
+	return false
+
 func _try_attack_target(target: Node2D, attack_mode: StringName, attack_range: float, dist: float) -> void:
 	var now_ms: int = Time.get_ticks_msec()
 	if now_ms < _next_attack_ms:
@@ -661,7 +682,7 @@ func _try_attack_target(target: Node2D, attack_mode: StringName, attack_range: f
 	var killed: bool = false
 	if hit and target.has_method("is_dead"):
 		killed = bool(target.is_dead())
-	_report_combat_event(hit, damage, killed, attack_mode)
+	_report_combat_event(hit, damage, killed, attack_mode, target)
 	_next_attack_ms = now_ms + int(round(1000.0 * maxf(0.1, attack_cooldown_sec)))
 	if killed:
 		_clear_melee_combat_lock()
@@ -731,6 +752,8 @@ func _process_movement(delta: float) -> void:
 			_enemy_pathing.clear()
 		return
 	var speed: float = move_speed * maxf(0.5, external_move_speed_multiplier)
+	if _move_goal_exact and _try_process_exact_combat_positioning(goal, speed, minf(delta, 0.05)):
+		return
 	if global_position.distance_to(goal) <= 24.0:
 		var before_center_step: Vector2 = global_position
 		var reached_center: bool = _move_toward_cell(goal, speed, delta)
@@ -739,8 +762,6 @@ func _process_movement(delta: float) -> void:
 			return
 		if global_position.distance_squared_to(before_center_step) > 0.0001:
 			return
-	if _move_goal_exact and _try_process_exact_combat_positioning(goal, speed, minf(delta, 0.05)):
-		return
 	var result: Dictionary = {}
 	var flow_direction_missing: bool = false
 	var flow_navigation_deferred: bool = false
@@ -1178,13 +1199,13 @@ func _force_nudge_toward_goal(goal: Vector2, delta: float) -> bool:
 	_emit_moved_if_needed()
 	return true
 
-func _report_combat_event(hit: bool, damage: int, killed: bool, attack_mode: StringName) -> void:
+func _report_combat_event(hit: bool, damage: int, killed: bool, attack_mode: StringName, target: Node2D) -> void:
 	if _main_controller == null or not is_instance_valid(_main_controller):
 		_main_controller = get_tree().get_first_node_in_group("main_controller")
 	if _main_controller == null or not is_instance_valid(_main_controller):
 		return
 	if _main_controller.has_method("report_combat_event"):
-		_main_controller.report_combat_event(&"Enemy", hit, damage, killed, attack_mode)
+		_main_controller.report_combat_event(&"Enemy", hit, damage, killed, attack_mode, target)
 
 func _world_to_tile(world_pos: Vector2) -> Vector2i:
 	return Vector2i(

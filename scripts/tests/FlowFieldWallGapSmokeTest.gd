@@ -2,6 +2,7 @@ extends Node
 
 const MAIN_SCENE: PackedScene = preload("res://scenes/main/Main.tscn")
 const RAIDER_SCENE: PackedScene = preload("res://scenes/units/Raider.tscn")
+const TILE_SIZE: float = 64.0
 const EXIT_PASS: int = 0
 const EXIT_FAIL: int = 1
 
@@ -29,10 +30,10 @@ func _run_test() -> void:
 		colonist.cancel_current_job()
 
 	var wall_x: float = 3840.0
-	var gap_y: float = 2160.0
+	var gap_y: float = 2176.0
 	var placed_walls: int = 0
 	main.build_system.set_selected_building(&"Wall")
-	for y in range(1440, 2921, 40):
+	for y in range(1024, 3265, int(TILE_SIZE)):
 		if absf(float(y) - gap_y) <= 0.1:
 			continue
 		if main.build_system.place_building(Vector2(wall_x, float(y)), false):
@@ -46,7 +47,7 @@ func _run_test() -> void:
 		await get_tree().process_frame
 	var occupancy: Node = get_tree().get_first_node_in_group("pathing_occupancy")
 	if occupancy != null and is_instance_valid(occupancy) and occupancy.has_method("is_blocked_for_enemy"):
-		if not bool(occupancy.is_blocked_for_enemy(Vector2(wall_x, gap_y - 40.0))):
+		if not bool(occupancy.is_blocked_for_enemy(Vector2(wall_x, gap_y - TILE_SIZE))):
 			_finish(false, "FLOW_WALL_GAP_TEST_FAIL: wall tile was not blocked")
 			return
 		if bool(occupancy.is_blocked_for_enemy(Vector2(wall_x, gap_y))):
@@ -56,7 +57,7 @@ func _run_test() -> void:
 	var raider: Node2D = RAIDER_SCENE.instantiate()
 	raider.global_position = Vector2(3200.0, 1840.0)
 	if raider.has_method("set_tile_size"):
-		raider.set_tile_size(64.0)
+		raider.set_tile_size(TILE_SIZE)
 	main.units_root.add_child(raider)
 	main._raid_state = &"Active"
 	main._cached_alive_enemies = [raider]

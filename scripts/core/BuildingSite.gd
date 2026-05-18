@@ -114,7 +114,7 @@ func setup_building(def: Resource, start_complete: bool = false, rotation_index:
 		_build_complete_visual()
 	if is_node_ready():
 		_update_visual()
-	if building_id == &"Wall":
+	if _uses_wall_variants():
 		call_deferred("_refresh_wall_variant_neighbors")
 	site_changed.emit(self)
 
@@ -223,9 +223,12 @@ func _effective_footprint(def: Resource, rotation_index: int) -> Vector2:
 	return base_footprint
 
 func _refresh_wall_variant_neighbors() -> void:
-	if building_id != &"Wall" or not is_inside_tree():
+	if not _uses_wall_variants() or not is_inside_tree():
 		return
 	GAME_SPRITE.refresh_wall_variants_around(get_tree(), global_position, maxf(4.0, footprint_size.x))
+
+func _uses_wall_variants() -> bool:
+	return building_id == &"Wall" or building_id == &"FiringWall"
 
 func _make_texture(w: int, h: int, color: Color) -> Texture2D:
 	var image := Image.create(w, h, false, Image.FORMAT_RGBA8)

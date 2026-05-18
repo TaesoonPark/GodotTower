@@ -21,31 +21,44 @@ func _run_test() -> void:
 	for _i in range(20):
 		await get_tree().process_frame
 
-	var blueprint_wall_pos: Vector2 = Vector2(3904.0, 2176.0)
-	main.build_system.set_selected_building(&"Wall")
-	if not main.build_system.place_building(blueprint_wall_pos, true):
-		_finish(false, "GATE_WALL_REPLACE_FAIL: initial wall blueprint placement failed")
+	if not await _assert_blueprint_replaces(main, &"Wall", Vector2(3904.0, 2176.0), "wall"):
 		return
-	if not main._try_place_building_by_id(blueprint_wall_pos, &"Gate"):
-		_finish(false, "GATE_WALL_REPLACE_FAIL: gate over wall blueprint request was rejected")
+	if not await _assert_blueprint_replaces(main, &"FiringWall", Vector2(3968.0, 2176.0), "firing wall"):
 		return
-	await get_tree().process_frame
-	if _find_build_site(&"Wall", blueprint_wall_pos) != null:
-		_finish(false, "GATE_WALL_REPLACE_FAIL: wall blueprint still exists")
+	if not await _assert_completed_replaces(main, &"Wall", Vector2(4096.0, 2176.0), "wall"):
 		return
-	if _find_build_site(&"Gate", blueprint_wall_pos) == null:
-		_finish(false, "GATE_WALL_REPLACE_FAIL: gate blueprint was not placed over wall blueprint")
+	if not await _assert_completed_replaces(main, &"FiringWall", Vector2(4160.0, 2176.0), "firing wall"):
 		return
-	main._cancel_build_site(_find_build_site(&"Gate", blueprint_wall_pos))
-	await get_tree().process_frame
 
-	var wall_pos: Vector2 = Vector2(4096.0, 2176.0)
+	_finish(true, "GATE_WALL_REPLACE_PASS: gate replaces wall and firing wall blueprints and structures")
+
+func _assert_blueprint_replaces(main: Node, source_building_id: StringName, world_pos: Vector2, label: String) -> bool:
+	main.build_system.set_selected_building(source_building_id)
+	if not main.build_system.place_building(world_pos, true):
+		_finish(false, "GATE_WALL_REPLACE_FAIL: initial %s blueprint placement failed" % label)
+		return false
+	if not main._try_place_building_by_id(world_pos, &"Gate"):
+		_finish(false, "GATE_WALL_REPLACE_FAIL: gate over %s blueprint request was rejected" % label)
+		return false
+	await get_tree().process_frame
+	if _find_build_site(source_building_id, world_pos) != null:
+		_finish(false, "GATE_WALL_REPLACE_FAIL: %s blueprint still exists" % label)
+		return false
+	var gate_site: Node = _find_build_site(&"Gate", world_pos)
+	if gate_site == null:
+		_finish(false, "GATE_WALL_REPLACE_FAIL: gate blueprint was not placed over %s blueprint" % label)
+		return false
+	main._cancel_build_site(gate_site)
+	await get_tree().process_frame
+	return true
+
+func _assert_completed_replaces(main: Node, source_building_id: StringName, world_pos: Vector2, label: String) -> bool:
 	var colonists: Array = get_tree().get_nodes_in_group("colonists")
 	for idx in range(colonists.size()):
 		var colonist = colonists[idx]
 		if colonist == null or not is_instance_valid(colonist):
 			continue
-		colonist.global_position = wall_pos + Vector2(-80.0, float(idx) * 40.0)
+		colonist.global_position = world_pos + Vector2(-80.0, float(idx) * 40.0)
 		colonist.cancel_current_job()
 		colonist.set_work_enabled(&"Build", idx == 0)
 		colonist.set_work_enabled(&"Craft", false)
@@ -54,76 +67,79 @@ func _run_test() -> void:
 		colonist.set_work_enabled(&"Gather", false)
 		colonist.set_work_enabled(&"Haul", false)
 
-	main.build_system.set_selected_building(&"Wall")
-	if not main.build_system.place_building(wall_pos, false):
-		_finish(false, "GATE_WALL_REPLACE_FAIL: initial wall placement failed")
-		return
+	main.build_system.set_selected_building(source_building_id)
+	if not main.build_system.place_building(world_pos, false):
+		_finish(false, "GATE_WALL_REPLACE_FAIL: initial %s placement failed" % label)
+		return false
 	main._mark_pathing_dirty()
 	main._dispatch_event_updates()
 	for _i in range(4):
 		await get_tree().process_frame
 
-	if not main._try_place_building_by_id(wall_pos, &"Gate"):
-		_finish(false, "GATE_WALL_REPLACE_FAIL: gate replacement request was rejected")
-		return
+	if not main._try_place_building_by_id(world_pos, &"Gate"):
+		_finish(false, "GATE_WALL_REPLACE_FAIL: gate over %s replacement request was rejected" % label)
+		return false
 
-	var wall: Node = _find_structure(&"Wall")
+	var wall: Node = _find_structure(source_building_id, world_pos)
 	if wall == null:
-		_finish(false, "GATE_WALL_REPLACE_FAIL: wall missing before demolition")
-		return
+		_finish(false, "GATE_WALL_REPLACE_FAIL: %s missing before demolition" % label)
+		return false
 	if not bool(wall.get_meta("demolish_job_queued")):
-		_finish(false, "GATE_WALL_REPLACE_FAIL: wall demolition was not queued")
-		return
+		_finish(false, "GATE_WALL_REPLACE_FAIL: %s demolition was not queued" % label)
+		return false
 
 	var occupancy: Node = get_tree().get_first_node_in_group("pathing_occupancy")
 	var found_demolish_job: bool = false
 	for job in main.job_system._jobs:
 		if StringName(job.get("type", &"")) != &"DemolishStructure":
 			continue
+		if int(job.get("structure_id", 0)) != wall.get_instance_id():
+			continue
 		if StringName(job.get("replace_building_id", &"")) != &"Gate":
 			continue
 		found_demolish_job = true
 		var target: Vector2 = job.get("target", Vector2.INF)
 		if target == Vector2.INF:
-			_finish(false, "GATE_WALL_REPLACE_FAIL: demolish target missing")
-			return
-		if target.distance_to(wall_pos) <= 18.0:
-			_finish(false, "GATE_WALL_REPLACE_FAIL: demolish target remained inside wall")
-			return
+			_finish(false, "GATE_WALL_REPLACE_FAIL: %s demolish target missing" % label)
+			return false
+		if target.distance_to(world_pos) <= 18.0:
+			_finish(false, "GATE_WALL_REPLACE_FAIL: %s demolish target remained inside wall" % label)
+			return false
 		if occupancy != null and is_instance_valid(occupancy) and occupancy.has_method("is_blocked_for_friendly"):
 			if bool(occupancy.is_blocked_for_friendly(target)):
-				_finish(false, "GATE_WALL_REPLACE_FAIL: demolish target was blocked")
-				return
+				_finish(false, "GATE_WALL_REPLACE_FAIL: %s demolish target was blocked" % label)
+				return false
 		break
 	if not found_demolish_job:
-		_finish(false, "GATE_WALL_REPLACE_FAIL: replacement demolish job missing")
-		return
+		_finish(false, "GATE_WALL_REPLACE_FAIL: %s replacement demolish job missing" % label)
+		return false
 
 	main._set_game_speed(4.0)
 	var gate_completed: bool = false
 	for _step in range(900):
 		await get_tree().process_frame
-		var gate: Node = _find_structure(&"Gate")
+		var gate: Node = _find_structure(&"Gate", world_pos)
 		if gate != null:
 			gate_completed = true
 			break
 
 	if not gate_completed:
-		_finish(false, "GATE_WALL_REPLACE_FAIL: gate did not replace wall state=%s" % JSON.stringify(_debug_state(main)))
-		return
-	if _find_structure(&"Wall") != null:
-		_finish(false, "GATE_WALL_REPLACE_FAIL: wall still exists after gate completion")
-		return
+		_finish(false, "GATE_WALL_REPLACE_FAIL: gate did not replace %s state=%s" % [label, JSON.stringify(_debug_state(main))])
+		return false
+	if _find_structure(source_building_id, world_pos) != null:
+		_finish(false, "GATE_WALL_REPLACE_FAIL: %s still exists after gate completion" % label)
+		return false
+	return true
 
-	_finish(true, "GATE_WALL_REPLACE_PASS: gate blueprint replaces an existing wall")
-
-func _find_structure(building_id: StringName) -> Node:
+func _find_structure(building_id: StringName, world_pos: Vector2 = Vector2.INF) -> Node:
 	for structure in get_tree().get_nodes_in_group("structures"):
 		if structure == null or not is_instance_valid(structure):
 			continue
 		if not structure.has_meta("building_id"):
 			continue
 		if StringName(structure.get_meta("building_id")) == building_id:
+			if world_pos != Vector2.INF and structure.global_position.distance_to(world_pos) > 1.0:
+				continue
 			return structure
 	return null
 

@@ -93,7 +93,7 @@ func _place_blueprint(def: Resource, world_pos: Vector2, rotation_index: int = 0
 	_connect_tracked_site(site)
 	_structures_cache_dirty = true
 	build_site_added.emit(site)
-	if def.id == &"Wall":
+	if _uses_wall_variants(def.id):
 		_refresh_wall_variants_at(world_pos)
 
 func cancel_build_site(site: Node) -> bool:
@@ -150,13 +150,16 @@ func _place_direct(def: Resource, world_pos: Vector2, rotation_index: int = 0, f
 	placed.global_position = world_pos
 	_structures_cache_dirty = true
 	structure_added.emit(placed)
-	if def.id == &"Wall":
+	if _uses_wall_variants(def.id):
 		_refresh_wall_variants_at(world_pos)
 
 func _refresh_wall_variants_at(world_pos: Vector2) -> void:
 	if world_pos == Vector2.INF or not is_inside_tree():
 		return
 	GAME_SPRITE.refresh_wall_variants_around(get_tree(), world_pos, grid_size)
+
+func _uses_wall_variants(building_id: StringName) -> bool:
+	return building_id == &"Wall" or building_id == &"FiringWall"
 
 func _apply_structure_metas(node: Node2D, def: Resource, rotation_index: int = 0, footprint_size: Vector2 = Vector2.ZERO) -> void:
 	var building_rotation: int = _normalized_building_rotation(def, rotation_index)
